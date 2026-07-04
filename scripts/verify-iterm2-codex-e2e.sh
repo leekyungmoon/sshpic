@@ -188,8 +188,9 @@ restore_iterm2_defaults() {
 trap restore_iterm2_defaults EXIT
 
 write_fixture_png() {
-  # 1x1 PNG fixture. It is intentionally tiny; the E2E checks path insertion and SSH upload, not image contents.
-  local b64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII='
+  # 4x4 RGBA PNG fixture. Some macOS pngpaste builds reject tiny gray+alpha fixtures;
+  # keep this explicitly RGBA so the preflight tests clipboard plumbing, not PNG edge cases.
+  local b64='iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAH0lEQVR42mP4z8DwHwwZ/gMBA5QL5YB5KBwwROYAmQC5wiPdExH21gAAAABJRU5ErkJggg=='
   if printf '%s' "$b64" | base64 --decode > "$FIXTURE_PNG" 2>/dev/null; then
     return 0
   fi

@@ -113,7 +113,7 @@ The script will:
 - capture iTerm2 `GlobalKeyMap` before install,
 - capture both sshpic log locations before install,
 - run the same `./install.sh` path a fresh user runs,
-- prepare a tiny local PNG clipboard fixture,
+- prepare a tiny 4x4 RGBA local PNG clipboard fixture,
 - ask the tester to run `ssh <host>`, start `codex`, press `Cmd+V`, and confirm the path appeared exactly once with no popup,
 - verify `/home/$USER/.sshpic/images/clipboard.png` over SSH,
 - run a plain-text paste check,
