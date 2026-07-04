@@ -44,7 +44,7 @@ If you are inside local tmux or another wrapper that hides the local `ssh` proce
 
 That is the legacy installer path and should not be used by current `main`.
 
-Run the latest installer once. It disables `~/Library/Application Support/iTerm2/DynamicProfiles/sshpic.json` when present. If the iTerm2 Python runtime is ready it installs the Python RPC path; otherwise it installs the no-Python fallback and removes stale helper state where possible.
+Run the latest installer once. It disables active sshpic-related iTerm2 DynamicProfiles when present, removes stale helper state where possible, migrates the old default `/tmp/sshpic/${USER}` config to `/home/${USER}/.sshpic/images`, and then installs the current Cmd+V path. If the iTerm2 Python runtime is ready it installs the Python RPC path; otherwise it installs the no-Python fallback.
 
 ## `sshpic paste --output=payload` prints nothing
 
@@ -88,7 +88,7 @@ Run this from macOS/iTerm2:
 scripts/verify-iterm2-e2e.sh
 ```
 
-The evidence helper should produce `READY_FOR_MANUAL_CODEX_CHECK` after install succeeds. Complete the real target flow by opening iTerm2, running `ssh <host>`, running `codex`, copying a local PNG, pressing `Cmd+V` in the Codex input, and verifying that a `/home/<user>/.sshpic/images/...png` path is inserted with no popup.
+The evidence helper should produce `READY_FOR_MANUAL_CODEX_CHECK` after install succeeds. Complete the real target flow by opening iTerm2, running `ssh <host>`, running `codex`, copying a local PNG, pressing `Cmd+V` in the Codex input, and verifying that a `/home/<user>/.sshpic/images/clipboard.png` path is inserted with no popup.
 
 ## How do I prove real SSH upload behavior?
 

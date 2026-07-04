@@ -12,7 +12,8 @@
 - Remote write command starts with `umask 077`.
 - Remote file permissions are set to `0600`.
 - Remote paths are POSIX shell-quoted.
-- Filenames include timestamp + random suffix.
+- Normal clipboard paste overwrites `/home/<user>/.sshpic/images/clipboard.png` so screenshot storage stays bounded.
+- Explicit upload commands such as `sshpic file`, `shot`, and `full` still use timestamp + random suffix filenames.
 - Diagnostics avoid full environment dumps and private key paths.
 
 ## Cleanup

@@ -280,6 +280,74 @@ func parseBool(v string) (bool, error) {
 	}
 }
 
+// IsLegacyRemoteDir reports remote_dir values written by pre-home-directory defaults.
+func IsLegacyRemoteDir(remoteDir string) bool {
+	switch strings.TrimSpace(remoteDir) {
+	case "/tmp/sshpic/${USER}", "/tmp/sshpic/$USER":
+		return true
+	default:
+		return false
+	}
+}
+
+// MigrateLegacyDefaults updates known old default values while preserving explicit user overrides.
+func MigrateLegacyDefaults(path string, cfg Config) (Config, bool, error) {
+	if !IsLegacyRemoteDir(cfg.RemoteDir) {
+		return cfg, false, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			cfg.RemoteDir = Defaults().RemoteDir
+			return cfg, false, nil
+		}
+		return cfg, false, err
+	}
+	updated, changed, err := migrateLegacyRemoteDirData(string(data), Defaults().RemoteDir)
+	if err != nil {
+		return cfg, false, err
+	}
+	cfg.RemoteDir = Defaults().RemoteDir
+	if !changed {
+		return cfg, false, nil
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
+		return cfg, false, err
+	}
+	return cfg, true, nil
+}
+
+func migrateLegacyRemoteDirData(data, next string) (string, bool, error) {
+	scanner := bufio.NewScanner(strings.NewReader(data))
+	var b strings.Builder
+	changed := false
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		if !changed && strings.HasPrefix(trimmed, "remote_dir") {
+			parts := strings.SplitN(trimmed, "=", 2)
+			if len(parts) == 2 && strings.TrimSpace(parts[0]) == "remote_dir" {
+				unquoted, err := parseValue(strings.TrimSpace(stripComment(parts[1])))
+				if err != nil {
+					return "", false, fmt.Errorf("line %d: %w", lineNo, err)
+				}
+				if IsLegacyRemoteDir(unquoted) {
+					line = fmt.Sprintf("remote_dir = %q", next)
+					changed = true
+				}
+			}
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	if err := scanner.Err(); err != nil {
+		return "", false, err
+	}
+	return b.String(), changed, nil
+}
+
 // WriteDefault writes an example config without overwriting unless force is true.
 func WriteDefault(path string, force bool) error {
 	return Write(path, Defaults(), force)

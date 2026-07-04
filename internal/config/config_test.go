@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -74,5 +75,86 @@ func TestDefaultsUseCmdVSmartPaste(t *testing.T) {
 	}
 	if cfg.Paste.Mode != "smart" || !cfg.Paste.TextPassthrough {
 		t.Fatalf("default paste config should preserve smart text passthrough: %+v", cfg.Paste)
+	}
+}
+
+func TestMigrateLegacyRemoteDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := Defaults()
+	cfg.RemoteHost = "keep-host"
+	cfg.RemoteDir = "/tmp/sshpic/${USER}"
+	if err := Write(path, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := Load(Overrides{ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrated, changed, err := MigrateLegacyDefaults(path, loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected migration")
+	}
+	if migrated.RemoteHost != "keep-host" || migrated.RemoteDir != "/home/${USER}/.sshpic/images" {
+		t.Fatalf("migrated=%+v", migrated)
+	}
+	written, _, err := Load(Overrides{ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written.RemoteDir != "/home/${USER}/.sshpic/images" || written.RemoteHost != "keep-host" {
+		t.Fatalf("written=%+v", written)
+	}
+}
+
+func TestMigrateLegacyRemoteDirLeavesCustomDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := Defaults()
+	cfg.RemoteDir = "/srv/sshpic/${USER}"
+	if err := Write(path, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	migrated, changed, err := MigrateLegacyDefaults(path, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || migrated.RemoteDir != "/srv/sshpic/${USER}" {
+		t.Fatalf("custom remote_dir should remain: changed=%v cfg=%+v", changed, migrated)
+	}
+}
+
+func TestMigrateLegacyRemoteDirPreservesOtherFileLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	data := `remote_host = "file-host"
+remote_dir = "/tmp/sshpic/${USER}"
+# keep this comment
+[paste]
+text_passthrough = false
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := Load(Overrides{ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, changed, err := MigrateLegacyDefaults(path, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected migration")
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(written)
+	for _, want := range []string{`remote_host = "file-host"`, `remote_dir = "/home/${USER}/.sshpic/images"`, `# keep this comment`, `[paste]`, `text_passthrough = false`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("migrated config missing %q:\n%s", want, text)
+		}
 	}
 }

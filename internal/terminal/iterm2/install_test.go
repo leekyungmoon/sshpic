@@ -211,27 +211,45 @@ func TestInstallUsesNoPythonCoprocessFallbackWhenRuntimeMissingAndRemovesHelper(
 	}
 }
 
-func TestInstallDisablesLegacyDynamicProfile(t *testing.T) {
+func TestInstallDisablesAllLegacySSHpicDynamicProfiles(t *testing.T) {
 	home := t.TempDir()
-	legacy := legacyDynamicProfilePath(home)
-	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+	libraryProfile := legacyDynamicProfilePath(home)
+	configProfile := filepath.Join(home, ".config", "iterm2", "AppSupport", "DynamicProfiles", "codex141.json")
+	benignProfile := filepath.Join(home, "Library", "Application Support", "iTerm2", "DynamicProfiles", "keep.json")
+	for _, path := range []string{libraryProfile, configProfile, benignProfile} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(libraryProfile, []byte("legacy"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(legacy, []byte("legacy"), 0o600); err != nil {
+	if err := os.WriteFile(configProfile, []byte(`{"Profiles":[{"Guid":"sshpic-duplicate","Tags":["sshpic"]}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(benignProfile, []byte(`{"Profiles":[{"Guid":"other"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	result, err := Install(context.Background(), config.Defaults(), "", InstallOptions{HomeDir: home, BinaryPath: "/usr/local/bin/sshpic"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.LegacyDynamicProfilePath == "" {
-		t.Fatalf("expected legacy DynamicProfile to be disabled: %+v", result)
+	if len(result.LegacyDynamicProfilePaths) != 2 || result.LegacyDynamicProfilePath == "" {
+		t.Fatalf("expected two legacy sshpic DynamicProfiles to be disabled: %+v", result)
 	}
-	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Fatalf("legacy DynamicProfile should be moved away, stat err=%v", err)
+	for _, disabled := range result.LegacyDynamicProfilePaths {
+		if strings.HasSuffix(disabled, ".json") {
+			t.Fatalf("disabled DynamicProfile must not keep .json extension: %s", disabled)
+		}
 	}
-	if data, err := os.ReadFile(result.LegacyDynamicProfilePath); err != nil || string(data) != "legacy" {
-		t.Fatalf("disabled profile not preserved: data=%q err=%v", string(data), err)
+	for _, path := range []string{libraryProfile, configProfile} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("legacy DynamicProfile should be moved away: %s stat err=%v", path, err)
+		}
+	}
+	if _, err := os.Stat(benignProfile); err != nil {
+		t.Fatalf("benign DynamicProfile should remain: %v", err)
 	}
 }
 

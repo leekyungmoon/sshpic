@@ -82,7 +82,7 @@ func TestExecuteImagePayloadOnlyNoNewline(t *testing.T) {
 	if strings.Contains(res.Payload, "\n") {
 		t.Fatalf("payload has newline: %q", res.Payload)
 	}
-	if !strings.HasPrefix(res.Payload, "/tmp/sshpic/tester/sshpic-20260704-010203-") {
+	if res.Payload != "/tmp/sshpic/tester/clipboard.png" {
 		t.Fatalf("payload=%q", res.Payload)
 	}
 	if uploader.uploadedLocal != file.Name() || uploader.uploadedRemote != res.RemotePath {
@@ -114,8 +114,61 @@ func TestExecuteImageUsesDetectedRemoteUserForDefaultHomeDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(res.Payload, "/home/remotealice/.sshpic/images/sshpic-20260704-010203-") {
+	if res.Payload != "/home/remotealice/.sshpic/images/clipboard.png" {
 		t.Fatalf("payload=%q", res.Payload)
+	}
+}
+
+func TestExecuteClipboardImageOverwritesStableRemotePath(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "img-*.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.RemoteDir = "/tmp/sshpic/tester"
+	cfg.CopyToClipboard = false
+	src := &fakeSource{img: provider.LocalImage{Path: file.Name(), Format: "png"}}
+	firstUploader := &fakeUploader{}
+	secondUploader := &fakeUploader{}
+	first, err := Execute(context.Background(), cfg, src, firstUploader, Options{Now: time.Date(2026, 7, 4, 1, 2, 3, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Execute(context.Background(), cfg, src, secondUploader, Options{Now: time.Date(2026, 7, 4, 2, 3, 4, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.RemotePath != second.RemotePath || first.RemotePath != "/tmp/sshpic/tester/clipboard.png" {
+		t.Fatalf("remote paths should be stable overwrite slot: first=%q second=%q", first.RemotePath, second.RemotePath)
+	}
+}
+
+func TestUploadLocalKeepsTimestampRandomFilename(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "img-*.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.RemoteDir = "/tmp/sshpic/tester"
+	cfg.CopyToClipboard = false
+	res, err := UploadLocal(context.Background(), cfg, provider.LocalImage{Path: file.Name(), Format: "png"}, nil, &fakeUploader{}, time.Date(2026, 7, 4, 1, 2, 3, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(res.RemotePath, "/tmp/sshpic/tester/sshpic-20260704-010203-") {
+		t.Fatalf("explicit upload should keep timestamp/random path: %q", res.RemotePath)
 	}
 }
 

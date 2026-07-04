@@ -34,7 +34,7 @@ cd sshpic
 ./install.sh
 ```
 
-The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, and enables normal `Cmd+V` image paste in iTerm2. If the local iTerm2 Python runtime is unavailable, the installer uses a no-Python fallback instead of asking the user to configure iTerm2 manually.
+The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, cleans old sshpic iTerm2 integration state, and enables normal `Cmd+V` image paste in iTerm2. If the local iTerm2 Python runtime is unavailable, the installer uses a no-Python fallback instead of asking the user to configure iTerm2 manually.
 
 ## Quick Start
 
@@ -48,7 +48,7 @@ After installation, keep your normal remote coding flow:
 Codex receives a remote path like:
 
 ```text
-/home/alice/.sshpic/images/sshpic-20260704-150405-a1b2c3d4e5f6.png
+/home/alice/.sshpic/images/clipboard.png
 ```
 
 No config editing, snippet printing, iTerm2 settings clicking, or per-screenshot upload command is part of the normal flow.
@@ -90,7 +90,8 @@ Codex CLI, Claude Code, or another terminal agent must separately know how to us
 - Remote command starts with `umask 077`.
 - Remote files are set to mode `0600`.
 - Remote paths are shell-quoted.
-- Filenames include timestamp + random suffix.
+- Normal clipboard paste overwrites `/home/<user>/.sshpic/images/clipboard.png` so screenshot storage stays bounded.
+- Explicit upload commands such as `sshpic file`, `shot`, and `full` still use timestamp + random suffix filenames.
 - `sshpic clean` refuses dangerous paths such as `/`, `/tmp`, `$HOME`, `~`, and non-sshpic-specific directories.
 
 Read [docs/security.md](docs/security.md) and [SECURITY.md](SECURITY.md) before using `sshpic` with sensitive screenshots.

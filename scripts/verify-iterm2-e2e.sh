@@ -55,7 +55,10 @@ set -e
 KEYMAP="$(defaults read com.googlecode.iterm2 GlobalKeyMap 2>/dev/null || true)"
 HELPER_A="$HOME/.config/iterm2/AppSupport/Scripts/AutoLaunch/sshpic_smart_paste.py"
 HELPER_B="$HOME/Library/Application Support/iTerm2/Scripts/AutoLaunch/sshpic_smart_paste.py"
-PROFILE="$HOME/Library/Application Support/iTerm2/DynamicProfiles/sshpic.json"
+PROFILE_DIRS=(
+  "$HOME/Library/Application Support/iTerm2/DynamicProfiles"
+  "$HOME/.config/iterm2/AppSupport/DynamicProfiles"
+)
 
 if [[ $INSTALL_RC -ne 0 ]]; then
   cat > "$EVIDENCE" <<MSG
@@ -116,6 +119,23 @@ if [[ "$MODE" == "NO_PYTHON_COPROCESS" ]] && ! grep -F 'sshpic.log' <<<"$KEYMAP"
   exit 1
 fi
 
+PROFILE_RESIDUALS=()
+for dir in "${PROFILE_DIRS[@]}"; do
+  [[ -d "$dir" ]] || continue
+  while IFS= read -r -d '' profile; do
+    [[ "$profile" == *.disabled-* ]] && continue
+    base="$(basename "$profile")"
+    if [[ "$base" == "sshpic.json" ]] || grep -F 'sshpic' "$profile" >/dev/null 2>&1; then
+      PROFILE_RESIDUALS+=("$profile")
+    fi
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.json' -print0)
+done
+if (( ${#PROFILE_RESIDUALS[@]} > 0 )); then
+  echo "active sshpic iTerm2 DynamicProfile residuals remain after install:" >&2
+  printf '  - %s\n' "${PROFILE_RESIDUALS[@]}" >&2
+  exit 1
+fi
+
 cat > "$EVIDENCE" <<MSG
 # sshpic iTerm2 E2E Evidence: READY_FOR_MANUAL_CODEX_CHECK
 
@@ -137,6 +157,7 @@ cat > "$EVIDENCE" <<MSG
 - Verified iTerm2 GlobalKeyMap Cmd+V key \`0x76-0x100000\` is installed.
 - Verified the keymap does not pin a remote host.
 - Verified the keymap is not the legacy \`sshpic paste --output=payload\` command.
+- Verified active iTerm2 DynamicProfiles do not contain sshpic residual profiles.
 - Confirmed pngpaste and ssh are available.
 - Integration mode: \`$MODE\`.
 
@@ -147,9 +168,9 @@ cat > "$EVIDENCE" <<MSG
 3. On the remote host, run \`codex\`.
 4. Copy a local PNG image.
 5. Press \`Cmd+V\` inside the Codex input box.
-6. Expected: Codex input receives only a path like \`/home/<user>/.sshpic/images/sshpic-....png\`.
+6. Expected: Codex input receives only a path like \`/home/<user>/.sshpic/images/clipboard.png\`.
 7. On the remote host, verify the pasted path:
-   \`test -s /home/<user>/.sshpic/images/sshpic-....png && file /home/<user>/.sshpic/images/sshpic-....png\`
+   \`test -s /home/<user>/.sshpic/images/clipboard.png && file /home/<user>/.sshpic/images/clipboard.png\`
 8. Copy plain local text and press \`Cmd+V\` in the same Codex input.
 9. Expected: the original text is inserted exactly once.
 

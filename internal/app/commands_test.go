@@ -27,3 +27,18 @@ func TestITerm2UploaderFallsBackToConfiguredHost(t *testing.T) {
 		t.Fatalf("uploader=%+v remoteUser=%q", uploader, remoteUser)
 	}
 }
+
+func TestLoadConfigIgnoresITerm2SessionFlags(t *testing.T) {
+	t.Setenv("SSHPIC_CONFIG", t.TempDir()+"/missing.toml")
+	pa, err := parseArgs([]string{"iterm2-paste", "--output=payload", "--session-tty", "/dev/ttys001", "--session-command-line", "ssh example.com", "--session-job-pid", "12345", "--session-id", "abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := loadConfig(pa)
+	if err != nil {
+		t.Fatalf("session flags must not be treated as config keys: %v", err)
+	}
+	if cfg.RemoteDir != "/home/${USER}/.sshpic/images" {
+		t.Fatalf("remote_dir=%q", cfg.RemoteDir)
+	}
+}

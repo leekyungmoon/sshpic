@@ -124,6 +124,15 @@ func runInstall(pa parsedArgs, stdout, stderr io.Writer) int {
 		return 1
 	}
 	exe, _ = filepath.Abs(exe)
+	var migrated bool
+	if _, explicit := pa.Values["remote_dir"]; !explicit && os.Getenv("SSHPIC_REMOTE_DIR") == "" {
+		var migrateErr error
+		cfg, migrated, migrateErr = config.MigrateLegacyDefaults(path, cfg)
+		if migrateErr != nil {
+			fmt.Fprintln(stderr, migrateErr)
+			return 1
+		}
+	}
 	result, err := iterm2.Install(context.Background(), cfg, path, iterm2.InstallOptions{
 		BinaryPath:   exe,
 		RemoteHost:   pa.Values["remote_host"],
@@ -136,6 +145,9 @@ func runInstall(pa parsedArgs, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fprintNoExtraBlank(stdout, iterm2.InstallSummary(result))
+	if migrated {
+		fprintNoExtraBlank(stdout, "config migrated: legacy /tmp remote_dir -> "+cfg.RemoteDir)
+	}
 	return 0
 }
 
@@ -339,7 +351,7 @@ func runClean(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int 
 func loadConfig(pa parsedArgs) (config.Config, string, error) {
 	values := map[string]string{}
 	for k, v := range pa.Values {
-		if k == "config" || k == "output" {
+		if nonConfigValueFlag(k) {
 			continue
 		}
 		values[k] = v
@@ -354,6 +366,15 @@ func loadConfig(pa parsedArgs) (config.Config, string, error) {
 		values["verify_sha256"] = "false"
 	}
 	return config.Load(config.Overrides{ConfigPath: pa.Values["config"], Values: values})
+}
+
+func nonConfigValueFlag(key string) bool {
+	switch key {
+	case "config", "output", "session_id", "session_tty", "session_command_line", "session_job_pid":
+		return true
+	default:
+		return false
+	}
 }
 
 func sourceFromConfig(cfg config.Config) provider.MacOSProvider {

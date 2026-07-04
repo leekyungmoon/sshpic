@@ -65,3 +65,16 @@ func TestExpandRemoteDir(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestValidateFilenameRejectsPathTraversal(t *testing.T) {
+	bad := []string{"../clipboard.png", "nested/clipboard.png", "..clipboard.png", "clip board.png"}
+	for _, name := range bad {
+		if got, err := ValidateFilename(name); err == nil {
+			t.Fatalf("ValidateFilename(%q)=%q, want error", name, got)
+		}
+	}
+	got, err := ValidateFilename("clipboard.png")
+	if err != nil || got != "clipboard.png" {
+		t.Fatalf("ValidateFilename clipboard.png got=%q err=%v", got, err)
+	}
+}

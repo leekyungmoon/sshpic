@@ -44,24 +44,25 @@ type InstallOptions struct {
 }
 
 type InstallResult struct {
-	ConfigPath               string
-	ConfigWritten            bool
-	ScriptPath               string
-	DynamicProfilePath       string
-	LegacyDynamicProfilePath string
-	Hosts                    []string
-	GlobalKey                string
-	GlobalCommand            string
-	GlobalFunction           string
-	OpenedProfile            string
-	PythonAPIEnabled         bool
-	PythonRuntimeReady       bool
-	PythonRuntimePath        string
-	CoprocessFallback        bool
-	CoprocessCommand         string
-	CmdVRestored             bool
-	ScriptLaunched           bool
-	Warnings                 []string
+	ConfigPath                string
+	ConfigWritten             bool
+	ScriptPath                string
+	DynamicProfilePath        string
+	LegacyDynamicProfilePath  string
+	LegacyDynamicProfilePaths []string
+	Hosts                     []string
+	GlobalKey                 string
+	GlobalCommand             string
+	GlobalFunction            string
+	OpenedProfile             string
+	PythonAPIEnabled          bool
+	PythonRuntimeReady        bool
+	PythonRuntimePath         string
+	CoprocessFallback         bool
+	CoprocessCommand          string
+	CmdVRestored              bool
+	ScriptLaunched            bool
+	Warnings                  []string
 }
 
 type PythonRuntimeStatus struct {
@@ -124,10 +125,11 @@ func Install(ctx context.Context, cfg config.Config, cfgPath string, opts Instal
 
 	profilePath := legacyDynamicProfilePath(home)
 	result.DynamicProfilePath = profilePath
-	if disabled, err := DisableLegacyDynamicProfile(home); err != nil {
-		result.Warnings = append(result.Warnings, "could not disable legacy iTerm2 DynamicProfile: "+err.Error())
-	} else if disabled != "" {
-		result.LegacyDynamicProfilePath = disabled
+	if disabled, err := DisableLegacyDynamicProfiles(home); err != nil {
+		result.Warnings = append(result.Warnings, "could not disable legacy iTerm2 DynamicProfiles: "+err.Error())
+	} else if len(disabled) > 0 {
+		result.LegacyDynamicProfilePaths = disabled
+		result.LegacyDynamicProfilePath = disabled[0]
 	}
 
 	if opts.GlobalKeyMap {
@@ -599,19 +601,91 @@ func legacyDynamicProfilePath(home string) string {
 	return filepath.Join(home, "Library", "Application Support", "iTerm2", "DynamicProfiles", dynamicProfileFile)
 }
 
+func legacyDynamicProfileDirs(home string) []string {
+	return uniquePaths([]string{
+		filepath.Join(home, "Library", "Application Support", "iTerm2", "DynamicProfiles"),
+		filepath.Join(home, ".config", "iterm2", "AppSupport", "DynamicProfiles"),
+	})
+}
+
 func DisableLegacyDynamicProfile(home string) (string, error) {
-	path := legacyDynamicProfilePath(home)
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
+	disabled, err := DisableLegacyDynamicProfiles(home)
+	if err != nil || len(disabled) == 0 {
 		return "", err
 	}
-	disabled := strings.TrimSuffix(path, filepath.Ext(path)) + ".disabled-" + time.Now().UTC().Format("20060102T150405Z") + filepath.Ext(path)
-	if err := os.Rename(path, disabled); err != nil {
-		return "", err
+	return disabled[0], nil
+}
+
+func DisableLegacyDynamicProfiles(home string) ([]string, error) {
+	var disabled []string
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	for _, dir := range legacyDynamicProfileDirs(home) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return disabled, err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			if ok, err := isSSHpicDynamicProfile(path); err != nil {
+				return disabled, err
+			} else if !ok {
+				continue
+			}
+			disabledPath := uniqueDisabledPath(path, stamp)
+			if err := os.Rename(path, disabledPath); err != nil {
+				return disabled, err
+			}
+			disabled = append(disabled, disabledPath)
+		}
 	}
 	return disabled, nil
+}
+
+func isSSHpicDynamicProfile(path string) (bool, error) {
+	if filepath.Base(path) == dynamicProfileFile {
+		return true, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	text := string(data)
+	return strings.Contains(text, "sshpic") || strings.Contains(text, "sshpic-"), nil
+}
+
+func uniqueDisabledPath(path, stamp string) string {
+	base := path + ".disabled-" + stamp
+	candidate := base
+	for i := 2; ; i++ {
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s-%d", base, i)
+	}
+}
+
+func uniquePaths(paths []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, path := range paths {
+		cleaned := filepath.Clean(path)
+		key := cleaned
+		if real, err := filepath.EvalSymlinks(cleaned); err == nil {
+			key = real
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, cleaned)
+	}
+	return out
 }
 
 func DynamicProfileJSON(hosts []string, binary string, cfg config.Config) ([]byte, error) {
@@ -687,8 +761,8 @@ func InstallSummary(result InstallResult) string {
 	if result.ScriptLaunched {
 		b.WriteString("iTerm2 paste helper: launched\n")
 	}
-	if result.LegacyDynamicProfilePath != "" {
-		b.WriteString("legacy DynamicProfile disabled: " + result.LegacyDynamicProfilePath + "\n")
+	if len(result.LegacyDynamicProfilePaths) > 0 {
+		b.WriteString(fmt.Sprintf("legacy DynamicProfiles disabled: %d\n", len(result.LegacyDynamicProfilePaths)))
 	}
 	b.WriteString("copy image → focus iTerm2 SSH/Codex terminal → Cmd+V inserts the remote path\n")
 	for _, warning := range result.Warnings {

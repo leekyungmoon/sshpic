@@ -114,14 +114,25 @@ func ExpandRemoteDir(remoteDir, user, home string) string {
 	return remoteDir
 }
 
+// ValidateFilename returns a clean safe filename for remote upload paths.
+func ValidateFilename(filename string) (string, error) {
+	filename = strings.TrimSpace(filename)
+	if filename == "" || filename != path.Base(filename) || !safeFilename.MatchString(filename) || strings.Contains(filename, "..") {
+		return "", fmt.Errorf("unsafe filename %q", filename)
+	}
+	return filename, nil
+}
+
 // BuildRemotePath joins remoteDir and filename and proves the result stays under remoteDir.
 func BuildRemotePath(remoteDir, filename string) (string, error) {
 	remoteDir = strings.TrimSpace(remoteDir)
 	if remoteDir == "" {
 		return "", errors.New("remote_dir is required")
 	}
-	if filename == "" || filename != path.Base(filename) || !safeFilename.MatchString(filename) || strings.Contains(filename, "..") {
-		return "", fmt.Errorf("unsafe filename %q", filename)
+	var err error
+	filename, err = ValidateFilename(filename)
+	if err != nil {
+		return "", err
 	}
 	cleanDir := path.Clean(remoteDir)
 	if cleanDir == "." || !strings.HasPrefix(cleanDir, "/") {

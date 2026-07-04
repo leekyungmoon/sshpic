@@ -30,8 +30,9 @@ type Result struct {
 }
 
 type Options struct {
-	Now        time.Time
-	RemoteUser string
+	Now            time.Time
+	RemoteUser     string
+	StableFilename string
 }
 
 // Execute reads image-or-text clipboard state and returns exactly the payload an integration should insert.
@@ -41,6 +42,9 @@ func Execute(ctx context.Context, cfg config.Config, src provider.LocalImageSour
 	}
 	img, err := src.ReadClipboardImage(ctx)
 	if err == nil {
+		if opts.StableFilename == "" {
+			opts.StableFilename = clipboardFilename(img)
+		}
 		return uploadImage(ctx, cfg, img, src, uploader, opts)
 	}
 	if !errors.Is(err, provider.ErrNoImage) {
@@ -87,7 +91,13 @@ func uploadImage(ctx context.Context, cfg config.Config, img provider.LocalImage
 	user := firstNonEmpty(strings.TrimSpace(opts.RemoteUser), os.Getenv("USER"), "user")
 	home := os.Getenv("HOME")
 	remoteDir := pathfmt.ExpandRemoteDir(cfg.RemoteDir, user, home)
-	filename, err := pathfmt.GenerateFilenameRandom(cfg.FilenameTemplate, firstNonEmpty(img.Format, pathfmt.ExtensionFromPath(img.Path)), opts.Now)
+	filename := strings.TrimSpace(opts.StableFilename)
+	var err error
+	if filename == "" {
+		filename, err = pathfmt.GenerateFilenameRandom(cfg.FilenameTemplate, firstNonEmpty(img.Format, pathfmt.ExtensionFromPath(img.Path)), opts.Now)
+	} else {
+		filename, err = pathfmt.ValidateFilename(filename)
+	}
 	if err != nil {
 		return Result{}, err
 	}
@@ -116,6 +126,13 @@ func uploadImage(ctx context.Context, cfg config.Config, img provider.LocalImage
 		}
 	}
 	return Result{Kind: "image", Payload: payload, LocalPath: img.Path, RemotePath: remotePath, Verify: verify, Warnings: warnings}, nil
+}
+
+func clipboardFilename(img provider.LocalImage) string {
+	ext := pathfmt.SafeExtension(firstNonEmpty(img.Format, pathfmt.ExtensionFromPath(img.Path), "png"))
+	// macOS pngpaste materializes clipboard images as PNG. A stable name keeps
+	// repeated paste gestures bounded instead of accumulating screenshot history.
+	return "clipboard." + ext
 }
 
 func firstNonEmpty(values ...string) string {
