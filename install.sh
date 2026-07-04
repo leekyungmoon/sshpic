@@ -1,12 +1,51 @@
 #!/usr/bin/env sh
 set -eu
 
-if ! command -v go >/dev/null 2>&1; then
+repo="github.com/leekyungmoon/sshpic"
+
+need_go() {
+  if command -v go >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+    brew install go
+    return 0
+  fi
   echo "go is required to install sshpic from source" >&2
   exit 1
+}
+
+install_pngpaste_if_possible() {
+  [ "$(uname -s)" = "Darwin" ] || return 0
+  if command -v pngpaste >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v brew >/dev/null 2>&1; then
+    brew install pngpaste
+  else
+    echo "warning: pngpaste is needed for image clipboard reads; install Homebrew or pngpaste" >&2
+  fi
+}
+
+need_go
+install_pngpaste_if_possible
+
+if [ -f ./cmd/sshpic/main.go ] && [ -f ./go.mod ]; then
+  go install ./cmd/sshpic
+else
+  go install "$repo/cmd/sshpic@latest"
 fi
 
-go install ./cmd/sshpic
+bin="$(go env GOPATH)/bin/sshpic"
+if [ ! -x "$bin" ] && command -v sshpic >/dev/null 2>&1; then
+  bin="$(command -v sshpic)"
+fi
 
-echo "installed sshpic into $(go env GOPATH)/bin"
-echo "next: sshpic init && sshpic snippet iterm2"
+if [ "$(uname -s)" = "Darwin" ]; then
+  "$bin" install iterm2 || {
+    echo "warning: sshpic installed, but automatic iTerm2 setup did not complete" >&2
+    exit 0
+  }
+else
+  echo "installed sshpic: $bin"
+fi

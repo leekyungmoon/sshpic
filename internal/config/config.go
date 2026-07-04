@@ -282,6 +282,11 @@ func parseBool(v string) (bool, error) {
 
 // WriteDefault writes an example config without overwriting unless force is true.
 func WriteDefault(path string, force bool) error {
+	return Write(path, Defaults(), force)
+}
+
+// Write writes cfg as sshpic TOML without overwriting unless force is true.
+func Write(path string, cfg Config, force bool) error {
 	if !force {
 		if _, err := os.Stat(path); err == nil {
 			return fmt.Errorf("config already exists: %s", path)
@@ -292,31 +297,65 @@ func WriteDefault(path string, force bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(Example()), 0o600)
+	return os.WriteFile(path, []byte(Format(cfg)), 0o600)
+}
+
+// WriteIfMissing writes cfg only when path does not exist. It returns true when a file was written.
+func WriteIfMissing(path string, cfg Config) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	if err := Write(path, cfg, false); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Example returns the documented default config file.
 func Example() string {
-	return `remote_host = ""
-remote_dir = "/tmp/sshpic/${USER}"
-copy_to_clipboard = true
-filename_template = "sshpic-{timestamp}-{rand}.{ext}"
+	return Format(Defaults())
+}
+
+// Format returns the documented config file format.
+func Format(cfg Config) string {
+	return fmt.Sprintf(`remote_host = %q
+remote_dir = %q
+copy_to_clipboard = %t
+filename_template = %q
 
 [paste]
-mode = "smart"
-terminal = "iterm2"
-shortcut = "cmd+v"
-insert_newline = false
-text_passthrough = true
+mode = %q
+terminal = %q
+shortcut = %q
+insert_newline = %t
+text_passthrough = %t
 
 [macos]
-clipboard_tool = "pngpaste"
-screenshot_tool = "screencapture"
-text_clipboard_tool = "pbpaste"
-copy_tool = "pbcopy"
+clipboard_tool = %q
+screenshot_tool = %q
+text_clipboard_tool = %q
+copy_tool = %q
 
 [upload]
-method = "ssh-cat"
-verify_sha256 = true
-`
+method = %q
+verify_sha256 = %t
+`,
+		cfg.RemoteHost,
+		cfg.RemoteDir,
+		cfg.CopyToClipboard,
+		cfg.FilenameTemplate,
+		cfg.Paste.Mode,
+		cfg.Paste.Terminal,
+		cfg.Paste.Shortcut,
+		cfg.Paste.InsertNewline,
+		cfg.Paste.TextPassthrough,
+		cfg.MacOS.ClipboardTool,
+		cfg.MacOS.ScreenshotTool,
+		cfg.MacOS.TextClipboardTool,
+		cfg.MacOS.CopyTool,
+		cfg.Upload.Method,
+		cfg.Upload.VerifySHA256,
+	)
 }

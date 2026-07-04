@@ -14,6 +14,7 @@ permissions:
 
 jobs:
   scorecard:
+    if: ${{ github.event.repository.private == false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -23,7 +24,8 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
-          publish_results: true
+          publish_results: ${{ github.event.repository.private == false }}
       - uses: github/codeql-action/upload-sarif@e8e8e51caba890f74f97e228d00b0b81b666ee4c # v3
+        if: ${{ github.event.repository.private == false }}
         with:
           sarif_file: results.sarif

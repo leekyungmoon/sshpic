@@ -2,12 +2,12 @@
 
 | Platform / terminal | v0.1 status | Claim |
 |---|---:|---|
-| macOS + iTerm2 | v0.1 direct-paste target | Direct path insertion via configured shortcut after local iTerm2 E2E verification |
+| macOS + iTerm2 | v0.1 direct-paste target | Direct path insertion through installed Cmd+V smart paste |
 | macOS Terminal.app | Experimental / roadmap | No support claim |
 | Warp | Experimental / roadmap | No support claim |
 | Ghostty | Experimental / roadmap | No support claim |
-| WezTerm / Kitty | Experimental / roadmap | Snippets only after verification |
+| WezTerm / Kitty | Experimental / roadmap | No support claim |
 | Linux | Roadmap | Provider architecture only |
 | Windows / WSL | Roadmap | Provider architecture only |
 
-Cross-platform code should compile where possible, but v0.1 direct-paste behavior is scoped to macOS + iTerm2. Do not tag a release as iTerm2-supported until the E2E checklist in `PLAN.md` has been run on macOS+iTerm2. Use `scripts/verify-iterm2-e2e.sh` to prepare the binary, install the Cmd+V keymap, and write the evidence file for that run.
+Cross-platform code should compile where possible, but v0.1 direct-paste behavior is scoped to macOS + iTerm2. Do not claim Codex CLI, Claude Code, or any other terminal agent receives a native image attachment; `sshpic` inserts a remote file path.

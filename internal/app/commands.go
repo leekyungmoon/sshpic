@@ -111,7 +111,7 @@ func runInstall(pa parsedArgs, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: sshpic install iterm2")
 		return 2
 	}
-	cfg, _, err := loadConfig(pa)
+	cfg, path, err := loadConfig(pa)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -122,18 +122,17 @@ func runInstall(pa parsedArgs, stdout, stderr io.Writer) int {
 		return 1
 	}
 	exe, _ = filepath.Abs(exe)
-	command := exe + " paste --output=payload"
-	key, err := iterm2.InstallCmdV(context.Background(), command)
+	result, err := iterm2.Install(context.Background(), cfg, path, iterm2.InstallOptions{
+		BinaryPath:   exe,
+		RemoteHost:   pa.Values["remote_host"],
+		Force:        pa.Bools["force"],
+		GlobalKeyMap: true,
+	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	fmt.Fprintln(stdout, "installed iTerm2 Cmd+V smart paste")
-	fmt.Fprintf(stdout, "key: %s\n", key)
-	fmt.Fprintf(stdout, "command: %s\n", command)
-	fmt.Fprintln(stdout, "If already-open iTerm2 tabs do not pick it up, quit and reopen iTerm2 once.")
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, iterm2.InstallGuide(cfg))
+	fprintNoExtraBlank(stdout, iterm2.InstallSummary(result))
 	return 0
 }
 
@@ -322,7 +321,7 @@ func sourceFromConfig(cfg config.Config) provider.MacOSProvider {
 
 func parseArgs(args []string) (parsedArgs, error) {
 	pa := parsedArgs{Values: map[string]string{}, Bools: map[string]bool{}}
-	boolFlags := map[string]bool{"help": true, "debug": true, "json": true, "dry-run": true, "yes": true, "force": true, "no-copy": true, "insert-newline": true, "no-verify": true}
+	boolFlags := map[string]bool{"help": true, "debug": true, "json": true, "dry-run": true, "yes": true, "force": true, "no-copy": true, "insert-newline": true, "no-verify": true, "no-open": true}
 	valueFlags := map[string]bool{"config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -373,7 +372,7 @@ Usage:
   sshpic clean [--dry-run|--yes]
   sshpic version
   sshpic snippet iterm2
-  sshpic install iterm2
+  sshpic install iterm2 [--remote-host <host>] [--no-open]
 
 Global flags:
   --config <path>              config path (default ~/.config/sshpic/config.toml)
@@ -383,7 +382,12 @@ Global flags:
   --insert-newline             opt-in newline after payload
   --no-copy                    do not copy remote path back to local clipboard
   --no-verify                  skip remote SHA256 verification
+  --no-open                    do not auto-open a generated iTerm2 profile during install
 `)
+}
+
+func fprintNoExtraBlank(w io.Writer, text string) {
+	_, _ = io.WriteString(w, strings.TrimRight(text, "\n")+"\n")
 }
 
 func firstNonEmpty(values ...string) string {

@@ -1,6 +1,6 @@
 # sshpic
 
-Paste local screenshots into remote SSH coding-agent terminals by inserting a secure remote image path.
+Paste local screenshots into remote SSH coding-agent terminals with normal `Cmd+V`.
 
 ![8-second sshpic demo: copy image, press Cmd+V in iTerm2, remote path appears](docs/assets/sshpic-demo.gif)
 
@@ -8,107 +8,76 @@ Paste local screenshots into remote SSH coding-agent terminals by inserting a se
 
 | Before sshpic | After sshpic |
 |---|---|
-| Copy a screenshot locally, then stop and figure out how to move it across SSH. | Copy a screenshot locally, focus the remote terminal, press `Cmd+V` in the configured iTerm2 profile. |
-| Type ad-hoc upload/debug commands after every screenshot. | The iTerm2 shortcut runs `sshpic paste --output=payload` for you. |
-| Paste command text, debug output, or nothing useful into the remote prompt. | The active terminal input receives only the remote image path. |
-| Use cloud uploads or manual file transfer workarounds. | Upload directly to your configured SSH host. |
+| Copy a screenshot, then stop coding to move the file across SSH. | Copy a screenshot and press `Cmd+V` in the SSH session you are already using. |
+| Type upload/debug commands after every screenshot. | The local paste hook uploads over SSH and inserts only the remote path. |
+| Use cloud image links or ad-hoc `scp` workarounds. | Keep screenshots local-to-SSH: no cloud upload, no daemon by default. |
 
-## Install
+## Installation
 
-From source:
+### One-liner
 
-```sh
-git clone https://github.com/leekyungmoon/sshpic.git
-cd sshpic
-go install ./cmd/sshpic
-sshpic init
+```bash
+curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh | bash
 ```
 
-Or use the helper script after reviewing it:
+### From a clone
 
-```sh
+```bash
+git clone https://github.com/leekyungmoon/sshpic.git
+cd sshpic
 ./install.sh
 ```
 
-macOS prerequisite for image clipboard reads:
-
-```sh
-brew install pngpaste
-```
+The installer installs the CLI, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, discovers concrete `Host` aliases from `~/.ssh/config`, and installs the iTerm2 `Cmd+V` smart-paste hook.
 
 ## Quick Start
 
-1. Create config:
+After installation, keep using your normal iTerm2 SSH workflow:
 
-   ```sh
-   sshpic init
-   $EDITOR ~/.config/sshpic/config.toml
-   ```
-
-2. Set your SSH host:
-
-   ```toml
-   remote_host = "my-ssh-host"
-   remote_dir = "/tmp/sshpic/${USER}"
-   ```
-
-3. Confirm local readiness:
-
-   ```sh
-   sshpic doctor
-   ```
-
-4. Install the local iTerm2 Cmd+V smart-paste hook:
-
-   ```sh
-   sshpic install iterm2
-   ```
-
-5. Copy an image, focus your SSH terminal, and press `Cmd+V`.
-
-## iTerm2 shortcut setup
-
-`sshpic` v0.1 is designed around iTerm2 **Run Coprocess**, but the normal setup is automated:
-
-```sh
-sshpic install iterm2
+```text
+ssh my-host
+copy image locally
+Cmd+V
 ```
 
-This writes the iTerm2 GlobalKeyMap for **Cmd+V** automatically. No manual iTerm2 Settings step is part of the normal v0.1 flow.
+The active SSH terminal receives a remote path like:
 
-The installed command is:
+```text
+/tmp/sshpic/alice/sshpic-20260704-150405-a1b2c3d4e5f6.png
+```
+
+No config editing, snippet printing, iTerm2 settings clicking, or per-screenshot upload command is part of the normal flow.
+
+## iTerm2 integration
+
+`sshpic install iterm2` installs iTerm2 **Run Coprocess** for `Cmd+V` automatically. The installed coprocess command is based on:
 
 ```sh
 sshpic paste --output=payload
 ```
 
-The normal UX is:
+If the installer discovers a concrete SSH host, it writes that host into the local sshpic config so the same `Cmd+V` works inside the SSH session. Existing SSH config is not modified. No remote software is installed.
+
+The installer may also write an iTerm2 Dynamic Profile file for discovered hosts:
 
 ```text
-copy/capture image → focus SSH/Codex/Claude terminal → press Cmd+V → remote path appears
+~/Library/Application Support/iTerm2/DynamicProfiles/sshpic.json
 ```
 
-If a session already has an active coprocess, see [docs/troubleshooting.md](docs/troubleshooting.md) for the Python API fallback outline.
+That file is a convenience artifact; the primary UX remains normal `Cmd+V` in the SSH session.
 
 ## 정확한 동작 설명
 
 `sshpic` does **path insertion**, not native AI image attachment.
 
-What happens when iTerm2 runs `sshpic paste --output=payload`:
+When iTerm2 invokes `sshpic paste --output=payload`:
 
-1. `sshpic` checks the local clipboard.
-2. If the clipboard contains an image, `sshpic` writes a local temp image.
-3. It uploads the image over SSH to `remote_dir`.
-4. The remote file is created with `umask 077` and `chmod 600`.
-5. stdout emits exactly one insertable payload: the remote image path.
-6. If the clipboard contains safe text instead of an image, stdout emits that text exactly once.
-7. No debug text, shell command, terminal control sequence, or accidental newline is emitted in payload mode.
-
-Example inserted payload:
-
-```text
-/tmp/sshpic/alice/sshpic-20260704-150405-a1b2c3d4e5f6.png
-```
+1. If the local clipboard contains an image, `sshpic` saves it locally as a temp image.
+2. It uploads the image to the selected SSH host with SSH stdin.
+3. The remote command creates the directory with `umask 077` and writes the file as mode `0600`.
+4. stdout emits exactly one insertable payload: the remote image path.
+5. If the clipboard contains text instead of an image, stdout emits that text exactly once.
+6. Payload mode emits no debug text, shell command, terminal control sequence, or accidental newline.
 
 Codex CLI, Claude Code, or another terminal agent must separately know how to use that path. `sshpic` only guarantees that the image exists on the remote host and that the path is inserted into the active terminal input.
 
@@ -116,24 +85,12 @@ Codex CLI, Claude Code, or another terminal agent must separately know how to us
 
 | Platform / terminal | v0.1 status |
 |---|---|
-| macOS + iTerm2 | Implemented direct-paste target; collect local E2E evidence before tagged support claims |
+| macOS + iTerm2 | Supported direct-paste target |
 | macOS Terminal.app | Not yet supported |
 | Warp / Ghostty | Not yet supported |
 | WezTerm / Kitty | Not yet supported |
 | Linux | Roadmap provider architecture only |
 | Windows / WSL | Roadmap provider architecture only |
-
-External verification helpers:
-
-```sh
-# Run on macOS+iTerm2 to prepare evidence/checklist.
-scripts/verify-iterm2-e2e.sh
-
-# Run only with a real SSH host and disposable sshpic-specific dir.
-SSHPIC_INTEGRATION_HOST=my-ssh-host \
-SSHPIC_INTEGRATION_REMOTE_DIR="/tmp/sshpic/$USER" \
-  scripts/verify-ssh-integration.sh
-```
 
 ## Security note
 
@@ -159,21 +116,20 @@ Read [docs/security.md](docs/security.md) and [SECURITY.md](SECURITY.md) before 
 | Manual `scp` / upload command | Works, but interrupts every screenshot flow. |
 | Cloud image uploader | Convenient, but sends screenshots to third-party storage. |
 | Clipboard daemon | Automatic, but adds background process and trust surface. |
-| `sshpic` | Normal `Cmd+V` flow in iTerm2, SSH-only transfer, no daemon by default, path inserted into the remote prompt. |
+| `sshpic` | Normal `Cmd+V` flow in iTerm2 SSH sessions, SSH-only transfer, no daemon by default. |
 
 ## Roadmap
 
-- Collect and publish macOS+iTerm2 E2E evidence for tagged releases.
+- Package Homebrew formula after release validation.
 - Harden optional iTerm2 Python API fallback for active-coprocess sessions.
 - Add verified Terminal.app, Warp, Ghostty, WezTerm, and Kitty integrations after real tests.
-- Roadmap: add Linux clipboard/screenshot providers.
-- Roadmap: add Windows/WSL provider.
-- Package Homebrew formula after release validation.
+- Add Linux clipboard/screenshot providers after real platform tests.
+- Add Windows/WSL provider after real platform tests.
 
-## Star CTA
+## Troubleshooting
 
-If `sshpic` saves you from typing upload commands after every screenshot, please star the repo and share the workflow with other remote AI coding-agent users.
+See [docs/troubleshooting.md](docs/troubleshooting.md).
 
-```text
-⭐ Star sshpic to support Mac-first screenshot workflows for remote SSH agents.
-```
+## License
+
+[MIT](LICENSE)

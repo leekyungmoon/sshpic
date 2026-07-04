@@ -49,26 +49,30 @@ fi
 EVIDENCE_DIR="${SSHPIC_E2E_EVIDENCE_DIR:-$ROOT/.sshpic-e2e}"
 mkdir -p "$EVIDENCE_DIR"
 EVIDENCE="$EVIDENCE_DIR/iterm2-e2e-$(date -u +%Y%m%dT%H%M%SZ).md"
-SNIPPET="$EVIDENCE_DIR/iterm2-snippet.txt"
+INSTALL_LOG="$EVIDENCE_DIR/iterm2-install.txt"
 if [[ -n "${SSHPIC_REMOTE_DIR:-}" ]]; then
   REMOTE_DIR_DISPLAY="$SSHPIC_REMOTE_DIR"
 else
   REMOTE_DIR_DISPLAY='/tmp/sshpic/${USER}'
 fi
 
-"$BIN" snippet iterm2 > "$SNIPPET"
-if ! grep -F 'sshpic paste --output=payload' "$SNIPPET" >/dev/null; then
-  echo "snippet did not contain payload command" >&2
+install_args=(install iterm2 --remote-host "$SSHPIC_REMOTE_HOST")
+if [[ -n "${SSHPIC_REMOTE_DIR:-}" ]]; then
+  install_args+=(--remote-dir "$SSHPIC_REMOTE_DIR")
+fi
+"$BIN" "${install_args[@]}" > "$INSTALL_LOG"
+if ! grep -F 'sshpic iTerm2 integration installed' "$INSTALL_LOG" >/dev/null; then
+  echo "installer did not report successful iTerm2 integration" >&2
+  cat "$INSTALL_LOG" >&2
   exit 1
 fi
 
-"$BIN" install iterm2 >/dev/null
 KEYMAP="$(defaults read com.googlecode.iterm2 GlobalKeyMap 2>/dev/null || true)"
 if ! grep -F '0x76-0x100000' <<<"$KEYMAP" >/dev/null; then
   echo "iTerm2 GlobalKeyMap does not contain Cmd+V key 0x76-0x100000 after install" >&2
   exit 1
 fi
-if ! grep -F "$BIN paste --output=payload" <<<"$KEYMAP" >/dev/null; then
+if ! grep -F 'paste --output=payload' <<<"$KEYMAP" >/dev/null; then
   echo "iTerm2 GlobalKeyMap does not contain expected sshpic payload command after install" >&2
   exit 1
 fi
@@ -82,17 +86,16 @@ cat > "$EVIDENCE" <<MSG
 - sshpic binary: $BIN
 - Remote host: ${SSHPIC_REMOTE_HOST}
 - Remote dir: $REMOTE_DIR_DISPLAY
-- Snippet file: $SNIPPET
+- Install log: $INSTALL_LOG
 
 ## Verified preflight
 
 - Built sshpic locally.
-- Generated iTerm2 snippet containing \`sshpic paste --output=payload\`.
-- Ran \`$BIN install iterm2\`.
-- Verified iTerm2 GlobalKeyMap Cmd+V key \`0x76-0x100000\` points at \`$BIN paste --output=payload\`.
+- Ran \`$BIN install iterm2\` with \`SSHPIC_REMOTE_HOST\`.
+- Verified iTerm2 GlobalKeyMap Cmd+V key \`0x76-0x100000\` contains \`paste --output=payload\`.
 - Confirmed pngpaste and ssh are available.
 
-## Manual shortcut checks to complete
+## Installed Cmd+V checks to complete
 
 1. If this iTerm2 window was already open and ignores Cmd+V, quit and reopen iTerm2 once.
 2. SSH to \`${SSHPIC_REMOTE_HOST}\` in iTerm2.

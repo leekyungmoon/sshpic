@@ -1,5 +1,15 @@
 # Troubleshooting
 
+## `Cmd+V` does not change after install
+
+Quit and reopen iTerm2 once. iTerm2 may not reload a changed global key map in already-open sessions immediately.
+
+## Image paste says `remote_host is required`
+
+The installer discovers concrete `Host` aliases from `~/.ssh/config`. If no concrete host existed at install time, rerun the installer after adding your normal SSH alias or set `SSHPIC_REMOTE_HOST` for that machine.
+
+This is a setup-time detection limit, not a per-screenshot step.
+
 ## `sshpic paste --output=payload` prints nothing
 
 The command writes payload to stdout only on success. Errors go to stderr and exit non-zero. Check:
@@ -11,9 +21,7 @@ sshpic clip --debug
 
 ## iTerm2 Coprocess limitation
 
-iTerm2 sessions can have only one active coprocess. `sshpic install iterm2`
-maps Cmd+V to a Run Coprocess action that runs `sshpic paste --output=payload`;
-if a session already uses a coprocess, the mapping can conflict.
+iTerm2 sessions can have only one active coprocess. If a session already uses a coprocess, the installed `Cmd+V` Run Coprocess hook can conflict.
 
 Fallback design:
 
@@ -24,34 +32,16 @@ Fallback design:
 
 This fallback preserves the same safety contract: the inserted text is data only, not a shell command.
 
+## Text paste behaves unexpectedly
 
-## Cmd+V does nothing in iTerm2
-
-Codex is not required. `Cmd+V` should work in a normal local iTerm2 shell too. If `sshpic paste --output=payload` prints a path but `Cmd+V` inserts nothing, iTerm2 has not loaded the GlobalKeyMap yet. Run:
-
-```sh
-sshpic install iterm2
-killall cfprefsd 2>/dev/null || true
-```
-
-Then quit and reopen iTerm2 once if the already-open window still ignores Cmd+V.
-
-## Cmd+V no longer pastes text normally
-
-`sshpic` v0.1 expects Cmd+V to be a smart paste key in iTerm2. If text paste breaks, first run:
+`sshpic paste --output=payload` preserves text clipboard content exactly once unless the text contains terminal control characters. To verify the payload primitive itself:
 
 ```sh
 printf hello | pbcopy
 sshpic paste --output=payload
 ```
 
-The output must be exactly `hello`. If that works, the issue is the iTerm2 key mapping/coprocess path, not the payload primitive.
-
-To reinstall the mapping:
-
-```sh
-sshpic install iterm2
-```
+The output must be exactly `hello`.
 
 ## No newline appears
 
@@ -60,8 +50,6 @@ That is the safe default. Set `paste.insert_newline = true` or pass `--insert-ne
 ## Remote SHA verification fails
 
 `sshpic` compares local and remote SHA256 values when verification is enabled. A mismatch means the remote file does not match the local image and the command fails before emitting a success payload.
-
-If `ssh` prints unrelated banner or `LocalCommand` noise before the checksum, current `sshpic` ignores that noise and parses the first 64-character SHA256 token. If you still see failures, run `ssh <host> true` and remove stale SSH hook output from tools you no longer use.
 
 ## `sshpic clean` refuses a directory
 
@@ -75,7 +63,7 @@ Run this from macOS/iTerm2:
 scripts/verify-iterm2-e2e.sh
 ```
 
-The script refuses non-macOS environments because they cannot prove iTerm2 shortcut injection. It creates `.sshpic-e2e/iterm2-e2e-*.md` with the exact checklist and verifies that `sshpic install iterm2` wrote Cmd+V to the iTerm2 keymap.
+The script refuses non-macOS/tmux environments because they cannot prove iTerm2 shortcut injection. It creates `.sshpic-e2e/iterm2-e2e-*.md` with the exact checklist for the installed `Cmd+V` path.
 
 ## How do I prove real SSH upload behavior?
 

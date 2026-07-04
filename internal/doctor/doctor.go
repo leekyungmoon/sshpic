@@ -29,7 +29,7 @@ func Run(cfg config.Config) []Check {
 	checks = append(checks, toolCheck(cfg.MacOS.TextClipboardTool, false))
 	checks = append(checks, toolCheck(cfg.MacOS.CopyTool, false))
 	if cfg.RemoteHost == "" {
-		checks = append(checks, Check{Name: "remote_host", Status: "warn", Detail: "set remote_host in ~/.config/sshpic/config.toml, SSHPIC_REMOTE_HOST, or --remote-host"})
+		checks = append(checks, Check{Name: "remote_host", Status: "warn", Detail: "run sshpic install iterm2 or set SSHPIC_REMOTE_HOST for non-iTerm2 flows"})
 	} else {
 		checks = append(checks, Check{Name: "remote_host", Status: "ok", Detail: "configured"})
 	}
