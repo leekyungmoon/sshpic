@@ -47,3 +47,44 @@ func TestReadClipboardImagePreservesToolExecutionError(t *testing.T) {
 		t.Fatalf("error should preserve missing tool detail, got %v", err)
 	}
 }
+
+func TestReadClipboardTextPrefersTxtFlavor(t *testing.T) {
+	tool := filepath.Join(t.TempDir(), "pbpaste")
+	if err := os.WriteFile(tool, []byte(`#!/bin/sh
+if [ "$1" = "-Prefer" ] && [ "$2" = "txt" ]; then
+  printf preferred-text
+  exit 0
+fi
+exit 2
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := (MacOSProvider{TextClipboardTool: tool}).ReadClipboardText(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "preferred-text" {
+		t.Fatalf("text=%q", got)
+	}
+}
+
+func TestReadClipboardTextFallsBackToDefaultPbpaste(t *testing.T) {
+	tool := filepath.Join(t.TempDir(), "pbpaste")
+	if err := os.WriteFile(tool, []byte(`#!/bin/sh
+if [ "$1" = "-Prefer" ]; then
+  exit 2
+fi
+printf default-text
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := (MacOSProvider{TextClipboardTool: tool}).ReadClipboardText(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "default-text" {
+		t.Fatalf("text=%q", got)
+	}
+}

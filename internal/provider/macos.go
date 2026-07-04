@@ -73,15 +73,35 @@ func (p MacOSProvider) capture(ctx context.Context, name string, args ...string)
 
 func (p MacOSProvider) ReadClipboardText(ctx context.Context) (string, error) {
 	tool := firstNonEmpty(p.TextClipboardTool, "pbpaste")
-	cmd := exec.CommandContext(ctx, resolveMacTool(tool))
+	text, err := readClipboardTextWithArgs(ctx, tool, "-Prefer", "txt")
+	if err == nil {
+		return text, nil
+	}
+	preferErr := err
+
+	text, err = readClipboardTextWithArgs(ctx, tool)
+	if err == nil {
+		return text, nil
+	}
+	return "", fmt.Errorf("%w (preferred text read failed: %v; default text read failed: %v)", ErrNoText, preferErr, err)
+}
+
+func readClipboardTextWithArgs(ctx context.Context, tool string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, resolveMacTool(tool), args...)
 	var out bytes.Buffer
+	var stderr bytes.Buffer
 	cmd.Stdout = &out
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail != "" {
+			return "", fmt.Errorf("read text clipboard: %w: %s", err, detail)
+		}
 		return "", fmt.Errorf("read text clipboard: %w", err)
 	}
 	text := out.String()
 	if text == "" {
-		return "", ErrNoText
+		return "", fmt.Errorf("%w: pbpaste returned empty", ErrNoText)
 	}
 	return text, nil
 }

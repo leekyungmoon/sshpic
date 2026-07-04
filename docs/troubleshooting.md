@@ -38,7 +38,7 @@ SSHPIC_E2E_HOST='169.213.3.141' \
   scripts/verify-iterm2-codex-e2e.sh
 ```
 
-If it still fails, send the generated evidence bundle; the log should now include the image clipboard read failure detail, not only the text fallback error.
+If it still fails, send the generated evidence bundle; the log should now include the image clipboard read failure detail, not only the text fallback error. For text passthrough failures, also check `text-readback.txt`: if it does not contain the sentinel exactly, the E2E did not actually stage the text clipboard before asking for `Cmd+V`.
 
 ## Image paste logs `remote_host is required`
 
@@ -131,8 +131,8 @@ The script will:
 - prepare a tiny 4x4 RGBA local PNG clipboard fixture,
 - ask the tester to run `ssh <host>`, start `codex`, press `Cmd+V`, and confirm the path appeared exactly once with no popup,
 - verify `/home/$USER/.sshpic/images/clipboard.png` over SSH,
-- run a plain-text paste check,
-- capture iTerm2 keymap and sshpic logs after image/text paste,
+- copy a plain-text sentinel, verify local clipboard readback first, then run a plain-text paste check,
+- capture iTerm2 keymap, sshpic logs, and text readback evidence after image/text paste,
 - write a complete evidence bundle under `.sshpic-e2e/`.
 
 If install, keymap validation, clipboard fixture setup, or remote verification fails, the script exits non-zero and still leaves an evidence bundle to send back.

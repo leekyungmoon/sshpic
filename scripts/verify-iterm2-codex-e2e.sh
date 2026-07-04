@@ -37,6 +37,7 @@ RESTORE_LOG="$RUN_DIR/restore.txt"
 ITERM2_BACKUP="$RUN_DIR/com.googlecode.iterm2.before.plist"
 FIXTURE_PNG="$RUN_DIR/fixture.png"
 FIXTURE_READBACK="$RUN_DIR/fixture-readback.png"
+TEXT_READBACK="$RUN_DIR/text-readback.txt"
 TEXT_SENTINEL="sshpic-text-e2e-$STAMP"
 SYSTEM_LOG="$RUN_DIR/system.txt"
 BUNDLE="$EVIDENCE_DIR/sshpic-real-codex-e2e-$STAMP.tar.gz"
@@ -58,7 +59,7 @@ MSG
   exit 2
 fi
 
-for tool in ssh pbcopy osascript defaults base64; do
+for tool in ssh pbcopy pbpaste osascript defaults base64; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "$tool is required for real Codex Cmd+V E2E" >&2
     exit 1
@@ -167,6 +168,7 @@ write_failure_evidence() {
 - Logs before: $LOG_BEFORE
 - Logs after install: $LOG_AFTER_INSTALL
 - Logs after failure: $LOG_AFTER_TEXT
+- Text clipboard readback: $TEXT_READBACK
 
 ## Required tester log commands included
 
@@ -279,6 +281,29 @@ copy_png_to_clipboard() {
   test -s "$FIXTURE_READBACK"
 }
 
+read_text_clipboard_for_e2e() {
+  pbpaste -Prefer txt 2>/dev/null || pbpaste
+}
+
+copy_text_to_clipboard_for_e2e() {
+  local text="$1"
+  if ! printf '%s' "$text" | pbcopy; then
+    return 1
+  fi
+
+  local got=""
+  : > "$TEXT_READBACK"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    got="$(read_text_clipboard_for_e2e 2>/dev/null || true)"
+    printf '%s' "$got" > "$TEXT_READBACK"
+    if [[ "$got" == "$text" ]]; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
 ssh_remote_verify() {
   # E2E_HOST is intentionally split into ssh argv words so testers can pass simple ssh options.
   # shellcheck disable=SC2206
@@ -362,8 +387,8 @@ REMOTE_VERIFY_RC=$?
 set -e
 capture_logs "$LOG_AFTER_IMAGE"
 
-if ! printf '%s' "$TEXT_SENTINEL" | pbcopy; then
-  write_failure_evidence "could not copy text sentinel to clipboard" 1
+if ! copy_text_to_clipboard_for_e2e "$TEXT_SENTINEL"; then
+  write_failure_evidence "could not copy/read back text sentinel clipboard fixture" 1
 fi
 cat <<MSG
 Text passthrough check:
@@ -438,6 +463,7 @@ cat > "$EVIDENCE" <<MSG
 - Logs after install: $LOG_AFTER_INSTALL
 - Logs after image paste: $LOG_AFTER_IMAGE
 - Logs after text paste: $LOG_AFTER_TEXT
+- Text clipboard readback: $TEXT_READBACK
 - Remote verify: $REMOTE_VERIFY_LOG
 - iTerm2 defaults backup: $ITERM2_BACKUP
 
