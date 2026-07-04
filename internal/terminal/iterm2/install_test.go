@@ -170,7 +170,7 @@ func TestDetectPythonRuntimeRejectsMissingRuntime(t *testing.T) {
 	}
 }
 
-func TestInstallUsesNoPythonCoprocessFallbackWhenRuntimeMissingAndRemovesHelper(t *testing.T) {
+func TestInstallRefusesNoPythonCoprocessFallbackWhenRuntimeMissingAndRemovesHelper(t *testing.T) {
 	home := t.TempDir()
 	legacyScript := filepath.Join(home, ".config", "iterm2", "AppSupport", "Scripts", "AutoLaunch", autoLaunchScriptFile)
 	if err := os.MkdirAll(filepath.Dir(legacyScript), 0o700); err != nil {
@@ -180,31 +180,18 @@ func TestInstallUsesNoPythonCoprocessFallbackWhenRuntimeMissingAndRemovesHelper(
 		t.Fatal(err)
 	}
 
-	original := installCmdVRunCoprocess
-	defer func() { installCmdVRunCoprocess = original }()
-	var installedCommand string
-	installCmdVRunCoprocess = func(ctx context.Context, command string) (string, error) {
-		installedCommand = command
-		return "0x76-0x100000", nil
-	}
-
 	result, err := Install(context.Background(), config.Defaults(), "", InstallOptions{HomeDir: home, BinaryPath: "/usr/local/bin/sshpic", GlobalKeyMap: true})
-	if err != nil {
-		t.Fatalf("expected no-Python fallback install, result=%+v err=%v", result, err)
+	if err == nil {
+		t.Fatalf("expected safe failure when Python runtime is missing, result=%+v", result)
+	}
+	if !strings.Contains(err.Error(), "Python runtime is required") || !strings.Contains(err.Error(), "no-Python Cmd+V fallback is disabled") {
+		t.Fatalf("error did not explain safe failure: %v", err)
 	}
 	if result.PythonRuntimeReady {
 		t.Fatalf("runtime should not be ready: %+v", result)
 	}
-	if !result.CoprocessFallback || result.GlobalKey != "0x76-0x100000" {
-		t.Fatalf("expected coprocess fallback keymap: %+v", result)
-	}
-	for _, want := range []string{"/opt/homebrew/bin", "export PATH", "mktemp", "action_file", "payload_file", "iterm2-dispatch", "--action-file", "--payload-file", "--session-tty", `\(tty)`, "--session-job-pid", `\(jobPid)`, "sshpic invocation: path=coprocess", "recursion_guard=enter", "delegation_method=system-events-edit-paste", "sshpic native paste result", "System Events", `menu item "Paste"`, "write text insertText newline NO", "$HOME/.cache/sshpic"} {
-		if !strings.Contains(installedCommand, want) {
-			t.Fatalf("fallback command missing %q:\n%s", want, installedCommand)
-		}
-	}
-	if strings.Contains(installedCommand, "--remote-host") || strings.Contains(installedCommand, "iterm2-paste") || strings.Contains(installedCommand, "payloadText") {
-		t.Fatalf("fallback command must not pin host or use legacy text payload retyping:\n%s", installedCommand)
+	if result.CoprocessFallback || result.GlobalKey != "" || result.GlobalCommand != "" || result.CoprocessCommand != "" {
+		t.Fatalf("runtime-missing install must not install any no-Python Cmd+V hook: %+v", result)
 	}
 	if _, statErr := os.Stat(legacyScript); !os.IsNotExist(statErr) {
 		t.Fatalf("legacy helper should be removed, stat err=%v", statErr)

@@ -34,11 +34,13 @@ cd sshpic
 curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh | bash
 ```
 
-The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, cleans old sshpic iTerm2 integration state, and enables normal `Cmd+V` image paste in iTerm2. Text paste remains the native iTerm2 paste path; sshpic must not retype ordinary clipboard text.
+The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, and cleans old sshpic iTerm2 integration state.
+
+Current direct `Cmd+V` integration is enabled only when the iTerm2 Python runtime is already ready. Runtime-missing Macs fail safely instead of installing the rejected no-Python Run Coprocess hook, because that hook can corrupt ordinary paste.
 
 ## ⚡ Quick Start
 
-After installation, keep your normal remote coding flow:
+After a successful iTerm2 install, keep your normal remote coding flow:
 
 1. 🖥️ Open iTerm2 and SSH into your remote machine.
 2. 🤖 Start Codex in that SSH session.
@@ -51,7 +53,7 @@ After installation, keep your normal remote coding flow:
 /home/alice/.sshpic/images/clipboard.png
 ```
 
-No config editing, snippet printing, iTerm2 settings clicking, or per-screenshot upload command is part of the normal flow.
+No config editing, snippet printing, iTerm2 settings clicking, or per-screenshot upload command is part of the successful normal flow.
 
 ## 🔍 How it works
 
@@ -73,7 +75,8 @@ Codex CLI, Claude Code, or another terminal agent must separately know how to us
 
 | Platform / terminal | Status |
 |---|---|
-| macOS + iTerm2 | v0.1 target |
+| macOS + iTerm2 with Python RPC runtime ready | v0.1 target |
+| macOS + iTerm2 without Python RPC runtime | Safe fail; default Cmd+V hook disabled |
 | Ubuntu + terminal | TBD |
 | Windows / WSL | TBD |
 | macOS Terminal.app | TBD |

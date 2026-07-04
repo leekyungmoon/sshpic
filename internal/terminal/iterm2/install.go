@@ -30,7 +30,6 @@ const (
 
 var (
 	installCmdVInvokeScriptFunction = InstallCmdV
-	installCmdVRunCoprocess         = InstallCmdVCoprocess
 )
 
 type InstallOptions struct {
@@ -147,17 +146,7 @@ func Install(ctx context.Context, cfg config.Config, cfgPath string, opts Instal
 			} else if removed != "" {
 				result.ScriptPath = removed
 			}
-			command := SafeCoprocessCommand(binary)
-			key, err := installCmdVRunCoprocess(ctx, command)
-			if err != nil {
-				return result, err
-			}
-			result.GlobalKey = key
-			result.GlobalCommand = command
-			result.CoprocessFallback = true
-			result.CoprocessCommand = command
-			result.Warnings = append(result.Warnings, "iTerm2 Python runtime is not ready; installed no-Python Cmd+V fallback instead")
-			return result, nil
+			return result, fmt.Errorf("iTerm2 Python runtime is required for safe Cmd+V integration; no-Python Cmd+V fallback is disabled because it can corrupt native paste: %s", runtimeStatus.Reason)
 		}
 		scriptPath, warnings, err := InstallPythonRPCScript(home, binary)
 		if err != nil {
@@ -773,7 +762,7 @@ func InstallSummary(result InstallResult) string {
 		b.WriteString("iTerm2 Python API: enabled\n")
 	}
 	if result.CoprocessFallback {
-		b.WriteString("iTerm2 Python API: not required; no-Python Cmd+V native-paste fallback installed\n")
+		b.WriteString("iTerm2 Python API: not required; experimental no-Python fallback installed\n")
 	}
 	if result.GlobalKey != "" {
 		b.WriteString("global Cmd+V key: " + result.GlobalKey + "\n")
@@ -781,7 +770,7 @@ func InstallSummary(result InstallResult) string {
 			b.WriteString("global function: " + result.GlobalFunction + "\n")
 		}
 		if result.GlobalCommand != "" {
-			b.WriteString("global action: no-Python smart paste dispatcher\n")
+			b.WriteString("global action: experimental no-Python smart paste dispatcher\n")
 		}
 	}
 	if result.ScriptLaunched {
@@ -818,11 +807,11 @@ screenshot.
 
 Install strategy:
 - If the iTerm2 Python runtime is ready, sshpic installs the %q Python RPC path.
-- If the runtime is unavailable, sshpic installs a no-Python Cmd+V dispatcher
-  that handles image clipboard uploads and delegates ordinary text to iTerm2's
-  native Paste path instead of retyping text through sshpic.
+- If the runtime is unavailable, sshpic refuses to install a default Cmd+V hook.
+  The no-Python Run Coprocess/native Paste delegation experiment is disabled
+  because real Mac testing showed it can corrupt ordinary paste.
 
-Advanced fallback for dotfiles or locked-down machines only:
+Advanced Python RPC fallback for dotfiles or locked-down machines only:
 1. iTerm2 → Settings → Profiles → Keys → Key Mappings.
 2. Add a mapping for %q.
 3. Action: "Invoke Script Function..." when Python RPC is available.
@@ -835,11 +824,9 @@ Behavior:
 - No newline is emitted unless paste.insert_newline=true or --insert-newline is used.
 
 Known limitation:
-- The no-Python fallback uses iTerm2 Run Coprocess only as a launcher. For
-  ordinary text it attempts iTerm2's native Edit > Paste through macOS
-  automation rather than retyping clipboard text. If macOS automation policy
-  blocks that native paste delegation, the install/test must be treated as not
-  release-ready rather than changing the user's shortcut.
+- Runtime-missing Macs are safe-fail only for direct Cmd+V integration until a
+  non-polluting architecture is proven. Do not install a no-Python Global Cmd+V
+  hook as a default path.
 `, shortcut, cmd, shortcut, scriptFunctionName, shortcut, scriptFunctionInvocation)
 	return Snippet{Terminal: "iterm2", Text: text}
 }
@@ -931,6 +918,9 @@ func profileGUID(host string) string {
 	return "sshpic-" + hex.EncodeToString(sum[:8])
 }
 
+// SafeCoprocessCommand is retained only for explicit experiments and regression
+// audits. It must not be used by the default installer: real Mac testing showed
+// no-Python Run Coprocess/native Paste delegation can corrupt ordinary Cmd+V.
 func SafeCoprocessCommand(binary string) string {
 	quotedBinary := shellquote.Quote(firstNonEmpty(strings.TrimSpace(binary), "sshpic"))
 	lines := []string{

@@ -61,8 +61,40 @@ PROFILE_DIRS=(
 )
 
 if [[ $INSTALL_RC -ne 0 ]]; then
+  EXPECTED_SAFE_FAIL="fail"
+  if grep -F 'Python runtime is required' "$INSTALL_LOG" >/dev/null &&
+     grep -F 'no-Python Cmd+V fallback is disabled' "$INSTALL_LOG" >/dev/null; then
+    EXPECTED_SAFE_FAIL="pass"
+  fi
+  SAFE_FAIL_STATUS="unknown"
+  if [[ "$EXPECTED_SAFE_FAIL" == "pass" ]] &&
+     ! grep -Eiq 'sshpic|sshpic_paste|iterm2-paste|iterm2-dispatch' <<<"$KEYMAP"; then
+    SAFE_FAIL_STATUS="pass"
+  else
+    SAFE_FAIL_STATUS="fail"
+  fi
+  HELPER_RESIDUALS=()
+  for helper in "$HELPER_A" "$HELPER_B"; do
+    if [[ -e "$helper" ]]; then
+      HELPER_RESIDUALS+=("$helper")
+    fi
+  done
+  PROFILE_RESIDUALS=()
+  for dir in "${PROFILE_DIRS[@]}"; do
+    [[ -d "$dir" ]] || continue
+    while IFS= read -r -d '' profile; do
+      [[ "$profile" == *.disabled-* ]] && continue
+      base="$(basename "$profile")"
+      if [[ "$base" == "sshpic.json" ]] || grep -F 'sshpic' "$profile" >/dev/null 2>&1; then
+        PROFILE_RESIDUALS+=("$profile")
+      fi
+    done < <(find "$dir" -maxdepth 1 -type f -name '*.json' -print0)
+  done
+  if (( ${#HELPER_RESIDUALS[@]} > 0 || ${#PROFILE_RESIDUALS[@]} > 0 )); then
+    SAFE_FAIL_STATUS="fail"
+  fi
   cat > "$EVIDENCE" <<MSG
-# sshpic iTerm2 E2E Evidence: INSTALL_FAILED
+# sshpic iTerm2 E2E Evidence: SAFE_FAIL_RUNTIME_MISSING
 
 - Date UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 - Hostname: $(hostname)
@@ -70,14 +102,23 @@ if [[ $INSTALL_RC -ne 0 ]]; then
 - sshpic binary: $BIN
 - Install log: $INSTALL_LOG
 - Doctor log: $DOCTOR_LOG
+- Expected safe-fail reason found: $EXPECTED_SAFE_FAIL
+- Safe fail status: $SAFE_FAIL_STATUS
+- Helper residuals: ${HELPER_RESIDUALS[*]:-none}
+- DynamicProfile residuals: ${PROFILE_RESIDUALS[*]:-none}
 
 ## Result
 
-Install failed. Runtime-missing Macs are expected to install the no-Python native-paste fallback now, so this is not an accepted SAFE_FAIL path.
+Install failed safely only if the install log contains the expected missing
+iTerm2 Python runtime message and the installer leaves no Global Cmd+V hook,
+AutoLaunch helper, or active sshpic DynamicProfile.
 MSG
-  echo "installer failed before E2E preflight could complete" >&2
+  echo "installer failed safely before E2E preflight could complete" >&2
   cat "$INSTALL_LOG" >&2
   echo "Evidence: $EVIDENCE" >&2
+  if [[ "$SAFE_FAIL_STATUS" == "pass" ]]; then
+    exit 0
+  fi
   exit "$INSTALL_RC"
 fi
 
@@ -99,7 +140,8 @@ fi
 if grep -F 'iterm2-dispatch' <<<"$KEYMAP" >/dev/null && \
    grep -F -- '--session-tty' <<<"$KEYMAP" >/dev/null && \
    grep -F -- '--session-job-pid' <<<"$KEYMAP" >/dev/null; then
-  MODE="NO_PYTHON_COPROCESS"
+  echo "default install must not use no-Python Run Coprocess Cmd+V hook" >&2
+  exit 1
 fi
 if [[ -z "$MODE" ]]; then
   echo "iTerm2 GlobalKeyMap does not contain a recognized sshpic Cmd+V integration" >&2
@@ -111,18 +153,13 @@ if grep -F 'sshpic paste --output=payload' <<<"$KEYMAP" >/dev/null; then
 	exit 1
 fi
 if grep -F 'iterm2-paste' <<<"$KEYMAP" >/dev/null; then
-  echo "iTerm2 GlobalKeyMap must use iterm2-dispatch, not text-payload iterm2-paste" >&2
+  echo "iTerm2 GlobalKeyMap must use Python RPC, not text-payload iterm2-paste" >&2
   exit 1
 fi
 if grep -F -- '--remote-host' <<<"$KEYMAP" >/dev/null; then
   echo "iTerm2 GlobalKeyMap pins a remote host; install must target the active ssh session instead" >&2
   exit 1
 fi
-if [[ "$MODE" == "NO_PYTHON_COPROCESS" ]] && ! grep -F 'sshpic.log' <<<"$KEYMAP" >/dev/null; then
-  echo "no-Python fallback must redirect integration errors to sshpic.log" >&2
-  exit 1
-fi
-
 PROFILE_RESIDUALS=()
 for dir in "${PROFILE_DIRS[@]}"; do
   [[ -d "$dir" ]] || continue

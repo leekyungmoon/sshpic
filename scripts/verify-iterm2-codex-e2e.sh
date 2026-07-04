@@ -378,7 +378,13 @@ if grep -F -- '--remote-host' "$KEYMAP_AFTER_INSTALL" >/dev/null; then
   write_failure_evidence "Cmd+V keymap pins a remote host; expected active SSH detection" 1
 fi
 if grep -F 'iterm2-paste' "$KEYMAP_AFTER_INSTALL" >/dev/null; then
-  write_failure_evidence "Cmd+V keymap uses text-payload iterm2-paste; expected iterm2-dispatch native-paste path" 1
+  write_failure_evidence "Cmd+V keymap uses text-payload iterm2-paste; expected Python RPC path" 1
+fi
+if grep -F 'iterm2-dispatch' "$KEYMAP_AFTER_INSTALL" >/dev/null; then
+  write_failure_evidence "Cmd+V keymap uses no-Python Run Coprocess dispatcher; this fallback is disabled after native paste corruption" 1
+fi
+if ! grep -F 'sshpic_paste()' "$KEYMAP_AFTER_INSTALL" >/dev/null; then
+  write_failure_evidence "Cmd+V keymap is not the Python RPC integration" 1
 fi
 
 if ! write_fixture_png; then
@@ -555,7 +561,7 @@ cat > "$EVIDENCE" <<MSG
 - \`dispatch classification: native_paste no_image\` for ordinary text clipboard.
 - \`sshpic invocation: ... session_id=...\` or \`tty=...\` for active session identity.
 - \`sshpic action: native paste ... delegation_method=...\` for text delegation.
-- \`sshpic native paste result: ... rc=... stderr=... recursion_guard=exit\` for no-Python System Events delegation, or \`delegation_method=mainmenu rc=0 ...\` for Python MainMenu delegation.
+- \`sshpic native paste result: delegation_method=mainmenu rc=0 ... recursion_guard=exit\` for Python MainMenu delegation.
 - No new \`sshpic recursion guard:\` re-entry lines during image/text paste.
 
 ## Required tester log commands included

@@ -2,9 +2,9 @@
 
 ## iTerm2 Python runtime is missing
 
-`sshpic` does not need the iTerm2 Python runtime to read the clipboard, upload over SSH, or produce the remote path. Python is only one possible way to wire `Cmd+V` into iTerm2.
+`sshpic` does not need the iTerm2 Python runtime to read the clipboard, upload over SSH, or produce the remote path. Python is only needed for the current safe iTerm2 `Cmd+V` wiring.
 
-Current `main` therefore does not stop at “runtime missing.” If the Python runtime is unavailable, `sshpic install iterm2` installs a no-Python `Cmd+V` dispatcher that handles image clipboard uploads but delegates ordinary text to iTerm2 native Paste instead of retyping text through sshpic. Integration errors are redirected to `~/.cache/sshpic/sshpic.log`.
+Current `main` fails safely when the Python runtime is unavailable. A no-Python Run Coprocess/native Paste fallback was tested and rejected because it could corrupt ordinary `Cmd+V` paste by inserting AppleScript/menu text into the terminal and recursively invoking the helper.
 
 For repeatable tester evidence, run:
 
@@ -12,7 +12,7 @@ For repeatable tester evidence, run:
 scripts/verify-iterm2-e2e.sh
 ```
 
-On runtime-missing Macs the script should still reach the `ssh → codex → image Cmd+V` checklist, and the text check must pass on the first `Cmd+V` without popup or a second keypress.
+On runtime-missing Macs the script should produce `SAFE_FAIL_RUNTIME_MISSING` evidence: no sshpic Global Cmd+V hook, no AutoLaunch helper, and no active sshpic DynamicProfile should remain.
 
 ## `Cmd+V` does not insert a path after a successful install
 
@@ -27,7 +27,7 @@ A successful install should not show iTerm2 Coprocess or Python runtime popups. 
 
 ## Image paste logs `no text in clipboard`
 
-If this appears after pressing `Cmd+V` with an image on the clipboard, the iTerm2 hook probably ran but could not execute the image clipboard reader in its non-interactive shell environment. Current `main` injects common macOS/Homebrew paths into the no-Python coprocess hook and also resolves tools from `/opt/homebrew/bin` and `/usr/local/bin` even when the hook PATH is minimal.
+If this appears after pressing `Cmd+V` with an image on the clipboard, capture the evidence bundle. Current `main` no longer installs the no-Python coprocess hook by default, so this should only happen in the Python RPC path or an explicitly experimental local setup.
 
 Refresh the install and rerun the real Codex E2E bundle script:
 
@@ -38,7 +38,7 @@ SSHPIC_E2E_HOST='169.213.3.141' \
   scripts/verify-iterm2-codex-e2e.sh
 ```
 
-If it still fails, send the generated evidence bundle; the log should include the clipboard classification, chosen action (`insert image payload` or `native paste`), and any native-paste delegation error. For text passthrough failures, also check `text-readback.txt`: if it does not contain the sentinel exactly, the E2E did not actually stage the text clipboard before asking for `Cmd+V`. Current text readback tries `pbpaste -Prefer txt`, bare `pbpaste`, then AppleScript clipboard text, matching the product fallback order.
+If it still fails, send the generated evidence bundle; the log should include the clipboard classification, chosen action (`insert image payload` or `native paste`), helper invocation count, and recursion-guard markers. For text passthrough failures, also check `text-readback.txt`: if it does not contain the sentinel exactly, the E2E did not actually stage the text clipboard before asking for `Cmd+V`.
 
 ## Image paste logs `remote_host is required`
 
@@ -59,7 +59,7 @@ If you are inside local tmux or another wrapper that hides the local `ssh` proce
 
 That is the legacy installer path and should not be used by current `main`.
 
-Run the latest installer once. It disables active sshpic-related iTerm2 DynamicProfiles when present, removes stale helper state where possible, migrates the old default `/tmp/sshpic/${USER}` config to `/home/${USER}/.sshpic/images`, and then installs the current Cmd+V path. If the iTerm2 Python runtime is ready it installs the Python RPC path; otherwise it installs the no-Python native-paste fallback.
+Run the latest installer once. It disables active sshpic-related iTerm2 DynamicProfiles when present, removes stale helper state where possible, migrates the old default `/tmp/sshpic/${USER}` config to `/home/${USER}/.sshpic/images`, and then installs the current Cmd+V path only when the iTerm2 Python runtime is ready. If the runtime is missing, install fails safely instead of installing a no-Python Cmd+V hook.
 
 ## `sshpic paste --output=payload` prints nothing
 
@@ -70,7 +70,7 @@ sshpic doctor
 sshpic clip --debug
 ```
 
-The public payload primitive is still `sshpic paste --output=payload`, but the default iTerm2 `Cmd+V` integration uses the internal `sshpic iterm2-dispatch` helper so ordinary text can be delegated to native Paste instead of being retyped through sshpic. Failures are written to `~/.cache/sshpic/sshpic.log` instead of showing iTerm2 popups.
+The public payload primitive is still `sshpic paste --output=payload`. The default iTerm2 `Cmd+V` integration must not route ordinary text through that payload primitive. Runtime-missing no-Python `Cmd+V` hooks are disabled until a non-polluting architecture is proven.
 
 ## Text paste behaves unexpectedly
 

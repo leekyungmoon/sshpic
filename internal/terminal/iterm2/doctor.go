@@ -29,7 +29,7 @@ func DoctorChecks() []Check {
 	if runtime.Ready {
 		checks = append(checks, Check{Name: "iterm2_python_runtime", Status: "ok", Detail: fmt.Sprintf("version=%d path=%s", runtime.Version, runtime.Path)})
 	} else {
-		checks = append(checks, Check{Name: "iterm2_python_runtime", Status: "warn", Detail: "not ready; installer will use the no-Python native-paste fallback instead: " + runtime.Reason})
+		checks = append(checks, Check{Name: "iterm2_python_runtime", Status: "warn", Detail: "not ready; default Cmd+V install will fail safe because the no-Python fallback is disabled: " + runtime.Reason})
 	}
 	return checks
 }

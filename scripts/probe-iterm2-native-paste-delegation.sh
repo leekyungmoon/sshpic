@@ -8,6 +8,20 @@ MSG
   exit 78
 fi
 
+if [[ "${SSHPIC_ALLOW_REJECTED_NATIVE_PASTE_PROBE:-}" != "1" ]]; then
+  cat >&2 <<'MSG'
+This probe is disabled by default.
+
+Real Mac testing on af228ab proved the no-Python Run Coprocess -> System Events
+native Paste delegation path can corrupt ordinary Cmd+V by inserting AppleScript
+menu text and recursively invoking the helper.
+
+Do not run this on a normal tester machine. Set
+SSHPIC_ALLOW_REJECTED_NATIVE_PASTE_PROBE=1 only for an isolated forensic test.
+MSG
+  exit 78
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EVIDENCE_DIR="${SSHPIC_PROBE_EVIDENCE_DIR:-$ROOT/.sshpic-e2e}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
