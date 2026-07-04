@@ -1,0 +1,3 @@
+# sshpic local machine settings
+export SSHPIC_REMOTE_HOST=codex141
+export SSHPIC_REMOTE_DIR='/tmp/sshpic/${USER}'

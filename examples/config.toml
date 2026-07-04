@@ -1,0 +1,21 @@
+remote_host = "codex141"
+remote_dir = "/tmp/sshpic/${USER}"
+copy_to_clipboard = true
+filename_template = "sshpic-{timestamp}-{rand}.{ext}"
+
+[paste]
+mode = "smart"
+terminal = "iterm2"
+shortcut = "cmd+option+v"
+insert_newline = false
+text_passthrough = true
+
+[macos]
+clipboard_tool = "pngpaste"
+screenshot_tool = "screencapture"
+text_clipboard_tool = "pbpaste"
+copy_tool = "pbcopy"
+
+[upload]
+method = "ssh-cat"
+verify_sha256 = true
