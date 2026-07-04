@@ -32,6 +32,10 @@ LOG_BEFORE="$RUN_DIR/sshpic-logs-before.txt"
 LOG_AFTER_INSTALL="$RUN_DIR/sshpic-logs-after-install.txt"
 LOG_AFTER_IMAGE="$RUN_DIR/sshpic-logs-after-image.txt"
 LOG_AFTER_TEXT="$RUN_DIR/sshpic-logs-after-text.txt"
+LOG_IMAGE_DELTA="$RUN_DIR/sshpic-log-delta-image.txt"
+LOG_TEXT_DELTA="$RUN_DIR/sshpic-log-delta-text.txt"
+IMAGE_TARGET_INVOCATIONS="$RUN_DIR/image-target-invocations.txt"
+TEXT_TARGET_BLOCK="$RUN_DIR/text-target-native-paste-block.txt"
 REMOTE_VERIFY_LOG="$RUN_DIR/remote-verify.txt"
 RESTORE_LOG="$RUN_DIR/restore.txt"
 ITERM2_BACKUP="$RUN_DIR/com.googlecode.iterm2.before.plist"
@@ -39,6 +43,8 @@ FIXTURE_PNG="$RUN_DIR/fixture.png"
 FIXTURE_READBACK="$RUN_DIR/fixture-readback.png"
 TEXT_READBACK="$RUN_DIR/text-readback.txt"
 TEXT_SENTINEL="sshpic-text-e2e-$STAMP"
+CACHE_LOG_PATH="$HOME/.cache/sshpic/sshpic.log"
+LIBRARY_LOG_PATH="$HOME/Library/Caches/sshpic/sshpic.log"
 SYSTEM_LOG="$RUN_DIR/system.txt"
 BUNDLE="$EVIDENCE_DIR/sshpic-real-codex-e2e-$STAMP.tar.gz"
 CMDV_KEY="0x76-0x100000"
@@ -113,6 +119,80 @@ log_count() {
   grep -F -c "$pattern" "$file" 2>/dev/null || true
 }
 
+log_line_count_path() {
+  local path="$1"
+  if [[ -f "$path" ]]; then
+    wc -l < "$path" | tr -d ' '
+  else
+    printf '0\n'
+  fi
+}
+
+tail_log_from_line() {
+  local path="$1"
+  local start_line="$2"
+  [[ -f "$path" ]] || return 0
+  local total
+  total="$(log_line_count_path "$path")"
+  if (( total >= start_line )); then
+    tail -n +"$start_line" "$path"
+  fi
+}
+
+write_log_delta_from_offsets() {
+  local cache_lines="$1"
+  local library_lines="$2"
+  local out="$3"
+  {
+    echo '$ tail new ~/.cache/sshpic/sshpic.log lines'
+    tail_log_from_line "$CACHE_LOG_PATH" "$((cache_lines + 1))"
+    echo
+    echo '$ tail new ~/Library/Caches/sshpic/sshpic.log lines'
+    tail_log_from_line "$LIBRARY_LOG_PATH" "$((library_lines + 1))"
+  } > "$out"
+}
+
+extract_invocation_value() {
+  local line="$1"
+  local key="$2"
+  sed -n "s/.*${key}=\([^ ]*\).*/\1/p" <<<"$line"
+}
+
+extract_action_invocations() {
+  local file="$1"
+  local action="$2"
+  awk -v action="$action" '
+    /sshpic invocation:/ { last=$0 }
+    index($0, action) > 0 && last != "" { print last }
+  ' "$file"
+}
+
+extract_target_action_block() {
+  local file="$1"
+  local action="$2"
+  local session_id="$3"
+  local tty="$4"
+  awk -v action="$action" -v session_id="$session_id" -v tty="$tty" '
+    /sshpic invocation:/ {
+      current=$0
+      target=0
+      if (session_id != "" && index($0, "session_id=" session_id) > 0) target=1
+      if (tty != "" && index($0, "tty=" tty) > 0) target=1
+      collecting=0
+    }
+    target && index($0, action) > 0 {
+      print current
+      print $0
+      collecting=1
+      next
+    }
+    collecting && /sshpic native paste result:/ {
+      print $0
+      collecting=0
+    }
+  ' "$file"
+}
+
 resolve_sshpic_bin() {
   if [[ -n "$BIN" && -x "$BIN" ]]; then
     printf '%s\n' "$BIN"
@@ -174,6 +254,10 @@ write_failure_evidence() {
 - Logs before: $LOG_BEFORE
 - Logs after install: $LOG_AFTER_INSTALL
 - Logs after failure: $LOG_AFTER_TEXT
+- Image log delta: $LOG_IMAGE_DELTA
+- Text log delta: $LOG_TEXT_DELTA
+- Image target invocations: $IMAGE_TARGET_INVOCATIONS
+- Text target native-paste block: $TEXT_TARGET_BLOCK
 - Text clipboard readback: $TEXT_READBACK
 
 ## Required tester log commands included
@@ -354,8 +438,8 @@ INSTALL_RC=$?
 set -e
 capture_keymap "$KEYMAP_AFTER_INSTALL" "$KEYMAP_GREP_AFTER_INSTALL"
 capture_logs "$LOG_AFTER_INSTALL"
-INSTALL_INVOCATIONS="$(log_count "$LOG_AFTER_INSTALL" 'sshpic invocation:')"
-INSTALL_REENTRIES="$(log_count "$LOG_AFTER_INSTALL" 'sshpic recursion guard:')"
+CACHE_LINES_AFTER_INSTALL="$(log_line_count_path "$CACHE_LOG_PATH")"
+LIBRARY_LINES_AFTER_INSTALL="$(log_line_count_path "$LIBRARY_LOG_PATH")"
 if [[ $INSTALL_RC -ne 0 ]]; then
   write_failure_evidence "./install.sh exited $INSTALL_RC" "$INSTALL_RC"
 fi
@@ -421,23 +505,26 @@ ssh_remote_verify > "$REMOTE_VERIFY_LOG" 2>&1
 REMOTE_VERIFY_RC=$?
 set -e
 capture_logs "$LOG_AFTER_IMAGE"
-IMAGE_INVOCATIONS_TOTAL="$(log_count "$LOG_AFTER_IMAGE" 'sshpic invocation:')"
-IMAGE_INVOCATION_DELTA=$((IMAGE_INVOCATIONS_TOTAL - INSTALL_INVOCATIONS))
-IMAGE_REENTRIES_TOTAL="$(log_count "$LOG_AFTER_IMAGE" 'sshpic recursion guard:')"
-IMAGE_REENTRY_DELTA=$((IMAGE_REENTRIES_TOTAL - INSTALL_REENTRIES))
-if [[ $IMAGE_INVOCATION_DELTA -ne 1 ]]; then
-  write_failure_evidence "image Cmd+V helper invocation count was $IMAGE_INVOCATION_DELTA, expected exactly 1" 1
+write_log_delta_from_offsets "$CACHE_LINES_AFTER_INSTALL" "$LIBRARY_LINES_AFTER_INSTALL" "$LOG_IMAGE_DELTA"
+CACHE_LINES_AFTER_IMAGE="$(log_line_count_path "$CACHE_LOG_PATH")"
+LIBRARY_LINES_AFTER_IMAGE="$(log_line_count_path "$LIBRARY_LOG_PATH")"
+IMAGE_INVOCATION_DELTA="$(log_count "$LOG_IMAGE_DELTA" 'sshpic invocation:')"
+IMAGE_REENTRY_DELTA="$(log_count "$LOG_IMAGE_DELTA" 'sshpic recursion guard:')"
+extract_action_invocations "$LOG_IMAGE_DELTA" 'sshpic action: insert image payload' > "$IMAGE_TARGET_INVOCATIONS"
+IMAGE_INSERT_TARGET_COUNT="$(grep -F -c 'sshpic invocation:' "$IMAGE_TARGET_INVOCATIONS" 2>/dev/null || true)"
+if [[ $IMAGE_INSERT_TARGET_COUNT -ne 1 ]]; then
+  write_failure_evidence "image Cmd+V target insert count was $IMAGE_INSERT_TARGET_COUNT, expected exactly 1; see $LOG_IMAGE_DELTA" 1
 fi
-if [[ $IMAGE_REENTRY_DELTA -ne 0 ]]; then
-  write_failure_evidence "image Cmd+V triggered recursion guard re-entry" 1
-fi
-if ! grep -F 'sshpic invocation:' "$LOG_AFTER_IMAGE" | grep -E 'session_id=|tty=' >/dev/null; then
+IMAGE_TARGET_INVOCATION="$(cat "$IMAGE_TARGET_INVOCATIONS")"
+IMAGE_TARGET_SESSION_ID="$(extract_invocation_value "$IMAGE_TARGET_INVOCATION" "session_id")"
+IMAGE_TARGET_TTY="$(extract_invocation_value "$IMAGE_TARGET_INVOCATION" "tty")"
+if [[ -z "$IMAGE_TARGET_SESSION_ID" && -z "$IMAGE_TARGET_TTY" ]]; then
   write_failure_evidence "sshpic log did not record active session identity for image paste" 1
 fi
-if ! grep -F 'dispatch classification: insert image payload' "$LOG_AFTER_IMAGE" >/dev/null; then
+if ! grep -F 'dispatch classification: insert image payload' "$LOG_IMAGE_DELTA" >/dev/null; then
   write_failure_evidence "sshpic log did not record image dispatch classification" 1
 fi
-if ! grep -F 'sshpic action: insert image payload' "$LOG_AFTER_IMAGE" >/dev/null; then
+if ! grep -F 'sshpic action: insert image payload' "$LOG_IMAGE_DELTA" >/dev/null; then
   write_failure_evidence "sshpic log did not record image insertion action" 1
 fi
 
@@ -454,33 +541,28 @@ After checking, return here.
 MSG
 read -r -p "Did text paste appear exactly once with no popup? [y/N] " TEXT_OK
 capture_logs "$LOG_AFTER_TEXT"
-TEXT_INVOCATIONS_TOTAL="$(log_count "$LOG_AFTER_TEXT" 'sshpic invocation:')"
-TEXT_INVOCATION_DELTA=$((TEXT_INVOCATIONS_TOTAL - IMAGE_INVOCATIONS_TOTAL))
-TEXT_REENTRIES_TOTAL="$(log_count "$LOG_AFTER_TEXT" 'sshpic recursion guard:')"
-TEXT_REENTRY_DELTA=$((TEXT_REENTRIES_TOTAL - IMAGE_REENTRIES_TOTAL))
-if [[ $TEXT_INVOCATION_DELTA -ne 1 ]]; then
-  write_failure_evidence "text Cmd+V helper invocation count was $TEXT_INVOCATION_DELTA, expected exactly 1" 1
+write_log_delta_from_offsets "$CACHE_LINES_AFTER_IMAGE" "$LIBRARY_LINES_AFTER_IMAGE" "$LOG_TEXT_DELTA"
+TEXT_INVOCATION_DELTA="$(log_count "$LOG_TEXT_DELTA" 'sshpic invocation:')"
+TEXT_REENTRY_DELTA="$(log_count "$LOG_TEXT_DELTA" 'sshpic recursion guard:')"
+extract_target_action_block "$LOG_TEXT_DELTA" 'sshpic action: native paste' "$IMAGE_TARGET_SESSION_ID" "$IMAGE_TARGET_TTY" > "$TEXT_TARGET_BLOCK"
+TEXT_TARGET_NATIVE_COUNT="$(grep -F -c 'sshpic action: native paste' "$TEXT_TARGET_BLOCK" 2>/dev/null || true)"
+if [[ $TEXT_TARGET_NATIVE_COUNT -ne 1 ]]; then
+  write_failure_evidence "text Cmd+V target native-paste count was $TEXT_TARGET_NATIVE_COUNT, expected exactly 1 for image target session; see $LOG_TEXT_DELTA" 1
 fi
-if [[ $TEXT_REENTRY_DELTA -ne 0 ]]; then
-  write_failure_evidence "text Cmd+V triggered recursion guard re-entry" 1
-fi
-if ! grep -F 'sshpic invocation:' "$LOG_AFTER_TEXT" | grep -E 'session_id=|tty=' >/dev/null; then
-  write_failure_evidence "sshpic log did not record active session identity for text paste" 1
-fi
-if ! grep -F 'dispatch classification: native_paste no_image' "$LOG_AFTER_TEXT" >/dev/null; then
+if ! grep -F 'dispatch classification: native_paste no_image' "$LOG_TEXT_DELTA" >/dev/null; then
   write_failure_evidence "sshpic log did not record text native-paste dispatch classification" 1
 fi
-if ! grep -F 'sshpic action: native paste' "$LOG_AFTER_TEXT" >/dev/null; then
+if ! grep -F 'sshpic action: native paste' "$TEXT_TARGET_BLOCK" >/dev/null; then
   write_failure_evidence "sshpic log did not record native paste delegation action" 1
 fi
-if ! grep -F 'sshpic action: native paste' "$LOG_AFTER_TEXT" | grep -F 'delegation_method=' >/dev/null; then
+if ! grep -F 'sshpic action: native paste' "$TEXT_TARGET_BLOCK" | grep -F 'delegation_method=' >/dev/null; then
   write_failure_evidence "sshpic log did not record native paste delegation method" 1
 fi
-if ! grep -F 'sshpic native paste result:' "$LOG_AFTER_TEXT" | grep -F 'rc=' | grep -F 'recursion_guard=exit' >/dev/null; then
+if ! grep -F 'sshpic native paste result:' "$TEXT_TARGET_BLOCK" | grep -F 'rc=' | grep -F 'recursion_guard=exit' >/dev/null; then
   write_failure_evidence "sshpic log did not record native paste result/rc/recursion_guard exit" 1
 fi
-if grep -F 'delegation_method=system-events-edit-paste' "$LOG_AFTER_TEXT" >/dev/null &&
-   ! grep -F 'sshpic native paste result: delegation_method=system-events-edit-paste' "$LOG_AFTER_TEXT" | grep -F 'stderr=' >/dev/null; then
+if grep -F 'delegation_method=system-events-edit-paste' "$TEXT_TARGET_BLOCK" >/dev/null &&
+   ! grep -F 'sshpic native paste result: delegation_method=system-events-edit-paste' "$TEXT_TARGET_BLOCK" | grep -F 'stderr=' >/dev/null; then
   write_failure_evidence "sshpic log did not record System Events osascript stderr field" 1
 fi
 capture_keymap "$KEYMAP_AFTER_E2E" "$KEYMAP_GREP_AFTER_E2E"
@@ -527,10 +609,14 @@ cat > "$EVIDENCE" <<MSG
 - Image UI result: $IMAGE_UI_RESULT
 - Image remote verify result: $IMAGE_REMOTE_OK
 - Text result: $TEXT_RESULT
-- Image helper invocation delta: $IMAGE_INVOCATION_DELTA
-- Text helper invocation delta: $TEXT_INVOCATION_DELTA
-- Image recursion re-entry delta: $IMAGE_REENTRY_DELTA
-- Text recursion re-entry delta: $TEXT_REENTRY_DELTA
+- Image raw helper invocation delta: $IMAGE_INVOCATION_DELTA
+- Text raw helper invocation delta: $TEXT_INVOCATION_DELTA
+- Image target insert count: $IMAGE_INSERT_TARGET_COUNT
+- Text target native-paste count: $TEXT_TARGET_NATIVE_COUNT
+- Image target session_id: ${IMAGE_TARGET_SESSION_ID:-unknown}
+- Image target tty: ${IMAGE_TARGET_TTY:-unknown}
+- Image raw recursion re-entry delta: $IMAGE_REENTRY_DELTA
+- Text raw recursion re-entry delta: $TEXT_REENTRY_DELTA
 
 ## Commands/files captured
 
@@ -550,6 +636,10 @@ cat > "$EVIDENCE" <<MSG
 - Logs after install: $LOG_AFTER_INSTALL
 - Logs after image paste: $LOG_AFTER_IMAGE
 - Logs after text paste: $LOG_AFTER_TEXT
+- Image log delta: $LOG_IMAGE_DELTA
+- Text log delta: $LOG_TEXT_DELTA
+- Image target invocations: $IMAGE_TARGET_INVOCATIONS
+- Text target native-paste block: $TEXT_TARGET_BLOCK
 - Text clipboard readback: $TEXT_READBACK
 - Remote verify: $REMOTE_VERIFY_LOG
 - iTerm2 defaults backup: $ITERM2_BACKUP
@@ -562,7 +652,9 @@ cat > "$EVIDENCE" <<MSG
 - \`sshpic invocation: ... session_id=...\` or \`tty=...\` for active session identity.
 - \`sshpic action: native paste ... delegation_method=...\` for text delegation.
 - \`sshpic native paste result: delegation_method=mainmenu rc=0 ... recursion_guard=exit\` for Python MainMenu delegation.
-- No new \`sshpic recursion guard:\` re-entry lines during image/text paste.
+- Raw global invocation counts are recorded for diagnosis only; pass/fail uses the
+  target session derived from the image insert so unrelated iTerm2 sessions do
+  not create false negatives.
 
 ## Required tester log commands included
 
@@ -603,6 +695,10 @@ Send either:
    - `$LOG_AFTER_INSTALL`
    - `$LOG_AFTER_IMAGE`
    - `$LOG_AFTER_TEXT`
+   - `$LOG_IMAGE_DELTA`
+   - `$LOG_TEXT_DELTA`
+   - `$IMAGE_TARGET_INVOCATIONS`
+   - `$TEXT_TARGET_BLOCK`
    - `$REMOTE_VERIFY_LOG`
 
 If there is any popup, send the exact popup title/body and a screenshot. Do not send private keys, tokens, or unrelated shell history.
@@ -633,6 +729,8 @@ Image UI result:     $IMAGE_UI_RESULT
 Image remote result: $IMAGE_REMOTE_OK
 Text result:         $TEXT_RESULT
 Restore result:      $RESTORE_RESULT
+Image target count:  $IMAGE_INSERT_TARGET_COUNT
+Text target count:   $TEXT_TARGET_NATIVE_COUNT
 MSG
 
 if [[ "$IMAGE_OK" != "pass" || "$TEXT_RESULT" != "pass" || $RESTORE_RC -ne 0 ]]; then
