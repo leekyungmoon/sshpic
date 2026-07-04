@@ -82,13 +82,9 @@ This is expected for dangerous or broad paths. `sshpic clean` only accepts absol
 
 ## How do I prove the iTerm2 shortcut flow?
 
-Run this from macOS/iTerm2:
+For the real release-blocking flow, use the macOS+iTerm2 Codex E2E script below. It follows the actual user path: `./install.sh`, iTerm2, `ssh <host>`, remote `codex`, local image `Cmd+V`, remote path insertion, and text passthrough.
 
-```sh
-scripts/verify-iterm2-e2e.sh
-```
-
-The evidence helper should produce `READY_FOR_MANUAL_CODEX_CHECK` after install succeeds. Complete the real target flow by opening iTerm2, running `ssh <host>`, running `codex`, copying a local PNG, pressing `Cmd+V` in the Codex input, and verifying that a `/home/<user>/.sshpic/images/clipboard.png` path is inserted with no popup.
+The older `scripts/verify-iterm2-e2e.sh` helper is only a local install/smoke evidence helper. It does not replace the real Codex E2E.
 
 ## How do I prove real SSH upload behavior?
 
@@ -101,3 +97,51 @@ SSHPIC_INTEGRATION_REMOTE_DIR="/home/$USER/.sshpic/integration" \
 ```
 
 The test is gated behind the `integration` build tag and explicit env vars, so normal `go test ./...` never touches a real SSH host.
+
+## How do I run the real macOS+iTerm2 Codex Cmd+V E2E?
+
+Use this only on a Mac where it is acceptable to run the real install hook during the test. The script snapshots iTerm2 defaults before install and restores them by default after the test.
+
+```sh
+git pull origin main
+SSHPIC_E2E_HOST='169.213.3.141' \
+  scripts/verify-iterm2-codex-e2e.sh
+```
+
+The script will:
+
+- capture iTerm2 `GlobalKeyMap` before install,
+- capture both sshpic log locations before install,
+- run the same `./install.sh` path a fresh user runs,
+- prepare a tiny local PNG clipboard fixture,
+- ask the tester to run `ssh <host>`, start `codex`, press `Cmd+V`, and confirm the path appeared exactly once with no popup,
+- verify `/home/$USER/.sshpic/images/clipboard.png` over SSH,
+- run a plain-text paste check,
+- capture iTerm2 keymap and sshpic logs after image/text paste,
+- write a complete evidence bundle under `.sshpic-e2e/`.
+
+If install, keymap validation, clipboard fixture setup, or remote verification fails, the script exits non-zero and still leaves an evidence bundle to send back.
+
+By default the script restores iTerm2 defaults after the test. If it cannot back up iTerm2 defaults first, it refuses to run with restore enabled:
+
+```sh
+SSHPIC_E2E_RESTORE_ITERM2=1
+```
+
+To keep the installed hook after a successful test:
+
+```sh
+SSHPIC_E2E_RESTORE_ITERM2=0 \
+SSHPIC_E2E_HOST='169.213.3.141' \
+  scripts/verify-iterm2-codex-e2e.sh
+```
+
+Send back the generated `sshpic-real-codex-e2e-*.tar.gz` bundle. It includes the required intermediate and final evidence, including:
+
+```sh
+defaults read com.googlecode.iterm2 GlobalKeyMap | grep -i sshpic -C 3 || true
+cat ~/.cache/sshpic/sshpic.log 2>/dev/null || true
+cat ~/Library/Caches/sshpic/sshpic.log 2>/dev/null || true
+```
+
+Do not send private keys, tokens, or unrelated shell history.
