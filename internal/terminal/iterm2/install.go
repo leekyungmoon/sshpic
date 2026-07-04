@@ -808,9 +808,10 @@ Behavior:
 - No newline is emitted unless paste.insert_newline=true or --insert-newline is used.
 
 Known limitation:
-- The no-Python fallback uses iTerm2's coprocess insertion mechanism because
-  iTerm2 documents coprocess stdout as keyboard input. If a session already has
-  an active coprocess, use the Python RPC path when available.
+- The no-Python fallback uses iTerm2 Run Coprocess only as a launcher. It writes
+  the payload into the current session with iTerm2 AppleScript write text ...
+  newline NO instead of relying on coprocess stdout insertion. If macOS
+  automation policy blocks AppleScript, use the Python RPC path when available.
 `, shortcut, cmd, shortcut, scriptFunctionName, shortcut, scriptFunctionInvocation)
 	return Snippet{Terminal: "iterm2", Text: text}
 }
@@ -904,9 +905,23 @@ func profileGUID(host string) string {
 
 func SafeCoprocessCommand(binary string) string {
 	quotedBinary := shellquote.Quote(firstNonEmpty(strings.TrimSpace(binary), "sshpic"))
-	pathPrefix := "PATH=\"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH\"; export PATH; "
-	inner := pathPrefix + "mkdir -p \"$HOME/.cache/sshpic\" && " + quotedBinary + " iterm2-paste --output=payload --session-tty '\\(tty)' --session-job-pid '\\(jobPid)' 2>> \"$HOME/.cache/sshpic/sshpic.log\""
-	return "/bin/sh -lc " + shellquote.Quote(inner)
+	lines := []string{
+		`PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"; export PATH`,
+		`mkdir -p "$HOME/.cache/sshpic"`,
+		`payload_file=$(mktemp "${TMPDIR:-/tmp/}sshpic-payload.XXXXXX") || exit 1`,
+		`trap 'rm -f "$payload_file"' EXIT HUP INT TERM`,
+		quotedBinary + ` iterm2-paste --output=payload --session-tty '\(tty)' --session-job-pid '\(jobPid)' > "$payload_file" 2>> "$HOME/.cache/sshpic/sshpic.log" || exit 1`,
+		`/usr/bin/osascript <<OSA 2>> "$HOME/.cache/sshpic/sshpic.log"`,
+		`set payloadPath to "$payload_file"`,
+		`set payloadText to read POSIX file payloadPath as «class utf8»`,
+		`tell application "iTerm2"`,
+		`  tell current session of current window`,
+		`    write text payloadText newline NO`,
+		`  end tell`,
+		`end tell`,
+		`OSA`,
+	}
+	return "/bin/sh -lc " + shellquote.Quote(strings.Join(lines, "\n"))
 }
 
 func globalCoprocessCommand(binary string, cfg config.Config) string {
