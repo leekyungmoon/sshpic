@@ -2,7 +2,7 @@
 
 🖼️ Paste local screenshots into remote SSH coding-agent terminals with normal `Cmd+V`.
 
-![8-second sshpic demo: copy image, press Cmd+V in iTerm2, remote path appears](docs/assets/sshpic-demo.gif)
+![8-second sshpic demo: copy image, press Cmd+V in iTerm2, remote path appears](docs/assets/sshpic-hero.gif)
 
 ## ✨ Before / After
 
