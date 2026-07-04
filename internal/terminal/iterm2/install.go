@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	iterm2PayloadCommand     = "sshpic iterm2-paste --output=payload"
+	iterm2PayloadCommand     = "sshpic paste --output=payload"
 	dynamicProfileFile       = "sshpic.json"
 	autoLaunchScriptFile     = "sshpic_smart_paste.py"
 	scriptFunctionName       = "sshpic_paste"
@@ -451,9 +451,9 @@ func LaunchPythonRPCScript(ctx context.Context, scriptPath string) (bool, string
 
 func PythonRPCScript(binary string) string {
 	quotedBinary := jsonString(firstNonEmpty(strings.TrimSpace(binary), "sshpic"))
-	quotedCommand := jsonString(iterm2PayloadCommand)
 	return fmt.Sprintf(`#!/usr/bin/env python3
 import asyncio
+import json
 import os
 import subprocess
 import traceback
@@ -461,9 +461,10 @@ import traceback
 import iterm2
 
 SSHPIC = %s
-PAYLOAD_COMMAND = %s
 LOG_PATH = os.path.expanduser("~/.cache/sshpic/sshpic.log")
 TIMEOUT_SECONDS = 60
+INVOCATION_COUNT = 0
+IN_NATIVE_PASTE = False
 
 
 def _log(message):
@@ -475,8 +476,8 @@ def _log(message):
         pass
 
 
-async def _payload(session_id, tty, command_line, job_pid):
-    args = [SSHPIC, "iterm2-paste", "--output=payload"]
+async def _dispatch(session_id, tty, command_line, job_pid):
+    args = [SSHPIC, "iterm2-dispatch", "--output=json"]
     if session_id:
         args += ["--session-id", str(session_id)]
     if tty:
@@ -499,18 +500,22 @@ async def _payload(session_id, tty, command_line, job_pid):
                 proc.kill()
             except Exception:
                 pass
-        _log("sshpic paste timed out")
-        return b""
+        _log("sshpic dispatch timed out")
+        return {"action": "native_paste", "reason": "dispatch timed out"}
     except Exception:
-        _log("sshpic paste launch failed:\n" + traceback.format_exc())
-        return b""
+        _log("sshpic dispatch launch failed:\n" + traceback.format_exc())
+        return {"action": "native_paste", "reason": "dispatch launch failed"}
 
     if stderr:
         _log("sshpic stderr: " + stderr.decode("utf-8", errors="replace").rstrip())
     if proc.returncode != 0:
-        _log("sshpic exited with status %%s" %% proc.returncode)
-        return b""
-    return stdout
+        _log("sshpic dispatch exited with status %%s" %% proc.returncode)
+        return {"action": "native_paste", "reason": "dispatch exited non-zero"}
+    try:
+        return json.loads(stdout.decode("utf-8"))
+    except Exception:
+        _log("sshpic dispatch JSON parse failed; stdout bytes=%%s" %% len(stdout))
+        return {"action": "native_paste", "reason": "dispatch JSON parse failed"}
 
 
 async def main(connection):
@@ -523,14 +528,35 @@ async def main(connection):
         command_line=iterm2.Reference("commandLine?"),
         job_pid=iterm2.Reference("jobPid?"),
     ):
+        global INVOCATION_COUNT, IN_NATIVE_PASTE
+        INVOCATION_COUNT += 1
+        _log("sshpic invocation: path=python count=%%s session_id=%%s tty=%%s job_pid=%%s recursion_guard=%%s" %% (
+            INVOCATION_COUNT,
+            session_id or "",
+            tty or "",
+            job_pid or "",
+            "active" if IN_NATIVE_PASTE else "clear",
+        ))
+        if IN_NATIVE_PASTE:
+            _log("sshpic recursion guard: path=python re-entry skipped")
+            return
         try:
             session = app.get_session_by_id(session_id) if session_id else None
             if session is None:
                 _log("sshpic paste skipped: no focused iTerm2 session")
                 return
-            payload = await _payload(session_id, tty, command_line, job_pid)
-            if payload:
-                await session.async_send_text(payload.decode("utf-8"), suppress_broadcast=True)
+            decision = await _dispatch(session_id, tty, command_line, job_pid)
+            if decision.get("action") == "insert" and decision.get("payload"):
+                _log("sshpic action: insert image payload via session.async_send_text")
+                await session.async_send_text(decision.get("payload"), suppress_broadcast=True)
+                return
+            _log("sshpic action: native paste via iTerm2 MainMenu Paste delegation_method=mainmenu recursion_guard=enter")
+            IN_NATIVE_PASTE = True
+            try:
+                await iterm2.MainMenu.async_select_menu_item(connection, "Paste")
+                _log("sshpic native paste result: delegation_method=mainmenu rc=0 stderr= recursion_guard=exit")
+            finally:
+                IN_NATIVE_PASTE = False
         except Exception:
             _log("sshpic_paste exception:\n" + traceback.format_exc())
 
@@ -538,7 +564,7 @@ async def main(connection):
 
 
 iterm2.run_forever(main)
-`, quotedBinary, quotedCommand)
+`, quotedBinary)
 }
 
 func jsonString(s string) string {
@@ -747,7 +773,7 @@ func InstallSummary(result InstallResult) string {
 		b.WriteString("iTerm2 Python API: enabled\n")
 	}
 	if result.CoprocessFallback {
-		b.WriteString("iTerm2 Python API: not required; no-Python Cmd+V fallback installed\n")
+		b.WriteString("iTerm2 Python API: not required; no-Python Cmd+V native-paste fallback installed\n")
 	}
 	if result.GlobalKey != "" {
 		b.WriteString("global Cmd+V key: " + result.GlobalKey + "\n")
@@ -755,7 +781,7 @@ func InstallSummary(result InstallResult) string {
 			b.WriteString("global function: " + result.GlobalFunction + "\n")
 		}
 		if result.GlobalCommand != "" {
-			b.WriteString("global action: no-Python payload helper\n")
+			b.WriteString("global action: no-Python smart paste dispatcher\n")
 		}
 	}
 	if result.ScriptLaunched {
@@ -792,9 +818,9 @@ screenshot.
 
 Install strategy:
 - If the iTerm2 Python runtime is ready, sshpic installs the %q Python RPC path.
-- If the runtime is unavailable, sshpic installs a no-Python Cmd+V fallback that
-  runs the same payload helper quietly and logs integration errors to
-  ~/.cache/sshpic/sshpic.log.
+- If the runtime is unavailable, sshpic installs a no-Python Cmd+V dispatcher
+  that handles image clipboard uploads and delegates ordinary text to iTerm2's
+  native Paste path instead of retyping text through sshpic.
 
 Advanced fallback for dotfiles or locked-down machines only:
 1. iTerm2 → Settings → Profiles → Keys → Key Mappings.
@@ -804,14 +830,16 @@ Advanced fallback for dotfiles or locked-down machines only:
 
 Behavior:
 - Image clipboard: sshpic detects the foreground local ssh session, uploads over SSH, and inserts the remote image path.
-- Text clipboard: sshpic emits the original text exactly once.
+- Text clipboard: sshpic delegates to iTerm2 native Paste. The default Cmd+V
+  integration must not read and retype ordinary text through sshpic.
 - No newline is emitted unless paste.insert_newline=true or --insert-newline is used.
 
 Known limitation:
-- The no-Python fallback uses iTerm2 Run Coprocess only as a launcher. It writes
-  the payload into the current session with iTerm2 AppleScript write text ...
-  newline NO instead of relying on coprocess stdout insertion. If macOS
-  automation policy blocks AppleScript, use the Python RPC path when available.
+- The no-Python fallback uses iTerm2 Run Coprocess only as a launcher. For
+  ordinary text it attempts iTerm2's native Edit > Paste through macOS
+  automation rather than retyping clipboard text. If macOS automation policy
+  blocks that native paste delegation, the install/test must be treated as not
+  release-ready rather than changing the user's shortcut.
 `, shortcut, cmd, shortcut, scriptFunctionName, shortcut, scriptFunctionInvocation)
 	return Snippet{Terminal: "iterm2", Text: text}
 }
@@ -908,18 +936,57 @@ func SafeCoprocessCommand(binary string) string {
 	lines := []string{
 		`PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"; export PATH`,
 		`mkdir -p "$HOME/.cache/sshpic"`,
-		`payload_file=$(mktemp "${TMPDIR:-/tmp/}sshpic-payload.XXXXXX") || exit 1`,
-		`trap 'rm -f "$payload_file"' EXIT HUP INT TERM`,
-		quotedBinary + ` iterm2-paste --output=payload --session-tty '\(tty)' --session-job-pid '\(jobPid)' > "$payload_file" 2>> "$HOME/.cache/sshpic/sshpic.log" || exit 1`,
-		`/usr/bin/osascript <<OSA 2>> "$HOME/.cache/sshpic/sshpic.log"`,
+		`log_path="$HOME/.cache/sshpic/sshpic.log"`,
+		`guard_dir="${TMPDIR:-/tmp}/sshpic-native-paste.guard"`,
+		`guard_acquired=0`,
+		`guard_state=clear; [ -d "$guard_dir" ] && guard_state=active`,
+		`printf '%s sshpic invocation: path=coprocess pid=%s tty=%s job_pid=%s recursion_guard=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" '\(tty)' '\(jobPid)' "$guard_state" >> "$log_path"`,
+		`action_file=$(mktemp "${TMPDIR:-/tmp/}sshpic-action.XXXXXX") || exit 0`,
+		`payload_file=$(mktemp "${TMPDIR:-/tmp/}sshpic-payload.XXXXXX") || exit 0`,
+		`trap '[ "$guard_acquired" = "1" ] && rmdir "$guard_dir" 2>/dev/null || true; rm -f "$action_file" "$payload_file"' EXIT HUP INT TERM`,
+		quotedBinary + ` iterm2-dispatch --action-file "$action_file" --payload-file "$payload_file" --session-tty '\(tty)' --session-job-pid '\(jobPid)' >/dev/null 2>> "$log_path" || true`,
+		`action=$(cat "$action_file" 2>/dev/null || printf native_paste)`,
+		`case "$action" in`,
+		`  insert)`,
+		`    printf '%s sshpic action: insert image payload via iTerm2 AppleScript delegation_method=apple-write-text\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log_path"`,
+		`    if stderr_file=$(mktemp "${TMPDIR:-/tmp/}sshpic-osascript.XXXXXX"); then stderr_tmp=1; else stderr_file=/dev/null; stderr_tmp=0; fi`,
+		`    if /usr/bin/osascript <<OSA 2> "$stderr_file"; then osa_rc=0; else osa_rc=$?; fi`,
 		`set payloadPath to "$payload_file"`,
-		`set payloadText to read POSIX file payloadPath as «class utf8»`,
+		`set insertText to read POSIX file payloadPath as «class utf8»`,
 		`tell application "iTerm2"`,
 		`  tell current session of current window`,
-		`    write text payloadText newline NO`,
+		`    write text insertText newline NO`,
 		`  end tell`,
 		`end tell`,
 		`OSA`,
+		`    osa_stderr=$(tr '\n' ' ' < "$stderr_file" 2>/dev/null | cut -c 1-1000)`,
+		`    printf '%s sshpic osascript result: delegation_method=apple-write-text rc=%s stderr=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$osa_rc" "$osa_stderr" >> "$log_path"`,
+		`    [ "$stderr_tmp" = "1" ] && rm -f "$stderr_file" 2>/dev/null || true`,
+		`    ;;`,
+		`  *)`,
+		`    if ! mkdir "$guard_dir" 2>/dev/null; then`,
+		`      printf '%s sshpic recursion guard: path=coprocess re-entry skipped\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log_path"`,
+		`      exit 0`,
+		`    fi`,
+		`    guard_acquired=1`,
+		`    printf '%s sshpic action: native paste via System Events Edit>Paste delegation_method=system-events-edit-paste recursion_guard=enter\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log_path"`,
+		`    if stderr_file=$(mktemp "${TMPDIR:-/tmp/}sshpic-osascript.XXXXXX"); then stderr_tmp=1; else stderr_file=/dev/null; stderr_tmp=0; fi`,
+		`    if /usr/bin/osascript <<'OSA' 2> "$stderr_file"; then osa_rc=0; else osa_rc=$?; fi`,
+		`tell application "System Events"`,
+		`  if exists process "iTerm2" then`,
+		`    tell process "iTerm2" to click menu item "Paste" of menu "Edit" of menu bar 1`,
+		`  else if exists process "iTerm" then`,
+		`    tell process "iTerm" to click menu item "Paste" of menu "Edit" of menu bar 1`,
+		`  end if`,
+		`end tell`,
+		`OSA`,
+		`    osa_stderr=$(tr '\n' ' ' < "$stderr_file" 2>/dev/null | cut -c 1-1000)`,
+		`    printf '%s sshpic native paste result: delegation_method=system-events-edit-paste rc=%s stderr=%s recursion_guard=exit\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$osa_rc" "$osa_stderr" >> "$log_path"`,
+		`    [ "$stderr_tmp" = "1" ] && rm -f "$stderr_file" 2>/dev/null || true`,
+		`    rmdir "$guard_dir" 2>/dev/null || true`,
+		`    guard_acquired=0`,
+		`    ;;`,
+		`esac`,
 	}
 	return "/bin/sh -lc " + shellquote.Quote(strings.Join(lines, "\n"))
 }

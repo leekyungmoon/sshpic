@@ -4,7 +4,7 @@
 
 `sshpic` does not need the iTerm2 Python runtime to read the clipboard, upload over SSH, or produce the remote path. Python is only one possible way to wire `Cmd+V` into iTerm2.
 
-Current `main` therefore does not stop at “runtime missing.” If the Python runtime is unavailable, `sshpic install iterm2` installs a no-Python `Cmd+V` fallback that runs the payload helper quietly and redirects integration errors to `~/.cache/sshpic/sshpic.log`.
+Current `main` therefore does not stop at “runtime missing.” If the Python runtime is unavailable, `sshpic install iterm2` installs a no-Python `Cmd+V` dispatcher that handles image clipboard uploads but delegates ordinary text to iTerm2 native Paste instead of retyping text through sshpic. Integration errors are redirected to `~/.cache/sshpic/sshpic.log`.
 
 For repeatable tester evidence, run:
 
@@ -12,7 +12,7 @@ For repeatable tester evidence, run:
 scripts/verify-iterm2-e2e.sh
 ```
 
-On runtime-missing Macs the script should still reach the `ssh → codex → image Cmd+V` checklist.
+On runtime-missing Macs the script should still reach the `ssh → codex → image Cmd+V` checklist, and the text check must pass on the first `Cmd+V` without popup or a second keypress.
 
 ## `Cmd+V` does not insert a path after a successful install
 
@@ -38,7 +38,7 @@ SSHPIC_E2E_HOST='169.213.3.141' \
   scripts/verify-iterm2-codex-e2e.sh
 ```
 
-If it still fails, send the generated evidence bundle; the log should now include the image clipboard read failure detail, not only the text fallback error. For text passthrough failures, also check `text-readback.txt`: if it does not contain the sentinel exactly, the E2E did not actually stage the text clipboard before asking for `Cmd+V`. Current text readback tries `pbpaste -Prefer txt`, bare `pbpaste`, then AppleScript clipboard text, matching the product fallback order.
+If it still fails, send the generated evidence bundle; the log should include the clipboard classification, chosen action (`insert image payload` or `native paste`), and any native-paste delegation error. For text passthrough failures, also check `text-readback.txt`: if it does not contain the sentinel exactly, the E2E did not actually stage the text clipboard before asking for `Cmd+V`. Current text readback tries `pbpaste -Prefer txt`, bare `pbpaste`, then AppleScript clipboard text, matching the product fallback order.
 
 ## Image paste logs `remote_host is required`
 
@@ -59,7 +59,7 @@ If you are inside local tmux or another wrapper that hides the local `ssh` proce
 
 That is the legacy installer path and should not be used by current `main`.
 
-Run the latest installer once. It disables active sshpic-related iTerm2 DynamicProfiles when present, removes stale helper state where possible, migrates the old default `/tmp/sshpic/${USER}` config to `/home/${USER}/.sshpic/images`, and then installs the current Cmd+V path. If the iTerm2 Python runtime is ready it installs the Python RPC path; otherwise it installs the no-Python fallback.
+Run the latest installer once. It disables active sshpic-related iTerm2 DynamicProfiles when present, removes stale helper state where possible, migrates the old default `/tmp/sshpic/${USER}` config to `/home/${USER}/.sshpic/images`, and then installs the current Cmd+V path. If the iTerm2 Python runtime is ready it installs the Python RPC path; otherwise it installs the no-Python native-paste fallback.
 
 ## `sshpic paste --output=payload` prints nothing
 
@@ -70,11 +70,11 @@ sshpic doctor
 sshpic clip --debug
 ```
 
-The iTerm2 integration calls `sshpic iterm2-paste --output=payload`, captures stderr, and writes failures to `~/.cache/sshpic/sshpic.log` instead of showing iTerm2 popups.
+The public payload primitive is still `sshpic paste --output=payload`, but the default iTerm2 `Cmd+V` integration uses the internal `sshpic iterm2-dispatch` helper so ordinary text can be delegated to native Paste instead of being retyped through sshpic. Failures are written to `~/.cache/sshpic/sshpic.log` instead of showing iTerm2 popups.
 
 ## Text paste behaves unexpectedly
 
-Text paste should insert the original text exactly once. To verify the payload primitive itself:
+Text paste should insert the original text exactly once through iTerm2 native Paste. To verify the explicit payload primitive separately:
 
 ```sh
 printf hello | pbcopy

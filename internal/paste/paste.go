@@ -75,6 +75,19 @@ func UploadLocal(ctx context.Context, cfg config.Config, img provider.LocalImage
 	return uploadImage(ctx, cfg, img, clipboard, uploader, Options{Now: now})
 }
 
+// UploadClipboardImage uploads an image that came from the local clipboard.
+// It keeps the stable clipboard filename behavior used by Execute so repeated
+// paste gestures overwrite one remote file instead of accumulating history.
+func UploadClipboardImage(ctx context.Context, cfg config.Config, img provider.LocalImage, clipboard provider.LocalImageSource, uploader RemoteUploader, opts Options) (Result, error) {
+	if opts.Now.IsZero() {
+		opts.Now = time.Now()
+	}
+	if opts.StableFilename == "" {
+		opts.StableFilename = clipboardFilename(img)
+	}
+	return uploadImage(ctx, cfg, img, clipboard, uploader, opts)
+}
+
 func uploadImage(ctx context.Context, cfg config.Config, img provider.LocalImage, clipboard provider.LocalImageSource, uploader RemoteUploader, opts Options) (Result, error) {
 	if img.Cleanup != nil {
 		defer img.Cleanup()

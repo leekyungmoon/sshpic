@@ -34,7 +34,7 @@ After a successful install, `sshpic` uploads the local image over SSH and insert
 ## Release evidence helpers
 
 ```sh
-# Run on macOS in iTerm2. Runtime-missing Macs should now install the no-Python fallback and produce the ssh → codex → image Cmd+V checklist.
+# Run on macOS in iTerm2. Runtime-missing Macs should use the no-Python native-paste fallback and must pass both image Cmd+V and first-press text Cmd+V checks.
 scripts/verify-iterm2-e2e.sh
 
 # Run only with a real SSH host and disposable sshpic-specific dir.

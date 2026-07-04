@@ -2,10 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/leekyungmoon/sshpic/internal/config"
+	"github.com/leekyungmoon/sshpic/internal/provider"
 	"github.com/leekyungmoon/sshpic/internal/terminal/iterm2"
 )
 
@@ -32,7 +36,7 @@ func TestITerm2UploaderFallsBackToConfiguredHost(t *testing.T) {
 
 func TestLoadConfigIgnoresITerm2SessionFlags(t *testing.T) {
 	t.Setenv("SSHPIC_CONFIG", t.TempDir()+"/missing.toml")
-	pa, err := parseArgs([]string{"iterm2-paste", "--output=payload", "--session-tty", "/dev/ttys001", "--session-command-line", "ssh example.com", "--session-job-pid", "12345", "--session-id", "abc"})
+	pa, err := parseArgs([]string{"iterm2-paste", "--output=payload", "--session-tty", "/dev/ttys001", "--session-command-line", "ssh example.com", "--session-job-pid", "12345", "--session-id", "abc", "--action-file", "/tmp/action", "--payload-file", "/tmp/payload"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,4 +47,110 @@ func TestLoadConfigIgnoresITerm2SessionFlags(t *testing.T) {
 	if cfg.RemoteDir != "/home/${USER}/.sshpic/images" {
 		t.Fatalf("remote_dir=%q", cfg.RemoteDir)
 	}
+}
+
+func TestITerm2DispatchDelegatesTextToNativePasteWithoutReadingText(t *testing.T) {
+	cfg := config.Defaults()
+	src := &dispatchFakeSource{imgErr: provider.ErrNoImage, text: "must-not-be-read"}
+	result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{}}, src)
+	if result.Action != "native_paste" || result.Kind != "non_image" {
+		t.Fatalf("result=%+v, want native_paste/non_image", result)
+	}
+	if src.textReads != 0 {
+		t.Fatalf("default iTerm2 Cmd+V dispatch must not read/retype text, textReads=%d", src.textReads)
+	}
+}
+
+func TestITerm2DispatchDelegatesImageReadErrorsToNativePaste(t *testing.T) {
+	cfg := config.Defaults()
+	src := &dispatchFakeSource{imgErr: errors.New("pngpaste crashed")}
+	result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{}}, src)
+	if result.Action != "native_paste" || result.Kind != "unknown" {
+		t.Fatalf("result=%+v, want native_paste/unknown", result)
+	}
+	if src.textReads != 0 {
+		t.Fatalf("image read errors must fail safe without text retyping, textReads=%d", src.textReads)
+	}
+}
+
+func TestWriteDispatchFilesRecordsNativePasteWithoutPayload(t *testing.T) {
+	dir := t.TempDir()
+	actionPath := filepath.Join(dir, "action")
+	payloadPath := filepath.Join(dir, "payload")
+	err := writeDispatchFiles(parsedArgs{Values: map[string]string{
+		"action_file":  actionPath,
+		"payload_file": payloadPath,
+	}}, iterm2DispatchResult{Action: "native_paste", Kind: "non_image", Payload: "SHOULD_NOT_LEAK"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	action, err := os.ReadFile(actionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(payloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(action) != "native_paste" {
+		t.Fatalf("action=%q", string(action))
+	}
+	if len(payload) != 0 {
+		t.Fatalf("native paste payload file must be empty, got %q", string(payload))
+	}
+}
+
+func TestWriteDispatchFilesRecordsInsertPayload(t *testing.T) {
+	dir := t.TempDir()
+	actionPath := filepath.Join(dir, "action")
+	payloadPath := filepath.Join(dir, "payload")
+	err := writeDispatchFiles(parsedArgs{Values: map[string]string{
+		"action_file":  actionPath,
+		"payload_file": payloadPath,
+	}}, iterm2DispatchResult{Action: "insert", Kind: "image", Payload: "/home/alice/.sshpic/images/clipboard.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	action, err := os.ReadFile(actionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(payloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(action) != "insert" {
+		t.Fatalf("action=%q", string(action))
+	}
+	if string(payload) != "/home/alice/.sshpic/images/clipboard.png" {
+		t.Fatalf("payload=%q", string(payload))
+	}
+}
+
+type dispatchFakeSource struct {
+	img       provider.LocalImage
+	imgErr    error
+	text      string
+	textReads int
+}
+
+func (f *dispatchFakeSource) ReadClipboardImage(context.Context) (provider.LocalImage, error) {
+	return f.img, f.imgErr
+}
+
+func (f *dispatchFakeSource) CaptureFullScreen(context.Context) (provider.LocalImage, error) {
+	return provider.LocalImage{}, provider.ErrUnsupported
+}
+
+func (f *dispatchFakeSource) CaptureRegion(context.Context) (provider.LocalImage, error) {
+	return provider.LocalImage{}, provider.ErrUnsupported
+}
+
+func (f *dispatchFakeSource) ReadClipboardText(context.Context) (string, error) {
+	f.textReads++
+	return f.text, nil
+}
+
+func (f *dispatchFakeSource) CopyTextToClipboard(context.Context, string) error {
+	return nil
 }

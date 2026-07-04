@@ -73,7 +73,7 @@ if [[ $INSTALL_RC -ne 0 ]]; then
 
 ## Result
 
-Install failed. Runtime-missing Macs are expected to install the no-Python Cmd+V fallback now, so this is not an accepted SAFE_FAIL path.
+Install failed. Runtime-missing Macs are expected to install the no-Python native-paste fallback now, so this is not an accepted SAFE_FAIL path.
 MSG
   echo "installer failed before E2E preflight could complete" >&2
   cat "$INSTALL_LOG" >&2
@@ -96,7 +96,7 @@ MODE=""
 if grep -F 'sshpic_paste()' <<<"$KEYMAP" >/dev/null; then
   MODE="PYTHON_RPC"
 fi
-if grep -F 'iterm2-paste' <<<"$KEYMAP" >/dev/null && \
+if grep -F 'iterm2-dispatch' <<<"$KEYMAP" >/dev/null && \
    grep -F -- '--session-tty' <<<"$KEYMAP" >/dev/null && \
    grep -F -- '--session-job-pid' <<<"$KEYMAP" >/dev/null; then
   MODE="NO_PYTHON_COPROCESS"
@@ -107,7 +107,11 @@ if [[ -z "$MODE" ]]; then
   exit 1
 fi
 if grep -F 'sshpic paste --output=payload' <<<"$KEYMAP" >/dev/null; then
-  echo "iTerm2 GlobalKeyMap still contains legacy sshpic paste command mapping" >&2
+	echo "iTerm2 GlobalKeyMap still contains legacy sshpic paste command mapping" >&2
+	exit 1
+fi
+if grep -F 'iterm2-paste' <<<"$KEYMAP" >/dev/null; then
+  echo "iTerm2 GlobalKeyMap must use iterm2-dispatch, not text-payload iterm2-paste" >&2
   exit 1
 fi
 if grep -F -- '--remote-host' <<<"$KEYMAP" >/dev/null; then

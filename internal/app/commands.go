@@ -4,6 +4,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -65,6 +66,8 @@ func Run(args []string, build BuildInfo, stdout, stderr io.Writer) int {
 		return runPaste(ctx, pa, stdout, stderr)
 	case "iterm2-paste":
 		return runITerm2Paste(ctx, pa, stdout, stderr)
+	case "iterm2-dispatch":
+		return runITerm2Dispatch(ctx, pa, stdout, stderr)
 	case "clip", "shot", "full", "file":
 		return runUploadCommand(ctx, cmd, pa, stdout, stderr)
 	case "clean":
@@ -235,6 +238,85 @@ func runITerm2Paste(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer
 	return 0
 }
 
+type iterm2DispatchResult struct {
+	Action  string `json:"action"`
+	Kind    string `json:"kind,omitempty"`
+	Payload string `json:"payload,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+func runITerm2Dispatch(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int {
+	cfg, _, err := loadConfig(pa)
+	if err != nil {
+		appendIntegrationLog("dispatch config load failed: " + err.Error())
+		return 1
+	}
+	result := buildITerm2Dispatch(ctx, cfg, pa)
+	if err := writeDispatchFiles(pa, result); err != nil {
+		appendIntegrationLog("dispatch file write failed: " + err.Error())
+		return 1
+	}
+	switch output := firstNonEmpty(pa.Values["output"], "none"); output {
+	case "none", "":
+		return 0
+	case "json":
+		_ = json.NewEncoder(stdout).Encode(result)
+		return 0
+	default:
+		appendIntegrationLog("unknown dispatch output mode: " + output)
+		return 2
+	}
+}
+
+func buildITerm2Dispatch(ctx context.Context, cfg config.Config, pa parsedArgs) iterm2DispatchResult {
+	return buildITerm2DispatchWithSource(ctx, cfg, pa, sourceFromConfig(cfg))
+}
+
+func buildITerm2DispatchWithSource(ctx context.Context, cfg config.Config, pa parsedArgs, src provider.LocalImageSource) iterm2DispatchResult {
+	uploader, remoteUser := iterm2Uploader(ctx, cfg, iterm2.SessionContext{
+		SessionID:   pa.Values["session_id"],
+		TTY:         pa.Values["session_tty"],
+		CommandLine: pa.Values["session_command_line"],
+		JobPID:      pa.Values["session_job_pid"],
+	})
+	img, err := src.ReadClipboardImage(ctx)
+	if errors.Is(err, provider.ErrNoImage) {
+		appendIntegrationLog("dispatch classification: native_paste no_image")
+		return iterm2DispatchResult{Action: "native_paste", Kind: "non_image", Reason: "no image clipboard"}
+	}
+	if err != nil {
+		appendIntegrationLog("dispatch classification: native_paste image_read_error: " + err.Error())
+		return iterm2DispatchResult{Action: "native_paste", Kind: "unknown", Reason: "image clipboard read failed"}
+	}
+	res, err := paste.UploadClipboardImage(ctx, cfg, img, src, uploader, paste.Options{Now: time.Now(), RemoteUser: remoteUser})
+	if err != nil {
+		appendIntegrationLog("dispatch image upload failed: " + err.Error())
+		return iterm2DispatchResult{Action: "native_paste", Kind: "image", Reason: "image upload failed"}
+	}
+	appendIntegrationLog("dispatch classification: insert image payload")
+	return iterm2DispatchResult{Action: "insert", Kind: "image", Payload: res.Payload}
+}
+
+func writeDispatchFiles(pa parsedArgs, result iterm2DispatchResult) error {
+	if path := strings.TrimSpace(pa.Values["action_file"]); path != "" {
+		if err := os.WriteFile(path, []byte(result.Action), 0o600); err != nil {
+			return err
+		}
+	}
+	if path := strings.TrimSpace(pa.Values["payload_file"]); path != "" {
+		if result.Action == "insert" {
+			if err := os.WriteFile(path, []byte(result.Payload), 0o600); err != nil {
+				return err
+			}
+		} else {
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func iterm2Uploader(ctx context.Context, cfg config.Config, sess iterm2.SessionContext) (upload.SSHCat, string) {
 	if target, ok := iterm2.DetectSSHTarget(ctx, sess); ok {
 		return upload.SSHCat{Args: target.Args}, target.User
@@ -370,7 +452,7 @@ func loadConfig(pa parsedArgs) (config.Config, string, error) {
 
 func nonConfigValueFlag(key string) bool {
 	switch key {
-	case "config", "output", "session_id", "session_tty", "session_command_line", "session_job_pid":
+	case "config", "output", "session_id", "session_tty", "session_command_line", "session_job_pid", "action_file", "payload_file":
 		return true
 	default:
 		return false
@@ -389,7 +471,7 @@ func sourceFromConfig(cfg config.Config) provider.MacOSProvider {
 func parseArgs(args []string) (parsedArgs, error) {
 	pa := parsedArgs{Values: map[string]string{}, Bools: map[string]bool{}}
 	boolFlags := map[string]bool{"help": true, "debug": true, "json": true, "dry-run": true, "yes": true, "force": true, "no-copy": true, "insert-newline": true, "no-verify": true, "no-open": true}
-	valueFlags := map[string]bool{"config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true}
+	valueFlags := map[string]bool{"config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true, "action-file": true, "payload-file": true}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {

@@ -198,13 +198,13 @@ func TestInstallUsesNoPythonCoprocessFallbackWhenRuntimeMissingAndRemovesHelper(
 	if !result.CoprocessFallback || result.GlobalKey != "0x76-0x100000" {
 		t.Fatalf("expected coprocess fallback keymap: %+v", result)
 	}
-	for _, want := range []string{"/opt/homebrew/bin", "export PATH", "mktemp", "payload_file", "iterm2-paste", "--output=payload", "--session-tty", `\(tty)`, "--session-job-pid", `\(jobPid)`, "osascript", "write text payloadText newline NO", "2>>", "$HOME/.cache/sshpic"} {
+	for _, want := range []string{"/opt/homebrew/bin", "export PATH", "mktemp", "action_file", "payload_file", "iterm2-dispatch", "--action-file", "--payload-file", "--session-tty", `\(tty)`, "--session-job-pid", `\(jobPid)`, "sshpic invocation: path=coprocess", "recursion_guard=enter", "delegation_method=system-events-edit-paste", "sshpic native paste result", "System Events", `menu item "Paste"`, "write text insertText newline NO", "$HOME/.cache/sshpic"} {
 		if !strings.Contains(installedCommand, want) {
 			t.Fatalf("fallback command missing %q:\n%s", want, installedCommand)
 		}
 	}
-	if strings.Contains(installedCommand, "--remote-host") || strings.Contains(installedCommand, " paste --output=payload") {
-		t.Fatalf("fallback command must not pin host or use legacy paste command:\n%s", installedCommand)
+	if strings.Contains(installedCommand, "--remote-host") || strings.Contains(installedCommand, "iterm2-paste") || strings.Contains(installedCommand, "payloadText") {
+		t.Fatalf("fallback command must not pin host or use legacy text payload retyping:\n%s", installedCommand)
 	}
 	if _, statErr := os.Stat(legacyScript); !os.IsNotExist(statErr) {
 		t.Fatalf("legacy helper should be removed, stat err=%v", statErr)
@@ -255,13 +255,13 @@ func TestInstallDisablesAllLegacySSHpicDynamicProfiles(t *testing.T) {
 
 func TestPythonRPCScriptCallsQuietPayloadCommand(t *testing.T) {
 	script := PythonRPCScript("/opt/homebrew/bin/sshpic")
-	for _, want := range []string{"@iterm2.RPC", "async_send_text", "iterm2-paste", "--session-command-line", "~/.cache/sshpic/sshpic.log", "traceback.format_exc()"} {
+	for _, want := range []string{"@iterm2.RPC", "async_send_text", "iterm2-dispatch", "--output=json", "--session-command-line", "sshpic invocation: path=python", "recursion_guard=enter", "sshpic native paste result: delegation_method=mainmenu", `MainMenu.async_select_menu_item(connection, "Paste")`, "~/.cache/sshpic/sshpic.log", "traceback.format_exc()"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("script missing %q:\n%s", want, script)
 		}
 	}
-	if strings.Contains(script, "Run Coprocess") || strings.Contains(script, "paste --output=payload --remote-host") {
-		t.Fatalf("script should not use legacy coprocess/fixed host path:\n%s", script)
+	if strings.Contains(script, "Run Coprocess") || strings.Contains(script, "iterm2-paste") || strings.Contains(script, "paste --output=payload --remote-host") {
+		t.Fatalf("script should not use legacy coprocess/fixed host/text payload path:\n%s", script)
 	}
 }
 

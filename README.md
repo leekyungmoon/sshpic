@@ -34,7 +34,7 @@ cd sshpic
 curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh | bash
 ```
 
-The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, cleans old sshpic iTerm2 integration state, and enables normal `Cmd+V` image paste in iTerm2. If the local iTerm2 Python runtime is unavailable, the installer uses a no-Python fallback instead of asking the user to configure iTerm2 manually.
+The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, cleans old sshpic iTerm2 integration state, and enables normal `Cmd+V` image paste in iTerm2. Text paste remains the native iTerm2 paste path; sshpic must not retype ordinary clipboard text.
 
 ## ⚡ Quick Start
 
@@ -62,8 +62,8 @@ When `Cmd+V` runs in an iTerm2 SSH session:
 1. `sshpic` reads the local clipboard.
 2. If the clipboard contains an image, `sshpic` detects the foreground local `ssh` target, saves the image to a temp file, uploads it over SSH stdin, and returns the remote path.
 3. The remote command creates the directory with `umask 077` and writes the file as mode `0600`.
-4. iTerm2 inserts exactly the payload into the focused session input.
-5. If the clipboard contains text instead of an image, the original text is inserted exactly once.
+4. iTerm2 inserts the remote image path into the focused session input.
+5. If the clipboard contains text instead of an image, sshpic delegates to iTerm2 native Paste so normal text paste remains unchanged.
 
 Payload mode emits no debug text, shell command, terminal control sequence, or accidental newline.
 
