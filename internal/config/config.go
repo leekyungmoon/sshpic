@@ -53,7 +53,7 @@ type Overrides struct {
 // Defaults returns secure v0.1 defaults.
 func Defaults() Config {
 	return Config{
-		RemoteDir:        "/tmp/sshpic/${USER}",
+		RemoteDir:        "/home/${USER}/.sshpic/images",
 		CopyToClipboard:  true,
 		FilenameTemplate: "sshpic-{timestamp}-{rand}.{ext}",
 		Paste: PasteConfig{

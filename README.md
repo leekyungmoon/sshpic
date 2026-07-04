@@ -32,19 +32,17 @@ The installer builds and installs `sshpic`, prepares the macOS clipboard helper 
 
 ## Quick Start
 
-After installation, use the terminal exactly the way you already do:
+After installation, keep your normal remote coding flow:
+
+1. Open iTerm2 and SSH into your remote machine.
+2. Start Codex in that SSH session.
+3. Copy or capture an image on your Mac.
+4. Focus the Codex input and press `Cmd+V`.
+
+Codex receives a remote path like:
 
 ```text
-ssh my-host
-codex
-copy image locally
-Cmd+V
-```
-
-The Codex input receives a remote path like:
-
-```text
-/tmp/sshpic/alice/sshpic-20260704-150405-a1b2c3d4e5f6.png
+/home/alice/.sshpic/images/sshpic-20260704-150405-a1b2c3d4e5f6.png
 ```
 
 No config editing, snippet printing, iTerm2 settings clicking, or per-screenshot upload command is part of the normal flow.
@@ -78,6 +76,7 @@ Codex CLI, Claude Code, or another terminal agent must separately know how to us
 
 `sshpic` is built for a conservative local-to-SSH workflow:
 
+- Default remote storage is under `/home/${USER}/.sshpic/images`, not `/tmp`.
 - No remote install.
 - No cloud upload.
 - No SSH config mutation by default.

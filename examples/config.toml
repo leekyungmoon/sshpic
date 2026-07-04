@@ -1,5 +1,5 @@
 remote_host = "codex141"
-remote_dir = "/tmp/sshpic/${USER}"
+remote_dir = "/home/${USER}/.sshpic/images"
 copy_to_clipboard = true
 filename_template = "sshpic-{timestamp}-{rand}.{ext}"
 

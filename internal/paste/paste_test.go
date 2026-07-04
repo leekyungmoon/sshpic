@@ -93,6 +93,32 @@ func TestExecuteImagePayloadOnlyNoNewline(t *testing.T) {
 	}
 }
 
+func TestExecuteImageUsesDetectedRemoteUserForDefaultHomeDir(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "img-*.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.CopyToClipboard = false
+	src := &fakeSource{img: provider.LocalImage{Path: file.Name(), Format: "png"}}
+	res, err := Execute(context.Background(), cfg, src, &fakeUploader{}, Options{
+		Now:        time.Date(2026, 7, 4, 1, 2, 3, 0, time.UTC),
+		RemoteUser: "remotealice",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(res.Payload, "/home/remotealice/.sshpic/images/sshpic-20260704-010203-") {
+		t.Fatalf("payload=%q", res.Payload)
+	}
+}
+
 func TestExecuteTextPassthroughExactlyOnce(t *testing.T) {
 	cfg := config.Defaults()
 	text := "hello\nworld"

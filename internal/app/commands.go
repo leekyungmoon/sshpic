@@ -194,13 +194,13 @@ func runITerm2Paste(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer
 		return 1
 	}
 	src := sourceFromConfig(cfg)
-	uploader := iterm2Uploader(ctx, cfg, iterm2.SessionContext{
+	uploader, remoteUser := iterm2Uploader(ctx, cfg, iterm2.SessionContext{
 		SessionID:   pa.Values["session_id"],
 		TTY:         pa.Values["session_tty"],
 		CommandLine: pa.Values["session_command_line"],
 		JobPID:      pa.Values["session_job_pid"],
 	})
-	res, err := paste.Execute(ctx, cfg, src, uploader, paste.Options{})
+	res, err := paste.Execute(ctx, cfg, src, uploader, paste.Options{RemoteUser: remoteUser})
 	if err != nil {
 		appendIntegrationLog("paste failed: " + err.Error())
 		return 1
@@ -223,11 +223,11 @@ func runITerm2Paste(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer
 	return 0
 }
 
-func iterm2Uploader(ctx context.Context, cfg config.Config, sess iterm2.SessionContext) upload.SSHCat {
+func iterm2Uploader(ctx context.Context, cfg config.Config, sess iterm2.SessionContext) (upload.SSHCat, string) {
 	if target, ok := iterm2.DetectSSHTarget(ctx, sess); ok {
-		return upload.SSHCat{Args: target.Args}
+		return upload.SSHCat{Args: target.Args}, target.User
 	}
-	return upload.SSHCat{Host: cfg.RemoteHost}
+	return upload.SSHCat{Host: cfg.RemoteHost}, ""
 }
 
 func runUploadCommand(ctx context.Context, cmd string, pa parsedArgs, stdout, stderr io.Writer) int {
@@ -423,7 +423,7 @@ Usage:
 Global flags:
   --config <path>              config path (default ~/.config/sshpic/config.toml)
   --remote-host <host>         SSH host for uploads
-  --remote-dir <path>          remote directory, default /tmp/sshpic/${USER}
+  --remote-dir <path>          remote directory, default /home/${USER}/.sshpic/images
   --output=payload             paste primitive: stdout is only insertable payload
   --insert-newline             opt-in newline after payload
   --no-copy                    do not copy remote path back to local clipboard

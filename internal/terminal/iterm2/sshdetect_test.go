@@ -21,7 +21,18 @@ func TestSSHTargetFromCommandLineUserHostAndOptions(t *testing.T) {
 		t.Fatal("expected ssh target")
 	}
 	want := []string{"-p", "2222", "-i", "~/.ssh/id_ed25519", "alice@example.com"}
-	if target.Host != "alice@example.com" || !reflect.DeepEqual(target.Args, want) {
+	if target.Host != "alice@example.com" || target.User != "alice" || !reflect.DeepEqual(target.Args, want) {
+		t.Fatalf("target=%+v want args=%v", target, want)
+	}
+}
+
+func TestSSHTargetFromCommandLineDashLUser(t *testing.T) {
+	target, ok := SSHTargetFromCommandLine("ssh -l bob -p 2222 example.com")
+	if !ok {
+		t.Fatal("expected ssh target")
+	}
+	want := []string{"-l", "bob", "-p", "2222", "example.com"}
+	if target.Host != "example.com" || target.User != "bob" || !reflect.DeepEqual(target.Args, want) {
 		t.Fatalf("target=%+v want args=%v", target, want)
 	}
 }

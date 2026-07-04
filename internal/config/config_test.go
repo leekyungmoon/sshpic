@@ -66,6 +66,9 @@ func TestLoadInvalidEnvBooleanFails(t *testing.T) {
 
 func TestDefaultsUseCmdVSmartPaste(t *testing.T) {
 	cfg := Defaults()
+	if cfg.RemoteDir != "/home/${USER}/.sshpic/images" {
+		t.Fatalf("default remote_dir=%q", cfg.RemoteDir)
+	}
 	if cfg.Paste.Shortcut != "cmd+v" {
 		t.Fatalf("default shortcut=%q, want cmd+v", cfg.Paste.Shortcut)
 	}

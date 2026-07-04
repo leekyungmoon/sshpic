@@ -30,7 +30,8 @@ type Result struct {
 }
 
 type Options struct {
-	Now time.Time
+	Now        time.Time
+	RemoteUser string
 }
 
 // Execute reads image-or-text clipboard state and returns exactly the payload an integration should insert.
@@ -40,7 +41,7 @@ func Execute(ctx context.Context, cfg config.Config, src provider.LocalImageSour
 	}
 	img, err := src.ReadClipboardImage(ctx)
 	if err == nil {
-		return uploadImage(ctx, cfg, img, src, uploader, opts.Now)
+		return uploadImage(ctx, cfg, img, src, uploader, opts)
 	}
 	if !errors.Is(err, provider.ErrNoImage) {
 		return Result{}, err
@@ -67,12 +68,15 @@ func UploadLocal(ctx context.Context, cfg config.Config, img provider.LocalImage
 	if now.IsZero() {
 		now = time.Now()
 	}
-	return uploadImage(ctx, cfg, img, clipboard, uploader, now)
+	return uploadImage(ctx, cfg, img, clipboard, uploader, Options{Now: now})
 }
 
-func uploadImage(ctx context.Context, cfg config.Config, img provider.LocalImage, clipboard provider.LocalImageSource, uploader RemoteUploader, now time.Time) (Result, error) {
+func uploadImage(ctx context.Context, cfg config.Config, img provider.LocalImage, clipboard provider.LocalImageSource, uploader RemoteUploader, opts Options) (Result, error) {
 	if img.Cleanup != nil {
 		defer img.Cleanup()
+	}
+	if opts.Now.IsZero() {
+		opts.Now = time.Now()
 	}
 	if img.Path == "" {
 		return Result{}, errors.New("local image path is empty")
@@ -80,13 +84,10 @@ func uploadImage(ctx context.Context, cfg config.Config, img provider.LocalImage
 	if _, err := os.Stat(img.Path); err != nil {
 		return Result{}, err
 	}
-	user := os.Getenv("USER")
-	if user == "" {
-		user = "user"
-	}
+	user := firstNonEmpty(strings.TrimSpace(opts.RemoteUser), os.Getenv("USER"), "user")
 	home := os.Getenv("HOME")
 	remoteDir := pathfmt.ExpandRemoteDir(cfg.RemoteDir, user, home)
-	filename, err := pathfmt.GenerateFilenameRandom(cfg.FilenameTemplate, firstNonEmpty(img.Format, pathfmt.ExtensionFromPath(img.Path)), now)
+	filename, err := pathfmt.GenerateFilenameRandom(cfg.FilenameTemplate, firstNonEmpty(img.Format, pathfmt.ExtensionFromPath(img.Path)), opts.Now)
 	if err != nil {
 		return Result{}, err
 	}

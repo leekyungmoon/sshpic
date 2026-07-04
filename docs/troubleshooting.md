@@ -80,7 +80,7 @@ Run this from macOS/iTerm2:
 scripts/verify-iterm2-e2e.sh
 ```
 
-The evidence checklist uses the real target flow: install, open iTerm2, `ssh <host>`, run `codex`, copy a local PNG, press `Cmd+V` in the Codex input, and verify that a `/tmp/sshpic/...png` path is inserted with no popup.
+The evidence checklist uses the real target flow: install, open iTerm2, `ssh <host>`, run `codex`, copy a local PNG, press `Cmd+V` in the Codex input, and verify that a `/home/<user>/.sshpic/images/...png` path is inserted with no popup.
 
 ## How do I prove real SSH upload behavior?
 
@@ -88,7 +88,7 @@ Use the opt-in integration test with a disposable sshpic-specific directory:
 
 ```sh
 SSHPIC_INTEGRATION_HOST=codex141 \
-SSHPIC_INTEGRATION_REMOTE_DIR="/tmp/sshpic/$USER" \
+SSHPIC_INTEGRATION_REMOTE_DIR="/home/$USER/.sshpic/integration" \
   scripts/verify-ssh-integration.sh
 ```
 

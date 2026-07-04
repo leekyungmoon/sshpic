@@ -39,6 +39,6 @@ scripts/verify-iterm2-e2e.sh
 
 # Run only with a real SSH host and disposable sshpic-specific dir.
 SSHPIC_INTEGRATION_HOST=codex141 \
-SSHPIC_INTEGRATION_REMOTE_DIR="/tmp/sshpic/$USER" \
+SSHPIC_INTEGRATION_REMOTE_DIR="/home/$USER/.sshpic/integration" \
   scripts/verify-ssh-integration.sh
 ```

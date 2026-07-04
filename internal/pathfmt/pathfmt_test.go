@@ -56,8 +56,8 @@ func TestBuildRemotePathStaysUnderDir(t *testing.T) {
 }
 
 func TestExpandRemoteDir(t *testing.T) {
-	got := ExpandRemoteDir("/tmp/sshpic/${USER}", "alice", "/Users/alice")
-	if got != "/tmp/sshpic/alice" {
+	got := ExpandRemoteDir("/home/${USER}/.sshpic/images", "alice", "/Users/alice")
+	if got != "/home/alice/.sshpic/images" {
 		t.Fatalf("got %q", got)
 	}
 	got = ExpandRemoteDir("~/Pictures", "alice", "/Users/alice")

@@ -137,7 +137,7 @@ Example:
 
 ```toml
 remote_host = "codex141"
-remote_dir = "/tmp/sshpic/${USER}"
+remote_dir = "/home/${USER}/.sshpic/images"
 copy_to_clipboard = true
 filename_template = "sshpic-{timestamp}-{rand}.png"
 
@@ -332,7 +332,7 @@ sshpic/
 | iTerm2 session already has an active Coprocess | Test conflict; fallback to Python API RPC or document limitation. |
 | Cmd+V smart paste breaks normal text paste | Smart paste must pass text through exactly once; use a fallback shortcut only for debugging if Cmd+V conflicts. |
 | README overclaims Codex/Claude behavior | Say “path insertion into terminal sessions”; do not imply guaranteed native image attachment unless verified. |
-| Screenshot secrets leak to shared remote tmp | Use `0600`, `/tmp/sshpic/$USER`, security warning, and `clean`; no cloud. |
+| Screenshot secrets leak to shared remote tmp | Use `0600`, `/home/$USER/.sshpic/images`, security warning, and `clean`; no cloud. |
 | Shell injection through remote path | Dedicated shellquote package with tests. |
 | Cross-platform promise too broad | Mark Linux/Windows and non-iTerm2 terminals as roadmap/experimental until verified. |
 

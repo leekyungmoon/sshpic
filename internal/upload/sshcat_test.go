@@ -28,11 +28,11 @@ func TestSSHCatCommandArgsUsesDetectedSSHArgs(t *testing.T) {
 }
 
 func TestVerifyRemoteCommandQuotesPath(t *testing.T) {
-	cmd, err := VerifyRemoteCommand("/tmp/sshpic/$USER/sshpic-`x`.png")
+	cmd, err := VerifyRemoteCommand("/home/$USER/.sshpic/images/sshpic-`x`.png")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(cmd, "'/tmp/sshpic/$USER/sshpic-`x`.png'") {
+	if !strings.Contains(cmd, "'/home/$USER/.sshpic/images/sshpic-`x`.png'") {
 		t.Fatalf("path not safely quoted: %s", cmd)
 	}
 	if !strings.Contains(cmd, "shasum -a 256") || !strings.Contains(cmd, "sha256sum") {

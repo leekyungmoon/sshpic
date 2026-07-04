@@ -18,7 +18,7 @@ Machine-specific overrides can come from environment variables when you explicit
 
 ```sh
 export SSHPIC_REMOTE_HOST=codex141
-export SSHPIC_REMOTE_DIR='/tmp/sshpic/${USER}'
+export SSHPIC_REMOTE_DIR='/home/${USER}/.sshpic/images'
 ```
 
 The normal iTerm2 paste path detects the foreground `ssh` target at paste time, so dotfiles do not need to pin a host for everyday use.

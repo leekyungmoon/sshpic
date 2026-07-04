@@ -14,7 +14,7 @@ External, opt-in checks before tagged support claims:
 
 ```sh
 scripts/verify-iterm2-e2e.sh
-SSHPIC_INTEGRATION_HOST=<host> SSHPIC_INTEGRATION_REMOTE_DIR="/tmp/sshpic/$USER" scripts/verify-ssh-integration.sh
+SSHPIC_INTEGRATION_HOST=<host> SSHPIC_INTEGRATION_REMOTE_DIR="/home/$USER/.sshpic/integration" scripts/verify-ssh-integration.sh
 ```
 
 ## Pull requests

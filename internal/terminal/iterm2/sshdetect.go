@@ -17,6 +17,7 @@ type SessionContext struct {
 
 type SSHTarget struct {
 	Host   string
+	User   string
 	Args   []string
 	Source string
 }
@@ -96,6 +97,7 @@ func isSSHExecutable(tok string) bool {
 
 func parseSSHArgs(args []string) (SSHTarget, bool) {
 	var uploadArgs []string
+	remoteUser := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "" {
@@ -104,17 +106,23 @@ func parseSSHArgs(args []string) (SSHTarget, bool) {
 		if arg == "--" {
 			if i+1 < len(args) && cleanDestination(args[i+1]) != "" {
 				dest := cleanDestination(args[i+1])
-				return SSHTarget{Host: dest, Args: append(uploadArgs, dest)}, true
+				return targetForDestination(dest, uploadArgs, remoteUser), true
 			}
 			return SSHTarget{}, false
 		}
 		if strings.HasPrefix(arg, "-") && arg != "-" {
 			if takesSSHOptionValue(arg) {
 				if sshOptionHasInlineValue(arg) {
+					if user, ok := userFromSSHOption(arg, ""); ok {
+						remoteUser = user
+					}
 					uploadArgs = appendUploadSafeOption(uploadArgs, arg)
 					continue
 				}
 				if i+1 < len(args) {
+					if user, ok := userFromSSHOption(arg, args[i+1]); ok {
+						remoteUser = user
+					}
 					uploadArgs = appendUploadSafeOption(uploadArgs, arg, args[i+1])
 					i++
 				}
@@ -127,9 +135,44 @@ func parseSSHArgs(args []string) (SSHTarget, bool) {
 		if dest == "" {
 			return SSHTarget{}, false
 		}
-		return SSHTarget{Host: dest, Args: append(uploadArgs, dest)}, true
+		return targetForDestination(dest, uploadArgs, remoteUser), true
 	}
 	return SSHTarget{}, false
+}
+
+func targetForDestination(dest string, uploadArgs []string, remoteUser string) SSHTarget {
+	if remoteUser == "" {
+		remoteUser = userFromDestination(dest)
+	}
+	return SSHTarget{Host: dest, User: remoteUser, Args: append(uploadArgs, dest)}
+}
+
+func userFromSSHOption(arg, value string) (string, bool) {
+	if arg == "-l" {
+		return cleanSSHUser(value)
+	}
+	if strings.HasPrefix(arg, "-l") && len(arg) > 2 {
+		return cleanSSHUser(strings.TrimPrefix(arg, "-l"))
+	}
+	return "", false
+}
+
+func userFromDestination(dest string) string {
+	dest = strings.TrimSpace(strings.TrimPrefix(dest, "ssh://"))
+	if at := strings.LastIndex(dest, "@"); at > 0 {
+		if user, ok := cleanSSHUser(dest[:at]); ok {
+			return user
+		}
+	}
+	return ""
+}
+
+func cleanSSHUser(user string) (string, bool) {
+	user = strings.TrimSpace(user)
+	if user == "" || strings.ContainsAny(user, "/\\\x00") {
+		return "", false
+	}
+	return user, true
 }
 
 func appendUploadSafeOption(args []string, optionAndValue ...string) []string {

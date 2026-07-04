@@ -68,7 +68,7 @@ Host codex141
 
 func TestDynamicProfileJSONRemainsLegacyOnly(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.RemoteDir = "/tmp/sshpic/${USER}"
+	cfg.RemoteDir = "/home/${USER}/.sshpic/images"
 	data, err := DynamicProfileJSON([]string{"codex141"}, "/opt/homebrew/bin/sshpic", cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -229,12 +229,12 @@ func TestPythonRPCScriptCallsQuietPayloadCommand(t *testing.T) {
 
 func TestGlobalCoprocessCommandDoesNotInjectHostWhenUnknown(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.RemoteDir = "/tmp/sshpic/${USER}"
+	cfg.RemoteDir = "/home/${USER}/.sshpic/images"
 	got := globalCoprocessCommand("/opt/homebrew/bin/sshpic", cfg)
 	if strings.Contains(got, "--remote-host") {
 		t.Fatalf("unknown host must not be pinned into global command: %q", got)
 	}
-	if !strings.Contains(got, "--remote-dir '/tmp/sshpic/${USER}'") {
+	if !strings.Contains(got, "--remote-dir '/home/${USER}/.sshpic/images'") {
 		t.Fatalf("command %q missing remote dir", got)
 	}
 }

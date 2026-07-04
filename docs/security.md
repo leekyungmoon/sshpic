@@ -4,6 +4,7 @@
 
 ## Defaults
 
+- Default remote storage is under `/home/${USER}/.sshpic/images`, not `/tmp`.
 - No remote install.
 - No cloud upload.
 - No SSH config mutation by default.

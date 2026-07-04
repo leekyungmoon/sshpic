@@ -26,7 +26,7 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${SSHPIC_E2E_BIN:-$ROOT/bin/sshpic}"
 E2E_HOST="${SSHPIC_E2E_HOST:-my-host}"
-REMOTE_DIR_DISPLAY='/tmp/sshpic/${USER}'
+REMOTE_DIR_DISPLAY='/home/${USER}/.sshpic/images'
 mkdir -p "$(dirname "$BIN")"
 (
   cd "$ROOT"
@@ -90,9 +90,9 @@ cat > "$EVIDENCE" <<MSG
 3. On the remote host, run \`codex\`.
 4. Copy a local PNG image.
 5. Press \`Cmd+V\` inside the Codex input box.
-6. Expected: Codex input receives only a path like \`/tmp/sshpic/<user>/sshpic-....png\`.
+6. Expected: Codex input receives only a path like \`/home/<user>/.sshpic/images/sshpic-....png\`.
 7. On the remote host, verify the pasted path:
-   \`test -s /tmp/sshpic/<user>/sshpic-....png && file /tmp/sshpic/<user>/sshpic-....png\`
+   \`test -s /home/<user>/.sshpic/images/sshpic-....png && file /home/<user>/.sshpic/images/sshpic-....png\`
 8. Copy plain local text and press \`Cmd+V\` in the same Codex input.
 9. Expected: the original text is inserted exactly once.
 
