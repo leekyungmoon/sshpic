@@ -11,15 +11,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/leekyungmoon/sshpic/internal/config"
 	"github.com/leekyungmoon/sshpic/internal/shellquote"
 )
 
 const (
-	payloadCommand     = "sshpic paste --output=payload"
-	dynamicProfileFile = "sshpic.json"
-	defaultsDomain     = "com.googlecode.iterm2"
+	iterm2PayloadCommand     = "sshpic iterm2-paste --output=payload"
+	dynamicProfileFile       = "sshpic.json"
+	autoLaunchScriptFile     = "sshpic_smart_paste.py"
+	scriptFunctionName       = "sshpic_paste"
+	scriptFunctionInvocation = "sshpic_paste()"
+	defaultsDomain           = "com.googlecode.iterm2"
 )
 
 type InstallOptions struct {
@@ -29,17 +33,23 @@ type InstallOptions struct {
 	Force        bool
 	Open         bool // Deprecated no-op kept for CLI compatibility.
 	GlobalKeyMap bool
+	LaunchDaemon bool
 }
 
 type InstallResult struct {
-	ConfigPath         string
-	ConfigWritten      bool
-	DynamicProfilePath string
-	Hosts              []string
-	GlobalKey          string
-	GlobalCommand      string
-	OpenedProfile      string
-	Warnings           []string
+	ConfigPath               string
+	ConfigWritten            bool
+	ScriptPath               string
+	DynamicProfilePath       string
+	LegacyDynamicProfilePath string
+	Hosts                    []string
+	GlobalKey                string
+	GlobalCommand            string
+	GlobalFunction           string
+	OpenedProfile            string
+	PythonAPIEnabled         bool
+	ScriptLaunched           bool
+	Warnings                 []string
 }
 
 type dynamicProfiles struct {
@@ -77,9 +87,6 @@ func Install(ctx context.Context, cfg config.Config, cfgPath string, opts Instal
 	}
 
 	hosts := collectHosts(opts.RemoteHost, cfg.RemoteHost, readSSHConfigHosts(filepath.Join(home, ".ssh", "config")))
-	if cfg.RemoteHost == "" && len(hosts) > 0 {
-		cfg.RemoteHost = hosts[0]
-	}
 
 	result := InstallResult{ConfigPath: cfgPath, Hosts: hosts}
 	if opts.Force {
@@ -95,45 +102,53 @@ func Install(ctx context.Context, cfg config.Config, cfgPath string, opts Instal
 		result.ConfigWritten = written
 	}
 
-	globalCommand := globalCoprocessCommand(binary, cfg)
+	profilePath := legacyDynamicProfilePath(home)
+	result.DynamicProfilePath = profilePath
+	if disabled, err := DisableLegacyDynamicProfile(home); err != nil {
+		result.Warnings = append(result.Warnings, "could not disable legacy iTerm2 DynamicProfile: "+err.Error())
+	} else if disabled != "" {
+		result.LegacyDynamicProfilePath = disabled
+	}
+
+	scriptPath, warnings, err := InstallPythonRPCScript(home, binary)
+	if err != nil {
+		return result, err
+	}
+	result.ScriptPath = scriptPath
+	result.Warnings = append(result.Warnings, warnings...)
+
 	if opts.GlobalKeyMap {
-		key, err := InstallCmdV(ctx, globalCommand)
+		if err := EnablePythonAPI(ctx); err != nil {
+			return result, err
+		}
+		result.PythonAPIEnabled = true
+		key, err := InstallCmdV(ctx, scriptFunctionInvocation)
 		if err != nil {
 			return result, err
 		}
 		result.GlobalKey = key
-		result.GlobalCommand = globalCommand
-	}
-
-	profilePath := filepath.Join(home, "Library", "Application Support", "iTerm2", "DynamicProfiles", dynamicProfileFile)
-	result.DynamicProfilePath = profilePath
-	if len(hosts) == 0 {
-		result.Warnings = append(result.Warnings, "no concrete SSH Host entries found; Cmd+V is installed but image upload still needs SSHPIC_REMOTE_HOST or config remote_host")
-		return result, nil
-	}
-	data, err := DynamicProfileJSON(hosts, binary, cfg)
-	if err != nil {
-		return result, err
-	}
-	if err := os.MkdirAll(filepath.Dir(profilePath), 0o700); err != nil {
-		return result, err
-	}
-	if err := os.WriteFile(profilePath, data, 0o600); err != nil {
-		return result, err
+		result.GlobalFunction = scriptFunctionInvocation
+		if opts.LaunchDaemon {
+			launched, warning := LaunchPythonRPCScript(ctx, scriptPath)
+			result.ScriptLaunched = launched
+			if warning != "" {
+				result.Warnings = append(result.Warnings, warning)
+			}
+		}
 	}
 	return result, nil
 }
 
-// InstallCmdV configures iTerm2's global Cmd+V key mapping to run command as a coprocess.
-func InstallCmdV(ctx context.Context, command string) (string, error) {
-	if strings.TrimSpace(command) == "" {
-		return "", fmt.Errorf("empty install command")
+// InstallCmdV configures iTerm2's global Cmd+V key mapping to call sshpic's Python RPC.
+func InstallCmdV(ctx context.Context, invocation string) (string, error) {
+	if strings.TrimSpace(invocation) == "" {
+		return "", fmt.Errorf("empty script function invocation")
 	}
 	key, err := KeyCodeForShortcut("cmd+v")
 	if err != nil {
 		return "", err
 	}
-	dict := DefaultsDictForRunCoprocess(command)
+	dict := DefaultsDictForInvokeScriptFunction(invocation)
 	cmd := exec.CommandContext(ctx, "defaults", "write", defaultsDomain, "GlobalKeyMap", "-dict-add", key, dict)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -159,10 +174,228 @@ func DefaultsDictForRunCoprocess(command string) string {
 	return fmt.Sprintf("{ Action = 35; Text = \"%s\"; }", escapeDefaultsString(command))
 }
 
+func DefaultsDictForInvokeScriptFunction(invocation string) string {
+	return fmt.Sprintf("{ Action = 60; Text = \"%s\"; }", escapeDefaultsString(invocation))
+}
+
 func escapeDefaultsString(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
 	return s
+}
+
+func EnablePythonAPI(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, "defaults", "write", defaultsDomain, "EnableAPIServer", "-bool", "true")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("enable iTerm2 Python API: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+func InstallPythonRPCScript(home, binary string) (string, []string, error) {
+	dir, warnings, err := autoLaunchDir(home)
+	if err != nil {
+		return "", warnings, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", warnings, err
+	}
+	path := filepath.Join(dir, autoLaunchScriptFile)
+	if err := os.WriteFile(path, []byte(PythonRPCScript(binary)), 0o700); err != nil {
+		return "", warnings, err
+	}
+	return path, warnings, nil
+}
+
+func LaunchPythonRPCScript(ctx context.Context, scriptPath string) (bool, string) {
+	it2run := findIt2Run()
+	if it2run == "" {
+		return false, "iTerm2 it2run helper was not found; the sshpic paste helper will auto-start the next time iTerm2 starts"
+	}
+	launchCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(launchCtx, it2run, scriptPath)
+	out, err := cmd.CombinedOutput()
+	if launchCtx.Err() == context.DeadlineExceeded {
+		return false, "timed out while launching the iTerm2 sshpic paste helper; it will auto-start the next time iTerm2 starts"
+	}
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			msg = ": " + msg
+		}
+		return false, "could not launch the iTerm2 sshpic paste helper immediately" + msg + "; it will auto-start the next time iTerm2 starts"
+	}
+	return true, ""
+}
+
+func PythonRPCScript(binary string) string {
+	quotedBinary := jsonString(firstNonEmpty(strings.TrimSpace(binary), "sshpic"))
+	quotedCommand := jsonString(iterm2PayloadCommand)
+	return fmt.Sprintf(`#!/usr/bin/env python3
+import asyncio
+import os
+import subprocess
+import traceback
+
+import iterm2
+
+SSHPIC = %s
+PAYLOAD_COMMAND = %s
+LOG_PATH = os.path.expanduser("~/.cache/sshpic/sshpic.log")
+TIMEOUT_SECONDS = 60
+
+
+def _log(message):
+    try:
+        os.makedirs(os.path.dirname(LOG_PATH), mode=0o700, exist_ok=True)
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(message.rstrip() + "\n")
+    except Exception:
+        pass
+
+
+async def _payload(session_id, tty, command_line, job_pid):
+    args = [SSHPIC, "iterm2-paste", "--output=payload"]
+    if session_id:
+        args += ["--session-id", str(session_id)]
+    if tty:
+        args += ["--session-tty", str(tty)]
+    if command_line:
+        args += ["--session-command-line", str(command_line)]
+    if job_pid:
+        args += ["--session-job-pid", str(job_pid)]
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        if proc:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        _log("sshpic paste timed out")
+        return b""
+    except Exception:
+        _log("sshpic paste launch failed:\n" + traceback.format_exc())
+        return b""
+
+    if stderr:
+        _log("sshpic stderr: " + stderr.decode("utf-8", errors="replace").rstrip())
+    if proc.returncode != 0:
+        _log("sshpic exited with status %%s" %% proc.returncode)
+        return b""
+    return stdout
+
+
+async def main(connection):
+    app = await iterm2.async_get_app(connection)
+
+    @iterm2.RPC
+    async def sshpic_paste(
+        session_id=iterm2.Reference("id?"),
+        tty=iterm2.Reference("tty?"),
+        command_line=iterm2.Reference("commandLine?"),
+        job_pid=iterm2.Reference("jobPid?"),
+    ):
+        try:
+            session = app.get_session_by_id(session_id) if session_id else None
+            if session is None:
+                _log("sshpic paste skipped: no focused iTerm2 session")
+                return
+            payload = await _payload(session_id, tty, command_line, job_pid)
+            if payload:
+                await session.async_send_text(payload.decode("utf-8"), suppress_broadcast=True)
+        except Exception:
+            _log("sshpic_paste exception:\n" + traceback.format_exc())
+
+    await sshpic_paste.async_register(connection)
+
+
+iterm2.run_forever(main)
+`, quotedBinary, quotedCommand)
+}
+
+func jsonString(s string) string {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+	return string(data)
+}
+
+func autoLaunchDir(home string) (string, []string, error) {
+	var warnings []string
+	realAppSupport := filepath.Join(home, "Library", "Application Support", "iTerm2")
+	dotDir := filepath.Join(home, ".config", "iterm2")
+	linkPath := filepath.Join(dotDir, "AppSupport")
+	if err := os.MkdirAll(realAppSupport, 0o700); err != nil {
+		return "", warnings, err
+	}
+	if err := os.MkdirAll(dotDir, 0o700); err != nil {
+		return "", warnings, err
+	}
+	if info, err := os.Lstat(linkPath); err == nil {
+		if info.Mode()&os.ModeSymlink == 0 && !info.IsDir() {
+			warnings = append(warnings, "existing ~/.config/iterm2/AppSupport is not a directory or symlink; using ~/Library/Application Support/iTerm2 for the script")
+			return filepath.Join(realAppSupport, "Scripts", "AutoLaunch"), warnings, nil
+		}
+	} else if os.IsNotExist(err) {
+		if err := os.Symlink(realAppSupport, linkPath); err != nil {
+			warnings = append(warnings, "could not create ~/.config/iterm2/AppSupport symlink; using ~/Library/Application Support/iTerm2 for the script")
+			return filepath.Join(realAppSupport, "Scripts", "AutoLaunch"), warnings, nil
+		}
+	} else {
+		return "", warnings, err
+	}
+	return filepath.Join(linkPath, "Scripts", "AutoLaunch"), warnings, nil
+}
+
+func findIt2Run() string {
+	candidates := []string{
+		"/Applications/iTerm.app/Contents/Resources/it2run",
+		"/Applications/iTerm2.app/Contents/Resources/it2run",
+		filepath.Join(os.Getenv("HOME"), "Applications", "iTerm.app", "Contents", "Resources", "it2run"),
+		filepath.Join(os.Getenv("HOME"), "Applications", "iTerm2.app", "Contents", "Resources", "it2run"),
+	}
+	if found, err := exec.LookPath("it2run"); err == nil {
+		candidates = append([]string{found}, candidates...)
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func legacyDynamicProfilePath(home string) string {
+	return filepath.Join(home, "Library", "Application Support", "iTerm2", "DynamicProfiles", dynamicProfileFile)
+}
+
+func DisableLegacyDynamicProfile(home string) (string, error) {
+	path := legacyDynamicProfilePath(home)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	disabled := strings.TrimSuffix(path, filepath.Ext(path)) + ".disabled-" + time.Now().UTC().Format("20060102T150405Z") + filepath.Ext(path)
+	if err := os.Rename(path, disabled); err != nil {
+		return "", err
+	}
+	return disabled, nil
 }
 
 func DynamicProfileJSON(hosts []string, binary string, cfg config.Config) ([]byte, error) {
@@ -217,21 +450,23 @@ func InstallSummary(result InstallResult) string {
 		b.WriteString(" (created)")
 	}
 	b.WriteByte('\n')
+	if result.ScriptPath != "" {
+		b.WriteString("iTerm2 paste helper: " + result.ScriptPath + "\n")
+	}
+	if result.PythonAPIEnabled {
+		b.WriteString("iTerm2 Python API: enabled\n")
+	}
 	if result.GlobalKey != "" {
 		b.WriteString("global Cmd+V key: " + result.GlobalKey + "\n")
-		b.WriteString("global command: " + result.GlobalCommand + "\n")
+		b.WriteString("global function: " + result.GlobalFunction + "\n")
 	}
-	if result.DynamicProfilePath != "" && len(result.Hosts) > 0 {
-		b.WriteString("iTerm2 dynamic profile: " + result.DynamicProfilePath + "\n")
+	if result.ScriptLaunched {
+		b.WriteString("iTerm2 paste helper: launched\n")
 	}
-	if len(result.Hosts) > 0 {
-		b.WriteString("ready SSH profiles:\n")
-		for _, host := range result.Hosts {
-			b.WriteString("  - " + ProfileName(host) + "\n")
-		}
+	if result.LegacyDynamicProfilePath != "" {
+		b.WriteString("legacy DynamicProfile disabled: " + result.LegacyDynamicProfilePath + "\n")
 	}
-	b.WriteString("copy image → focus SSH/Codex/Claude terminal → Cmd+V inserts the remote path\n")
-	b.WriteString("If already-open iTerm2 tabs do not pick it up, quit and reopen iTerm2 once.\n")
+	b.WriteString("copy image → focus iTerm2 SSH/Codex terminal → Cmd+V inserts the remote path\n")
 	for _, warning := range result.Warnings {
 		b.WriteString("warning: " + warning + "\n")
 	}
@@ -243,34 +478,35 @@ func SnippetFor(cfg config.Config) Snippet {
 	if shortcut == "" {
 		shortcut = "cmd+v"
 	}
-	cmd := payloadCommand
+	cmd := iterm2PayloadCommand
 	text := fmt.Sprintf(`# iTerm2 direct-paste snippet for sshpic v0.1
 # v0.1 direct-paste target: macOS + iTerm2.
 # Default shortcut: %s
-# Payload command: %s
+# Payload command used by the installed Python RPC: %s
 
 The normal install path is:
 
     sshpic install iterm2
 
 That command installs the iTerm2 global %s mapping automatically. The mapping
-runs %q through iTerm2 Run Coprocess, so users do not edit iTerm2 settings by hand.
+invokes the %q Python API function, which calls sshpic and inserts only the
+payload into the focused session.
 
-Advanced fallback for dotfiles or locked-down machines:
+Advanced fallback for dotfiles or locked-down machines only:
 1. iTerm2 → Settings → Profiles → Keys → Key Mappings.
 2. Add a mapping for %q.
-3. Action: "Run Coprocess...".
-4. Command: %s
+3. Action: "Invoke Script Function...".
+4. Invocation: %s
 
 Behavior:
-- Image clipboard: sshpic uploads over SSH and the coprocess output inserts the remote image path.
+- Image clipboard: sshpic detects the foreground local ssh session, uploads over SSH, and inserts the remote image path.
 - Text clipboard: sshpic emits the original text exactly once.
 - No newline is emitted unless paste.insert_newline=true or --insert-newline is used.
 
 Known limitation:
-- iTerm2 allows only one active coprocess per session. If your session already uses a coprocess,
-  prefer the Python API RPC fallback described in docs/troubleshooting.md.
-`, shortcut, cmd, shortcut, cmd, shortcut, cmd)
+- The legacy Run Coprocess integration is intentionally not used by the default installer because
+  it can conflict with active coprocesses and show iTerm2 stderr popups.
+`, shortcut, cmd, shortcut, scriptFunctionName, shortcut, scriptFunctionInvocation)
 	return Snippet{Terminal: "iterm2", Text: text}
 }
 

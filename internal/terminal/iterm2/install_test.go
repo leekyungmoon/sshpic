@@ -31,7 +31,18 @@ func TestKeyCodeForCmdShiftV(t *testing.T) {
 	}
 }
 
-func TestDefaultsDictEscapesCommand(t *testing.T) {
+func TestDefaultsDictForInvokeScriptFunction(t *testing.T) {
+	dict := DefaultsDictForInvokeScriptFunction(`sshpic_paste("quoted")`)
+	want := `{ Action = 60; Text = "sshpic_paste(\"quoted\")"; }`
+	if dict != want {
+		t.Fatalf("dict=%q, want %q", dict, want)
+	}
+	if strings.Contains(dict, "Action = 35") || strings.Contains(dict, "Coprocess") {
+		t.Fatalf("default key binding must not use Run Coprocess: %s", dict)
+	}
+}
+
+func TestDefaultsDictEscapesLegacyCoprocessCommand(t *testing.T) {
 	dict := DefaultsDictForRunCoprocess(`/tmp/sshpic "quoted"`)
 	want := `{ Action = 35; Text = "/tmp/sshpic \"quoted\""; }`
 	if dict != want {
@@ -55,7 +66,7 @@ Host codex141
 	}
 }
 
-func TestDynamicProfileJSONBindsCmdVToPayloadCoprocess(t *testing.T) {
+func TestDynamicProfileJSONRemainsLegacyOnly(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.RemoteDir = "/tmp/sshpic/${USER}"
 	data, err := DynamicProfileJSON([]string{"codex141"}, "/opt/homebrew/bin/sshpic", cfg)
@@ -90,14 +101,9 @@ func TestDynamicProfileJSONBindsCmdVToPayloadCoprocess(t *testing.T) {
 	if binding.Action != 35 || binding.Version != 2 || binding.ApplyMode != 0 {
 		t.Fatalf("unexpected binding metadata: %+v", binding)
 	}
-	for _, want := range []string{"'/opt/homebrew/bin/sshpic' paste --output=payload", "--remote-host 'codex141'", "--remote-dir '/tmp/sshpic/${USER}'"} {
-		if !strings.Contains(binding.Text, want) {
-			t.Fatalf("binding text %q missing %q", binding.Text, want)
-		}
-	}
 }
 
-func TestInstallWritesConfigAndDynamicProfilesFromSSHConfig(t *testing.T) {
+func TestInstallWritesConfigAndPythonRPCButNoDynamicProfile(t *testing.T) {
 	home := t.TempDir()
 	sshDir := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
@@ -114,7 +120,7 @@ func TestInstallWritesConfigAndDynamicProfilesFromSSHConfig(t *testing.T) {
 	if !result.ConfigWritten {
 		t.Fatal("expected config to be created")
 	}
-	if result.GlobalKey != "" || result.GlobalCommand != "" {
+	if result.GlobalKey != "" || result.GlobalCommand != "" || result.GlobalFunction != "" {
 		t.Fatalf("unit install should not mutate iTerm2 unless GlobalKeyMap is true: %+v", result)
 	}
 	if strings.Join(result.Hosts, ",") != "codex141,staging" {
@@ -123,30 +129,65 @@ func TestInstallWritesConfigAndDynamicProfilesFromSSHConfig(t *testing.T) {
 	if _, err := os.Stat(result.ConfigPath); err != nil {
 		t.Fatalf("config not written: %v", err)
 	}
-	profileData, err := os.ReadFile(result.DynamicProfilePath)
-	if err != nil {
-		t.Fatalf("dynamic profile not written: %v", err)
+	if _, err := os.Stat(result.ScriptPath); err != nil {
+		t.Fatalf("python rpc script not written: %v", err)
 	}
-	if !strings.Contains(string(profileData), "sshpic: codex141") || !strings.Contains(string(profileData), "sshpic: staging") {
-		t.Fatalf("profile data missing hosts:\n%s", string(profileData))
+	if _, err := os.Stat(result.DynamicProfilePath); !os.IsNotExist(err) {
+		t.Fatalf("default install must not write DynamicProfile, stat err=%v", err)
 	}
 	writtenConfig, err := os.ReadFile(result.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(writtenConfig), `remote_host = "codex141"`) {
-		t.Fatalf("installer should seed config with first discovered host:\n%s", string(writtenConfig))
+	if strings.Contains(string(writtenConfig), `remote_host = "codex141"`) {
+		t.Fatalf("installer must not pin config to first discovered host:\n%s", string(writtenConfig))
 	}
 }
 
-func TestGlobalCoprocessCommandUsesConfigHostWhenKnown(t *testing.T) {
+func TestInstallDisablesLegacyDynamicProfile(t *testing.T) {
+	home := t.TempDir()
+	legacy := legacyDynamicProfilePath(home)
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Install(context.Background(), config.Defaults(), "", InstallOptions{HomeDir: home, BinaryPath: "/usr/local/bin/sshpic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.LegacyDynamicProfilePath == "" {
+		t.Fatalf("expected legacy DynamicProfile to be disabled: %+v", result)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy DynamicProfile should be moved away, stat err=%v", err)
+	}
+	if data, err := os.ReadFile(result.LegacyDynamicProfilePath); err != nil || string(data) != "legacy" {
+		t.Fatalf("disabled profile not preserved: data=%q err=%v", string(data), err)
+	}
+}
+
+func TestPythonRPCScriptCallsQuietPayloadCommand(t *testing.T) {
+	script := PythonRPCScript("/opt/homebrew/bin/sshpic")
+	for _, want := range []string{"@iterm2.RPC", "async_send_text", "iterm2-paste", "--session-command-line", "~/.cache/sshpic/sshpic.log", "traceback.format_exc()"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script missing %q:\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, "Run Coprocess") || strings.Contains(script, "paste --output=payload --remote-host") {
+		t.Fatalf("script should not use legacy coprocess/fixed host path:\n%s", script)
+	}
+}
+
+func TestGlobalCoprocessCommandDoesNotInjectHostWhenUnknown(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.RemoteHost = "codex141"
 	cfg.RemoteDir = "/tmp/sshpic/${USER}"
 	got := globalCoprocessCommand("/opt/homebrew/bin/sshpic", cfg)
-	for _, want := range []string{"'/opt/homebrew/bin/sshpic' paste --output=payload", "--remote-host 'codex141'", "--remote-dir '/tmp/sshpic/${USER}'"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("command %q missing %q", got, want)
-		}
+	if strings.Contains(got, "--remote-host") {
+		t.Fatalf("unknown host must not be pinned into global command: %q", got)
+	}
+	if !strings.Contains(got, "--remote-dir '/tmp/sshpic/${USER}'") {
+		t.Fatalf("command %q missing remote dir", got)
 	}
 }

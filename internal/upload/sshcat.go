@@ -24,6 +24,7 @@ type VerifyResult struct {
 
 type SSHCat struct {
 	Host       string
+	Args       []string
 	SSHCommand string
 }
 
@@ -35,10 +36,18 @@ func (u SSHCat) sshCommand() string {
 }
 
 func (u SSHCat) requireHost() error {
-	if strings.TrimSpace(u.Host) == "" {
+	if strings.TrimSpace(u.Host) == "" && len(u.Args) == 0 {
 		return errors.New("remote_host is required for image upload")
 	}
 	return nil
+}
+
+func (u SSHCat) commandArgs(remoteCmd string) []string {
+	if len(u.Args) > 0 {
+		args := append([]string{}, u.Args...)
+		return append(args, remoteCmd)
+	}
+	return []string{u.Host, remoteCmd}
 }
 
 func (u SSHCat) Upload(ctx context.Context, localPath string, remotePath string) error {
@@ -54,7 +63,7 @@ func (u SSHCat) Upload(ctx context.Context, localPath string, remotePath string)
 		return err
 	}
 	defer f.Close()
-	cmd := exec.CommandContext(ctx, u.sshCommand(), u.Host, remoteCmd)
+	cmd := exec.CommandContext(ctx, u.sshCommand(), u.commandArgs(remoteCmd)...)
 	cmd.Stdin = f
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -75,7 +84,7 @@ func (u SSHCat) Verify(ctx context.Context, localPath string, remotePath string)
 	if err != nil {
 		return VerifyResult{}, err
 	}
-	cmd := exec.CommandContext(ctx, u.sshCommand(), u.Host, remoteCmd)
+	cmd := exec.CommandContext(ctx, u.sshCommand(), u.commandArgs(remoteCmd)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return VerifyResult{}, fmt.Errorf("ssh verify failed: %w: %s", err, sanitize(string(out)))
@@ -99,7 +108,7 @@ func (u SSHCat) Clean(ctx context.Context, remoteDir string, dryRun bool) (strin
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, u.sshCommand(), u.Host, remoteCmd)
+	cmd := exec.CommandContext(ctx, u.sshCommand(), u.commandArgs(remoteCmd)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("ssh clean failed: %w: %s", err, sanitize(string(out)))

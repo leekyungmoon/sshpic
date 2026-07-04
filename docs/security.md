@@ -4,10 +4,10 @@
 
 ## Defaults
 
-- No daemon by default.
 - No remote install.
 - No cloud upload.
 - No SSH config mutation by default.
+- The iTerm2 integration runs as an iTerm2 Python API AutoLaunch script and does not watch the clipboard continuously; it acts only when the installed paste shortcut is invoked.
 - Remote write command starts with `umask 077`.
 - Remote file permissions are set to `0600`.
 - Remote paths are POSIX shell-quoted.

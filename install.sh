@@ -42,10 +42,7 @@ if [ ! -x "$bin" ] && command -v sshpic >/dev/null 2>&1; then
 fi
 
 if [ "$(uname -s)" = "Darwin" ]; then
-  "$bin" install iterm2 || {
-    echo "warning: sshpic installed, but automatic iTerm2 setup did not complete" >&2
-    exit 0
-  }
+  "$bin" install iterm2
 else
   echo "installed sshpic: $bin"
 fi

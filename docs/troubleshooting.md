@@ -1,14 +1,38 @@
 # Troubleshooting
 
-## `Cmd+V` does not change after install
+## `Cmd+V` does not insert a path after install
 
-Quit and reopen iTerm2 once. iTerm2 may not reload a changed global key map in already-open sessions immediately.
+The default installer uses the iTerm2 Python API, not Run Coprocess. It writes an AutoLaunch script and attempts to launch it immediately through iTerm2's `it2run` helper.
 
-## Image paste says `remote_host is required`
+Check:
 
-The installer discovers concrete `Host` aliases from `~/.ssh/config`. If no concrete host existed at install time, rerun the installer after adding your normal SSH alias or set `SSHPIC_REMOTE_HOST` for that machine.
+```sh
+sshpic doctor
+cat ~/.cache/sshpic/sshpic.log
+```
 
-This is a setup-time detection limit, not a per-screenshot step.
+If iTerm2 was already running and the helper did not launch, quit and reopen iTerm2 once. That is an iTerm2 AutoLaunch reload boundary, not a per-screenshot step.
+
+## Image paste logs `remote_host is required`
+
+For normal iTerm2 use, sshpic detects the foreground local `ssh` command at paste time. This error means no local SSH target was visible to iTerm2 when `Cmd+V` ran.
+
+Expected shape:
+
+```text
+ssh my-host
+codex
+copy image locally
+Cmd+V
+```
+
+If you are inside local tmux or another wrapper that hides the local `ssh` process, include the exact local process shape in the bug report.
+
+## iTerm2 shows an old Dynamic Profile or Coprocess popup
+
+That is the legacy installer path and should not be used by current `main`.
+
+Run the latest installer once. It disables `~/Library/Application Support/iTerm2/DynamicProfiles/sshpic.json` when present and replaces the `Cmd+V` action with the Python API function.
 
 ## `sshpic paste --output=payload` prints nothing
 
@@ -19,22 +43,11 @@ sshpic doctor
 sshpic clip --debug
 ```
 
-## iTerm2 Coprocess limitation
-
-iTerm2 sessions can have only one active coprocess. If a session already uses a coprocess, the installed `Cmd+V` Run Coprocess hook can conflict.
-
-Fallback design:
-
-1. Keep using `sshpic paste --output=payload` as the payload producer.
-2. Bind a key to an iTerm2 Python API script.
-3. The script runs `sshpic paste --output=payload` locally.
-4. The script calls `session.async_send_text(payload)` to insert the payload into the active session.
-
-This fallback preserves the same safety contract: the inserted text is data only, not a shell command.
+The iTerm2 integration calls `sshpic iterm2-paste --output=payload`, captures stderr, and writes failures to `~/.cache/sshpic/sshpic.log` instead of showing iTerm2 popups.
 
 ## Text paste behaves unexpectedly
 
-`sshpic paste --output=payload` preserves text clipboard content exactly once unless the text contains terminal control characters. To verify the payload primitive itself:
+Text paste should insert the original text exactly once. To verify the payload primitive itself:
 
 ```sh
 printf hello | pbcopy
@@ -63,7 +76,7 @@ Run this from macOS/iTerm2:
 scripts/verify-iterm2-e2e.sh
 ```
 
-The script refuses non-macOS/tmux environments because they cannot prove iTerm2 shortcut injection. It creates `.sshpic-e2e/iterm2-e2e-*.md` with the exact checklist for the installed `Cmd+V` path.
+The evidence checklist uses the real target flow: install, open iTerm2, `ssh <host>`, run `codex`, copy a local PNG, press `Cmd+V` in the Codex input, and verify that a `/tmp/sshpic/...png` path is inserted with no popup.
 
 ## How do I prove real SSH upload behavior?
 

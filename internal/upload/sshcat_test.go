@@ -18,6 +18,15 @@ func TestUploadRemoteCommandSecurity(t *testing.T) {
 	}
 }
 
+func TestSSHCatCommandArgsUsesDetectedSSHArgs(t *testing.T) {
+	uploader := SSHCat{Host: "ignored", Args: []string{"-p", "2222", "alice@example.com"}}
+	got := uploader.commandArgs("umask 077; true")
+	want := "-p 2222 alice@example.com umask 077; true"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("args=%q want %q", strings.Join(got, " "), want)
+	}
+}
+
 func TestVerifyRemoteCommandQuotesPath(t *testing.T) {
 	cmd, err := VerifyRemoteCommand("/tmp/sshpic/$USER/sshpic-`x`.png")
 	if err != nil {

@@ -25,21 +25,13 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${SSHPIC_E2E_BIN:-$ROOT/bin/sshpic}"
+E2E_HOST="${SSHPIC_E2E_HOST:-my-host}"
+REMOTE_DIR_DISPLAY='/tmp/sshpic/${USER}'
 mkdir -p "$(dirname "$BIN")"
 (
   cd "$ROOT"
   go build -o "$BIN" ./cmd/sshpic
 )
-
-if [[ -z "${SSHPIC_REMOTE_HOST:-}" ]]; then
-  cat >&2 <<'MSG'
-Set SSHPIC_REMOTE_HOST to an SSH host before running the image-upload portion.
-Example:
-  export SSHPIC_REMOTE_HOST=codex141
-  export SSHPIC_REMOTE_DIR='/tmp/sshpic/${USER}'
-MSG
-  exit 2
-fi
 
 TERM_PROGRAM_VALUE="${TERM_PROGRAM:-}"
 if [[ "$TERM_PROGRAM_VALUE" != "iTerm.app" ]]; then
@@ -50,17 +42,8 @@ EVIDENCE_DIR="${SSHPIC_E2E_EVIDENCE_DIR:-$ROOT/.sshpic-e2e}"
 mkdir -p "$EVIDENCE_DIR"
 EVIDENCE="$EVIDENCE_DIR/iterm2-e2e-$(date -u +%Y%m%dT%H%M%SZ).md"
 INSTALL_LOG="$EVIDENCE_DIR/iterm2-install.txt"
-if [[ -n "${SSHPIC_REMOTE_DIR:-}" ]]; then
-  REMOTE_DIR_DISPLAY="$SSHPIC_REMOTE_DIR"
-else
-  REMOTE_DIR_DISPLAY='/tmp/sshpic/${USER}'
-fi
 
-install_args=(install iterm2 --remote-host "$SSHPIC_REMOTE_HOST")
-if [[ -n "${SSHPIC_REMOTE_DIR:-}" ]]; then
-  install_args+=(--remote-dir "$SSHPIC_REMOTE_DIR")
-fi
-"$BIN" "${install_args[@]}" > "$INSTALL_LOG"
+"$BIN" install iterm2 > "$INSTALL_LOG"
 if ! grep -F 'sshpic iTerm2 integration installed' "$INSTALL_LOG" >/dev/null; then
   echo "installer did not report successful iTerm2 integration" >&2
   cat "$INSTALL_LOG" >&2
@@ -72,8 +55,12 @@ if ! grep -F '0x76-0x100000' <<<"$KEYMAP" >/dev/null; then
   echo "iTerm2 GlobalKeyMap does not contain Cmd+V key 0x76-0x100000 after install" >&2
   exit 1
 fi
-if ! grep -F 'paste --output=payload' <<<"$KEYMAP" >/dev/null; then
-  echo "iTerm2 GlobalKeyMap does not contain expected sshpic payload command after install" >&2
+if ! grep -F 'sshpic_paste()' <<<"$KEYMAP" >/dev/null; then
+  echo "iTerm2 GlobalKeyMap does not contain expected sshpic_paste() function after install" >&2
+  exit 1
+fi
+if grep -F 'Action = 35' <<<"$KEYMAP" >/dev/null && grep -F 'sshpic paste --output=payload' <<<"$KEYMAP" >/dev/null; then
+  echo "iTerm2 GlobalKeyMap still contains legacy sshpic Run Coprocess mapping" >&2
   exit 1
 fi
 
@@ -84,34 +71,45 @@ cat > "$EVIDENCE" <<MSG
 - Hostname: $(hostname)
 - TERM_PROGRAM: ${TERM_PROGRAM_VALUE:-unset}
 - sshpic binary: $BIN
-- Remote host: ${SSHPIC_REMOTE_HOST}
-- Remote dir: $REMOTE_DIR_DISPLAY
+- SSH host for manual check: $E2E_HOST
+- Remote dir expectation: $REMOTE_DIR_DISPLAY
 - Install log: $INSTALL_LOG
 
 ## Verified preflight
 
 - Built sshpic locally.
-- Ran \`$BIN install iterm2\` with \`SSHPIC_REMOTE_HOST\`.
-- Verified iTerm2 GlobalKeyMap Cmd+V key \`0x76-0x100000\` contains \`paste --output=payload\`.
+- Ran \`$BIN install iterm2\` without \`--remote-host\`.
+- Verified iTerm2 GlobalKeyMap Cmd+V key \`0x76-0x100000\` invokes \`sshpic_paste()\`.
+- Verified the keymap is not the legacy sshpic Run Coprocess payload command.
 - Confirmed pngpaste and ssh are available.
 
-## Installed Cmd+V checks to complete
+## Manual flow to complete
 
-1. If this iTerm2 window was already open and ignores Cmd+V, quit and reopen iTerm2 once.
-2. SSH to \`${SSHPIC_REMOTE_HOST}\` in iTerm2.
-3. Copy an image locally.
-4. Press Cmd+V.
-5. Confirm the active terminal input receives only a remote path under \`$REMOTE_DIR_DISPLAY\`.
-6. Confirm no command text, debug text, control sequence, or unexpected newline was inserted.
-7. Copy plain text locally and press Cmd+V.
-8. Confirm the original text is inserted exactly once.
-9. If a coprocess is already active, record the conflict and use the Python API fallback documented in docs/troubleshooting.md.
+1. Open or focus iTerm2.
+2. Run \`ssh $E2E_HOST\` exactly as you normally would.
+3. On the remote host, run \`codex\`.
+4. Copy a local PNG image.
+5. Press \`Cmd+V\` inside the Codex input box.
+6. Expected: Codex input receives only a path like \`/tmp/sshpic/<user>/sshpic-....png\`.
+7. On the remote host, verify the pasted path:
+   \`test -s /tmp/sshpic/<user>/sshpic-....png && file /tmp/sshpic/<user>/sshpic-....png\`
+8. Copy plain local text and press \`Cmd+V\` in the same Codex input.
+9. Expected: the original text is inserted exactly once.
+
+## Failure conditions
+
+- Any iTerm2 Dynamic Profile duplicate GUID popup.
+- Any iTerm2 Coprocess stderr popup.
+- Any \`sshpic\` command text inserted into Codex.
+- A fixed host from install time rather than the current \`ssh $E2E_HOST\` session.
+- Broken normal text paste.
 
 ## Result
 
 - [ ] Image Cmd+V result recorded (pass/fail + pasted path)
+- [ ] Remote file verification recorded (pass/fail + file output)
 - [ ] Text Cmd+V result recorded (pass/fail + pasted text)
-- [ ] Coprocess conflict result recorded (yes/no)
+- [ ] Popup result recorded (none / describe)
 - Notes:
 MSG
 
@@ -119,9 +117,11 @@ cat <<MSG
 Prepared iTerm2 E2E evidence file:
   $EVIDENCE
 
-Next step:
-  Copy an image locally, focus an iTerm2 SSH/Codex/Claude session, and press Cmd+V.
-  If the current iTerm2 window ignores Cmd+V, quit and reopen iTerm2 once.
+Tester flow:
+  ssh $E2E_HOST
+  codex
+  copy a local PNG
+  press Cmd+V inside the Codex input
 
 Then complete the checklist in the evidence file.
 MSG

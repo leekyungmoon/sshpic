@@ -63,6 +63,8 @@ func Run(args []string, build BuildInfo, stdout, stderr io.Writer) int {
 		return runDoctor(pa, stdout, stderr)
 	case "paste":
 		return runPaste(ctx, pa, stdout, stderr)
+	case "iterm2-paste":
+		return runITerm2Paste(ctx, pa, stdout, stderr)
 	case "clip", "shot", "full", "file":
 		return runUploadCommand(ctx, cmd, pa, stdout, stderr)
 	case "clean":
@@ -127,6 +129,7 @@ func runInstall(pa parsedArgs, stdout, stderr io.Writer) int {
 		RemoteHost:   pa.Values["remote_host"],
 		Force:        pa.Bools["force"],
 		GlobalKeyMap: true,
+		LaunchDaemon: true,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -182,6 +185,49 @@ func runPaste(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int 
 		return 2
 	}
 	return 0
+}
+
+func runITerm2Paste(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int {
+	cfg, _, err := loadConfig(pa)
+	if err != nil {
+		appendIntegrationLog("config load failed: " + err.Error())
+		return 1
+	}
+	src := sourceFromConfig(cfg)
+	uploader := iterm2Uploader(ctx, cfg, iterm2.SessionContext{
+		SessionID:   pa.Values["session_id"],
+		TTY:         pa.Values["session_tty"],
+		CommandLine: pa.Values["session_command_line"],
+		JobPID:      pa.Values["session_job_pid"],
+	})
+	res, err := paste.Execute(ctx, cfg, src, uploader, paste.Options{})
+	if err != nil {
+		appendIntegrationLog("paste failed: " + err.Error())
+		return 1
+	}
+	output := pa.Values["output"]
+	if output == "" {
+		output = "payload"
+	}
+	switch output {
+	case "payload":
+		_, _ = io.WriteString(stdout, res.Payload)
+	case "json":
+		_ = json.NewEncoder(stdout).Encode(res)
+	case "text":
+		fmt.Fprintln(stdout, res.Payload)
+	default:
+		appendIntegrationLog("unknown output mode: " + output)
+		return 2
+	}
+	return 0
+}
+
+func iterm2Uploader(ctx context.Context, cfg config.Config, sess iterm2.SessionContext) upload.SSHCat {
+	if target, ok := iterm2.DetectSSHTarget(ctx, sess); ok {
+		return upload.SSHCat{Args: target.Args}
+	}
+	return upload.SSHCat{Host: cfg.RemoteHost}
 }
 
 func runUploadCommand(ctx context.Context, cmd string, pa parsedArgs, stdout, stderr io.Writer) int {
@@ -322,7 +368,7 @@ func sourceFromConfig(cfg config.Config) provider.MacOSProvider {
 func parseArgs(args []string) (parsedArgs, error) {
 	pa := parsedArgs{Values: map[string]string{}, Bools: map[string]bool{}}
 	boolFlags := map[string]bool{"help": true, "debug": true, "json": true, "dry-run": true, "yes": true, "force": true, "no-copy": true, "insert-newline": true, "no-verify": true, "no-open": true}
-	valueFlags := map[string]bool{"config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true}
+	valueFlags := map[string]bool{"config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
@@ -382,12 +428,33 @@ Global flags:
   --insert-newline             opt-in newline after payload
   --no-copy                    do not copy remote path back to local clipboard
   --no-verify                  skip remote SHA256 verification
-  --no-open                    do not auto-open a generated iTerm2 profile during install
+  --no-open                    accepted for compatibility; no-op in v0.1
 `)
 }
 
 func fprintNoExtraBlank(w io.Writer, text string) {
 	_, _ = io.WriteString(w, strings.TrimRight(text, "\n")+"\n")
+}
+
+func appendIntegrationLog(message string) {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil || cacheDir == "" {
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil || home == "" {
+			return
+		}
+		cacheDir = filepath.Join(home, ".cache")
+	}
+	dir := filepath.Join(cacheDir, "sshpic")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "sshpic.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = fmt.Fprintf(f, "%s %s\n", time.Now().UTC().Format(time.RFC3339), strings.TrimSpace(message))
 }
 
 func firstNonEmpty(values ...string) string {

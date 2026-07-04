@@ -8,17 +8,17 @@ Config path:
 ~/.config/sshpic/config.toml
 ```
 
-iTerm2 Dynamic Profile path, when generated:
+iTerm2 Python API AutoLaunch script path:
 
 ```text
-~/Library/Application Support/iTerm2/DynamicProfiles/sshpic.json
+~/.config/iterm2/AppSupport/Scripts/AutoLaunch/sshpic_smart_paste.py
 ```
 
-Machine-specific overrides can come from environment variables:
+Machine-specific overrides can come from environment variables when you explicitly want them:
 
 ```sh
 export SSHPIC_REMOTE_HOST=codex141
 export SSHPIC_REMOTE_DIR='/tmp/sshpic/${USER}'
 ```
 
-Locked-down machines that cannot write iTerm2 preferences are outside the normal installer path; see troubleshooting for fallback design notes.
+The normal iTerm2 paste path detects the foreground `ssh` target at paste time, so dotfiles do not need to pin a host for everyday use.

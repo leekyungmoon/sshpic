@@ -20,11 +20,12 @@ Keep using your normal iTerm2 SSH session:
 
 ```text
 ssh my-host
+codex
 copy image locally
 Cmd+V
 ```
 
-`sshpic` uploads the local image over SSH and inserts the remote path into the active terminal input.
+`sshpic` uploads the local image over SSH and inserts the remote path into the active Codex terminal input.
 
 ## What sshpic does not do
 
@@ -33,7 +34,7 @@ Cmd+V
 ## Release evidence helpers
 
 ```sh
-# Run on macOS in iTerm2.
+# Run on macOS in iTerm2. This creates a tester checklist for ssh → codex → image Cmd+V.
 scripts/verify-iterm2-e2e.sh
 
 # Run only with a real SSH host and disposable sshpic-specific dir.
