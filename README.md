@@ -92,12 +92,12 @@ Read [docs/security.md](docs/security.md) and [SECURITY.md](SECURITY.md) before 
 
 ## Comparison
 
-| Option | Normal `Cmd+V` | SSH-only transfer | No cloud | No remote install | Tradeoff |
-|---|---:|---:|---:|---:|---|
-| Manual `scp` / upload command | ❌ | ✅ | ✅ | ✅ | Works, but interrupts every screenshot flow. |
-| Cloud image uploader | ✅ | ❌ | ❌ | ✅ | Convenient, but sends screenshots to third-party storage. |
-| Clipboard daemon | ✅ | ✅ | ✅ | ✅ | Automatic, but adds background process and trust surface. |
-| `sshpic` | ✅ | ✅ | ✅ | ✅ | Normal paste flow for remote SSH coding-agent sessions. |
+| Option | One paste gesture | SSH/private transfer | No background watcher | Notes |
+|---|---:|---:|---:|---|
+| Manual `scp` / upload command | ❌ | ✅ | ✅ | Reliable, but breaks flow after every screenshot. |
+| Cloud image uploader | ✅ | ❌ | ✅ | Easy, but screenshots leave your SSH boundary. |
+| Clipboard daemon | ✅ | ✅ | ❌ | Automatic, but keeps a watcher running. |
+| `sshpic` | ✅ | ✅ | ✅ | Paste-first flow for remote SSH coding-agent sessions. |
 
 ## Roadmap
 
