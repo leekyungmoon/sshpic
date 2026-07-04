@@ -25,7 +25,7 @@ Required P0 UX:
 
 1. User captures/copies an image locally.
 2. User focuses an SSH/Codex/Claude terminal session.
-3. User presses a configured paste shortcut.
+3. User presses Cmd+V in the configured iTerm2 profile.
 4. `sshpic` uploads the image to the remote host.
 5. The remote image path is inserted into the active terminal input.
 6. The user did not type an upload/debug command.
@@ -65,7 +65,7 @@ sshpic clip
 The primary v0.1 UX is:
 
 ```text
-copy/capture image → press configured paste shortcut → remote path appears in SSH/Codex input
+copy/capture image → press Cmd+V → remote path appears in SSH/Codex input
 ```
 
 ## Direct-paste contract
@@ -144,7 +144,7 @@ filename_template = "sshpic-{timestamp}-{rand}.png"
 [paste]
 mode = "smart"
 terminal = "iterm2"
-shortcut = "cmd+option+v"
+shortcut = "cmd+v"
 insert_newline = false
 text_passthrough = true
 
@@ -297,7 +297,7 @@ sshpic/
 - Image clipboard + shortcut inserts `/tmp/sshpic/<user>/sshpic-...png` at cursor.
 - Text clipboard + shortcut inserts original text exactly once.
 - No newline unless `insert_newline=true`.
-- No recursion when Cmd+V override is enabled.
+- No recursion when Cmd+V smart paste is enabled.
 - No debug text, shell commands, or terminal control sequences in inserted payload.
 - Active iTerm2 Coprocess conflict is tested and either handled by Python API fallback or documented.
 
@@ -330,7 +330,7 @@ sshpic/
 |---|---|
 | iTerm2 Coprocess inserts newline or cannot bind cleanly | Prototype first; fallback to iTerm2 Python API RPC; document shortcut behavior. |
 | iTerm2 session already has an active Coprocess | Test conflict; fallback to Python API RPC or document limitation. |
-| Cmd+V override breaks normal text paste | Default to Cmd+Option+V; Cmd+V override is opt-in only after smart paste validation. |
+| Cmd+V smart paste breaks normal text paste | Smart paste must pass text through exactly once; use a fallback shortcut only for debugging if Cmd+V conflicts. |
 | README overclaims Codex/Claude behavior | Say “path insertion into terminal sessions”; do not imply guaranteed native image attachment unless verified. |
 | Screenshot secrets leak to shared remote tmp | Use `0600`, `/tmp/sshpic/$USER`, security warning, and `clean`; no cloud. |
 | Shell injection through remote path | Dedicated shellquote package with tests. |
@@ -340,7 +340,7 @@ sshpic/
 
 ### Decision
 
-Build `sshpic` as a Go CLI with a no-daemon direct-paste path powered by terminal keybindings. The primary v0.1 UX is copy/capture image → press configured paste shortcut → remote path inserted into active SSH agent input.
+Build `sshpic` as a Go CLI with a no-daemon direct-paste path powered by terminal keybindings. The primary v0.1 UX is copy/capture image → press Cmd+V → remote path inserted into active SSH agent input.
 
 ### Drivers
 
@@ -361,8 +361,8 @@ Terminal keybinding direct paste is the smallest architecture that satisfies “
 ### Consequences
 
 - v0.1 must spend real effort on terminal integration, not just CLI upload.
-- Default shortcut should avoid hijacking Cmd+V.
-- Cmd+V override can be opt-in after smart paste validation.
+- Default shortcut is Cmd+V smart paste.
+- Text passthrough must preserve normal paste behavior exactly once.
 - Cross-terminal support becomes a roadmap of snippets/providers.
 - README release language must be strict: only macOS+iTerm2 is supported in v0.1; Codex/Claude support means path insertion into a terminal session, not guaranteed native image attachment.
 

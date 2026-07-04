@@ -59,7 +59,7 @@ func Defaults() Config {
 		Paste: PasteConfig{
 			Mode:            "smart",
 			Terminal:        "iterm2",
-			Shortcut:        "cmd+option+v",
+			Shortcut:        "cmd+v",
 			InsertNewline:   false,
 			TextPassthrough: true,
 		},
@@ -305,7 +305,7 @@ filename_template = "sshpic-{timestamp}-{rand}.{ext}"
 [paste]
 mode = "smart"
 terminal = "iterm2"
-shortcut = "cmd+option+v"
+shortcut = "cmd+v"
 insert_newline = false
 text_passthrough = true
 

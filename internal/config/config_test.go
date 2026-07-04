@@ -63,3 +63,13 @@ func TestLoadInvalidEnvBooleanFails(t *testing.T) {
 		t.Fatal("expected invalid env boolean to fail")
 	}
 }
+
+func TestDefaultsUseCmdVSmartPaste(t *testing.T) {
+	cfg := Defaults()
+	if cfg.Paste.Shortcut != "cmd+v" {
+		t.Fatalf("default shortcut=%q, want cmd+v", cfg.Paste.Shortcut)
+	}
+	if cfg.Paste.Mode != "smart" || !cfg.Paste.TextPassthrough {
+		t.Fatalf("default paste config should preserve smart text passthrough: %+v", cfg.Paste)
+	}
+}

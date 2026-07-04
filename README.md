@@ -12,7 +12,7 @@ Primary UX:
 
 1. Copy or capture a local image.
 2. Focus the remote SSH terminal where Codex CLI, Claude Code, or another terminal agent is running.
-3. Press your configured iTerm2 shortcut, for example `cmd+option+v`.
+3. Press normal paste, `Cmd+V`, in the configured iTerm2 profile.
 4. The image is uploaded over SSH.
 5. The remote image path is inserted into the active terminal input.
 
@@ -48,7 +48,7 @@ filename_template = "sshpic-{timestamp}-{rand}.{ext}"
 [paste]
 mode = "smart"
 terminal = "iterm2"
-shortcut = "cmd+option+v"
+shortcut = "cmd+v"
 insert_newline = false
 text_passthrough = true
 
@@ -86,7 +86,7 @@ Print the dotfiles-friendly integration guide:
 sshpic snippet iterm2
 ```
 
-The recommended v0.1 iTerm2 action is **Run Coprocess...** with:
+The recommended v0.1 iTerm2 action is to bind **Cmd+V** to **Run Coprocess...** with:
 
 ```sh
 sshpic paste --output=payload

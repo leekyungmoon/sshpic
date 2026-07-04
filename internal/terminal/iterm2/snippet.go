@@ -16,7 +16,7 @@ type Snippet struct {
 func SnippetFor(cfg config.Config) Snippet {
 	shortcut := cfg.Paste.Shortcut
 	if shortcut == "" {
-		shortcut = "cmd+option+v"
+		shortcut = "cmd+v"
 	}
 	cmd := "sshpic paste --output=payload"
 	text := fmt.Sprintf(`# iTerm2 direct-paste snippet for sshpic v0.1

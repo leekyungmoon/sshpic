@@ -22,6 +22,17 @@ Fallback design:
 
 This fallback preserves the same safety contract: the inserted text is data only, not a shell command.
 
+## Cmd+V no longer pastes text normally
+
+`sshpic` v0.1 expects Cmd+V to be a smart paste key in the configured iTerm2 profile. If text paste breaks, first run:
+
+```sh
+printf hello | pbcopy
+sshpic paste --output=payload
+```
+
+The output must be exactly `hello`. If that works, the issue is the iTerm2 key mapping/coprocess path, not the payload primitive.
+
 ## No newline appears
 
 That is the safe default. Set `paste.insert_newline = true` or pass `--insert-newline` only if you want the shortcut to submit the line.

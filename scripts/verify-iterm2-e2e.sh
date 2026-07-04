@@ -81,20 +81,20 @@ cat > "$EVIDENCE" <<MSG
 
 ## Manual shortcut checks to complete
 
-1. Configure iTerm2 Run Coprocess with command: \`$BIN paste --output=payload\`.
+1. Configure iTerm2 Cmd+V Run Coprocess with command: \`$BIN paste --output=payload\`.
 2. SSH to \`${SSHPIC_REMOTE_HOST}\` in iTerm2.
 3. Copy an image locally.
-4. Press the configured sshpic shortcut.
+4. Press Cmd+V.
 5. Confirm the active terminal input receives only a remote path under \`$REMOTE_DIR_DISPLAY\`.
 6. Confirm no command text, debug text, control sequence, or unexpected newline was inserted.
-7. Copy plain text locally and press the same shortcut.
+7. Copy plain text locally and press Cmd+V.
 8. Confirm the original text is inserted exactly once.
 9. If a coprocess is already active, record the conflict and use the Python API fallback documented in docs/troubleshooting.md.
 
 ## Result
 
-- [ ] Image shortcut result recorded (pass/fail + pasted path)
-- [ ] Text shortcut result recorded (pass/fail + pasted text)
+- [ ] Image Cmd+V result recorded (pass/fail + pasted path)
+- [ ] Text Cmd+V result recorded (pass/fail + pasted text)
 - [ ] Coprocess conflict result recorded (yes/no)
 - Notes:
 MSG
@@ -104,7 +104,7 @@ Prepared iTerm2 E2E evidence file:
   $EVIDENCE
 
 Next manual step:
-  Open iTerm2 key mappings and bind Run Coprocess to:
+  Open iTerm2 key mappings and bind Cmd+V Run Coprocess to:
     $BIN paste --output=payload
 
 Then complete the checklist in the evidence file.
