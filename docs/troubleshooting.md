@@ -137,7 +137,9 @@ The script will:
 
 If install, keymap validation, clipboard fixture setup, or remote verification fails, the script exits non-zero and still leaves an evidence bundle to send back.
 
-By default the script restores iTerm2 defaults after the test. If it cannot back up iTerm2 defaults first, it refuses to run with restore enabled:
+By default the script restores iTerm2 defaults after the test. Restore is part of the pass criteria: after the test, `GlobalKeyMap:0x76-0x100000` must not contain an sshpic hook. If `defaults import` leaves a live sshpic hook behind, the script forces that key back to iTerm2's default paste mapping and records `restore.txt`, `global-keymap-after-restore.txt`, and `global-keymap-sshpic-after-restore.txt` in the evidence bundle. If cleanup still fails, the E2E exits non-zero.
+
+If it cannot back up iTerm2 defaults first, it refuses to run with restore enabled:
 
 ```sh
 SSHPIC_E2E_RESTORE_ITERM2=1

@@ -23,20 +23,26 @@ DOCTOR_LOG="$RUN_DIR/doctor.txt"
 KEYMAP_BEFORE="$RUN_DIR/global-keymap-before.txt"
 KEYMAP_AFTER_INSTALL="$RUN_DIR/global-keymap-after-install.txt"
 KEYMAP_AFTER_E2E="$RUN_DIR/global-keymap-after-e2e.txt"
+KEYMAP_AFTER_RESTORE="$RUN_DIR/global-keymap-after-restore.txt"
 KEYMAP_GREP_BEFORE="$RUN_DIR/global-keymap-sshpic-before.txt"
 KEYMAP_GREP_AFTER_INSTALL="$RUN_DIR/global-keymap-sshpic-after-install.txt"
 KEYMAP_GREP_AFTER_E2E="$RUN_DIR/global-keymap-sshpic-after-e2e.txt"
+KEYMAP_GREP_AFTER_RESTORE="$RUN_DIR/global-keymap-sshpic-after-restore.txt"
 LOG_BEFORE="$RUN_DIR/sshpic-logs-before.txt"
 LOG_AFTER_INSTALL="$RUN_DIR/sshpic-logs-after-install.txt"
 LOG_AFTER_IMAGE="$RUN_DIR/sshpic-logs-after-image.txt"
 LOG_AFTER_TEXT="$RUN_DIR/sshpic-logs-after-text.txt"
 REMOTE_VERIFY_LOG="$RUN_DIR/remote-verify.txt"
+RESTORE_LOG="$RUN_DIR/restore.txt"
 ITERM2_BACKUP="$RUN_DIR/com.googlecode.iterm2.before.plist"
 FIXTURE_PNG="$RUN_DIR/fixture.png"
 FIXTURE_READBACK="$RUN_DIR/fixture-readback.png"
 TEXT_SENTINEL="sshpic-text-e2e-$STAMP"
 SYSTEM_LOG="$RUN_DIR/system.txt"
 BUNDLE="$EVIDENCE_DIR/sshpic-real-codex-e2e-$STAMP.tar.gz"
+CMDV_KEY="0x76-0x100000"
+RESTORE_DONE=0
+RESTORE_RESULT="not_run"
 
 if [[ -z "$E2E_HOST" ]]; then
   cat >&2 <<'MSG'
@@ -125,6 +131,10 @@ write_failure_evidence() {
   local rc="${2:-1}"
   capture_keymap "$KEYMAP_AFTER_E2E" "$KEYMAP_GREP_AFTER_E2E"
   capture_logs "$LOG_AFTER_TEXT"
+  set +e
+  restore_iterm2_defaults
+  local restore_rc=$?
+  set -e
   cat > "$EVIDENCE" <<MSG
 # sshpic Real iTerm2 Codex Cmd+V E2E Evidence
 
@@ -137,6 +147,8 @@ write_failure_evidence() {
 - SSH target: $E2E_HOST
 - System log: $SYSTEM_LOG
 - iTerm2 restore after test: $RESTORE_ITERM2
+- Restore result: $RESTORE_RESULT
+- Restore exit code: $restore_rc
 
 ## Captured files
 
@@ -149,6 +161,9 @@ write_failure_evidence() {
 - Keymap grep after install: $KEYMAP_GREP_AFTER_INSTALL
 - Keymap after failure: $KEYMAP_AFTER_E2E
 - Keymap grep after failure: $KEYMAP_GREP_AFTER_E2E
+- Keymap after restore: $KEYMAP_AFTER_RESTORE
+- Keymap grep after restore: $KEYMAP_GREP_AFTER_RESTORE
+- Restore log: $RESTORE_LOG
 - Logs before: $LOG_BEFORE
 - Logs after install: $LOG_AFTER_INSTALL
 - Logs after failure: $LOG_AFTER_TEXT
@@ -172,18 +187,77 @@ MSG
   exit "$rc"
 }
 
-restore_iterm2_defaults() {
-  if [[ "$RESTORE_ITERM2" != "1" ]]; then
+current_cmdv_key() {
+  defaults read com.googlecode.iterm2 GlobalKeyMap "$CMDV_KEY" 2>&1 || true
+}
+
+cmdv_key_contains_sshpic() {
+  current_cmdv_key | grep -Eiq 'sshpic|sshpic_paste|iterm2-paste'
+}
+
+force_restore_cmdv_default_if_sshpic() {
+  if ! cmdv_key_contains_sshpic; then
+    echo "verified: $CMDV_KEY does not contain sshpic"
     return 0
   fi
-  if [[ -s "$ITERM2_BACKUP" ]]; then
-    if defaults import com.googlecode.iterm2 "$ITERM2_BACKUP" >/dev/null 2>&1; then
-      defaults synchronize com.googlecode.iterm2 >/dev/null 2>&1 || true
-      echo "Restored iTerm2 defaults from $ITERM2_BACKUP" >&2
-    else
-      echo "warning: failed to restore iTerm2 defaults from $ITERM2_BACKUP" >&2
-    fi
+
+  echo "warning: $CMDV_KEY still contains sshpic after defaults restore; forcing default paste mapping"
+  defaults write com.googlecode.iterm2 GlobalKeyMap -dict-add "$CMDV_KEY" '{ Action = 70; Text = ""; }'
+  defaults synchronize com.googlecode.iterm2 >/dev/null 2>&1 || true
+
+  if cmdv_key_contains_sshpic; then
+    echo "error: $CMDV_KEY still contains sshpic after forced default paste mapping"
+    return 1
   fi
+  echo "verified: forced $CMDV_KEY back to default paste mapping"
+  return 0
+}
+
+restore_iterm2_defaults() {
+  if [[ "$RESTORE_DONE" == "1" ]]; then
+    return 0
+  fi
+  RESTORE_DONE=1
+
+  local rc=0
+  {
+    echo "# sshpic iTerm2 restore"
+    echo "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "restore_iterm2=$RESTORE_ITERM2"
+
+    if [[ "$RESTORE_ITERM2" != "1" ]]; then
+      RESTORE_RESULT="skipped"
+      echo "restore skipped by SSHPIC_E2E_RESTORE_ITERM2=$RESTORE_ITERM2"
+    else
+      if [[ -s "$ITERM2_BACKUP" ]]; then
+        if defaults import com.googlecode.iterm2 "$ITERM2_BACKUP" >/dev/null 2>&1; then
+          defaults synchronize com.googlecode.iterm2 >/dev/null 2>&1 || true
+          echo "imported iTerm2 defaults from $ITERM2_BACKUP"
+        else
+          echo "warning: failed to import iTerm2 defaults from $ITERM2_BACKUP"
+          rc=1
+        fi
+      else
+        echo "warning: iTerm2 backup is missing or empty: $ITERM2_BACKUP"
+        rc=1
+      fi
+
+      if ! force_restore_cmdv_default_if_sshpic; then
+        rc=1
+      fi
+
+      if [[ $rc -eq 0 ]]; then
+        RESTORE_RESULT="pass"
+      else
+        RESTORE_RESULT="fail"
+      fi
+    fi
+
+    echo "restore_result=$RESTORE_RESULT"
+  } >> "$RESTORE_LOG" 2>&1
+
+  capture_keymap "$KEYMAP_AFTER_RESTORE" "$KEYMAP_GREP_AFTER_RESTORE"
+  return "$rc"
 }
 trap restore_iterm2_defaults EXIT
 
@@ -302,6 +376,10 @@ MSG
 read -r -p "Did text paste appear exactly once with no popup? [y/N] " TEXT_OK
 capture_logs "$LOG_AFTER_TEXT"
 capture_keymap "$KEYMAP_AFTER_E2E" "$KEYMAP_GREP_AFTER_E2E"
+set +e
+restore_iterm2_defaults
+RESTORE_RC=$?
+set -e
 
 IMAGE_REMOTE_OK="unknown"
 if [[ $REMOTE_VERIFY_RC -eq 0 ]]; then
@@ -335,6 +413,8 @@ cat > "$EVIDENCE" <<MSG
 - SSH target: $E2E_HOST
 - System log: $SYSTEM_LOG
 - iTerm2 restore after test: $RESTORE_ITERM2
+- Restore result: $RESTORE_RESULT
+- Restore exit code: $RESTORE_RC
 - Image result: $IMAGE_OK
 - Image UI result: $IMAGE_UI_RESULT
 - Image remote verify result: $IMAGE_REMOTE_OK
@@ -351,6 +431,9 @@ cat > "$EVIDENCE" <<MSG
 - Keymap grep after install: $KEYMAP_GREP_AFTER_INSTALL
 - Keymap after E2E: $KEYMAP_AFTER_E2E
 - Keymap grep after E2E: $KEYMAP_GREP_AFTER_E2E
+- Keymap after restore: $KEYMAP_AFTER_RESTORE
+- Keymap grep after restore: $KEYMAP_GREP_AFTER_RESTORE
+- Restore log: $RESTORE_LOG
 - Logs before: $LOG_BEFORE
 - Logs after install: $LOG_AFTER_INSTALL
 - Logs after image paste: $LOG_AFTER_IMAGE
@@ -410,6 +493,7 @@ If there is any popup, send the exact popup title/body and a screenshot. Do not 
 - No Coprocess stderr popup.
 - No Python runtime download popup.
 - No sshpic command text appears in Codex.
+- After restore, iTerm2 GlobalKeyMap $CMDV_KEY does not contain sshpic.
 MSG
 
 tar -czf "$BUNDLE" -C "$EVIDENCE_DIR" "$(basename "$RUN_DIR")"
@@ -425,8 +509,9 @@ Image result:        $IMAGE_OK
 Image UI result:     $IMAGE_UI_RESULT
 Image remote result: $IMAGE_REMOTE_OK
 Text result:         $TEXT_RESULT
+Restore result:      $RESTORE_RESULT
 MSG
 
-if [[ "$IMAGE_OK" != "pass" || "$TEXT_RESULT" != "pass" ]]; then
+if [[ "$IMAGE_OK" != "pass" || "$TEXT_RESULT" != "pass" || $RESTORE_RC -ne 0 ]]; then
   exit 1
 fi
