@@ -23,7 +23,7 @@ sshpic doctor
 cat ~/.cache/sshpic/sshpic.log
 ```
 
-A successful install should not show iTerm2 Coprocess or Python runtime popups.
+A successful install should not show iTerm2 Coprocess or Python runtime popups. It also must not change the user's expected paste gesture: image paste and ordinary text paste both use the configured normal paste shortcut (`Cmd+V` on macOS). If text paste breaks, treat it as release-blocking even when image upload works.
 
 ## Image paste logs `no text in clipboard`
 
@@ -38,7 +38,7 @@ SSHPIC_E2E_HOST='169.213.3.141' \
   scripts/verify-iterm2-codex-e2e.sh
 ```
 
-If it still fails, send the generated evidence bundle; the log should now include the image clipboard read failure detail, not only the text fallback error. For text passthrough failures, also check `text-readback.txt`: if it does not contain the sentinel exactly, the E2E did not actually stage the text clipboard before asking for `Cmd+V`.
+If it still fails, send the generated evidence bundle; the log should now include the image clipboard read failure detail, not only the text fallback error. For text passthrough failures, also check `text-readback.txt`: if it does not contain the sentinel exactly, the E2E did not actually stage the text clipboard before asking for `Cmd+V`. Current text readback tries `pbpaste -Prefer txt`, bare `pbpaste`, then AppleScript clipboard text, matching the product fallback order.
 
 ## Image paste logs `remote_host is required`
 

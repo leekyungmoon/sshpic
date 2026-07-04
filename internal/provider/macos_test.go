@@ -88,3 +88,32 @@ printf default-text
 		t.Fatalf("text=%q", got)
 	}
 }
+
+func TestReadClipboardTextFallsBackToAppleScript(t *testing.T) {
+	oldSearchDirs := macToolSearchDirs
+	defer func() { macToolSearchDirs = oldSearchDirs }()
+	dir := t.TempDir()
+	macToolSearchDirs = []string{dir}
+
+	pbpaste := filepath.Join(dir, "pbpaste")
+	if err := os.WriteFile(pbpaste, []byte(`#!/bin/sh
+exit 0
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	osa := filepath.Join(dir, "osascript")
+	if err := os.WriteFile(osa, []byte(`#!/bin/sh
+printf 'applescript-text\n'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Join(t.TempDir(), "missing"))
+
+	got, err := (MacOSProvider{TextClipboardTool: "pbpaste"}).ReadClipboardText(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "applescript-text" {
+		t.Fatalf("text=%q", got)
+	}
+}

@@ -83,7 +83,13 @@ func (p MacOSProvider) ReadClipboardText(ctx context.Context) (string, error) {
 	if err == nil {
 		return text, nil
 	}
-	return "", fmt.Errorf("%w (preferred text read failed: %v; default text read failed: %v)", ErrNoText, preferErr, err)
+	defaultErr := err
+
+	text, err = readClipboardTextWithAppleScript(ctx)
+	if err == nil {
+		return text, nil
+	}
+	return "", fmt.Errorf("%w (preferred text read failed: %v; default text read failed: %v; AppleScript text read failed: %v)", ErrNoText, preferErr, defaultErr, err)
 }
 
 func readClipboardTextWithArgs(ctx context.Context, tool string, args ...string) (string, error) {
@@ -102,6 +108,27 @@ func readClipboardTextWithArgs(ctx context.Context, tool string, args ...string)
 	text := out.String()
 	if text == "" {
 		return "", fmt.Errorf("%w: pbpaste returned empty", ErrNoText)
+	}
+	return text, nil
+}
+
+func readClipboardTextWithAppleScript(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, resolveMacTool("osascript"), "-e", "the clipboard as text")
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail != "" {
+			return "", fmt.Errorf("read text clipboard via AppleScript: %w: %s", err, detail)
+		}
+		return "", fmt.Errorf("read text clipboard via AppleScript: %w", err)
+	}
+	text := strings.TrimSuffix(out.String(), "\n")
+	text = strings.TrimSuffix(text, "\r")
+	if text == "" {
+		return "", fmt.Errorf("%w: AppleScript returned empty", ErrNoText)
 	}
 	return text, nil
 }

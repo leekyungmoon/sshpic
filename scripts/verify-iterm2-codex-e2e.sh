@@ -282,7 +282,25 @@ copy_png_to_clipboard() {
 }
 
 read_text_clipboard_for_e2e() {
-  pbpaste -Prefer txt 2>/dev/null || pbpaste
+  local got=""
+  got="$(pbpaste -Prefer txt 2>/dev/null || true)"
+  if [[ -n "$got" ]]; then
+    printf '%s' "$got"
+    return 0
+  fi
+  got="$(pbpaste 2>/dev/null || true)"
+  if [[ -n "$got" ]]; then
+    printf '%s' "$got"
+    return 0
+  fi
+  got="$(osascript -e 'the clipboard as text' 2>/dev/null || true)"
+  got="${got%$'\n'}"
+  got="${got%$'\r'}"
+  if [[ -n "$got" ]]; then
+    printf '%s' "$got"
+    return 0
+  fi
+  return 1
 }
 
 copy_text_to_clipboard_for_e2e() {
