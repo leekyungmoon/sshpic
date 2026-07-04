@@ -22,7 +22,9 @@ func TestITerm2UploaderPrefersForegroundSSHOverConfiguredHost(t *testing.T) {
 func TestITerm2UploaderFallsBackToConfiguredHost(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.RemoteHost = "configured-host"
-	uploader, remoteUser := iterm2Uploader(context.Background(), cfg, iterm2.SessionContext{CommandLine: "codex"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	uploader, remoteUser := iterm2Uploader(ctx, cfg, iterm2.SessionContext{CommandLine: "codex"})
 	if uploader.Host != "configured-host" || remoteUser != "" || len(uploader.Args) != 0 {
 		t.Fatalf("uploader=%+v remoteUser=%q", uploader, remoteUser)
 	}
