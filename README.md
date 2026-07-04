@@ -18,7 +18,7 @@ After:  screenshot → stay in Codex → Cmd+V → remote image path appears
 | The terminal receives the result | Extra commands, debug output, or manually copied paths can leak into the prompt. | Only the remote image path is inserted. |
 | You do it again | Every screenshot repeats the interruption. | Every screenshot uses the same paste gesture. |
 
-## 🚀 Install
+## 🚀 Installation
 
 ### 👉 One-liner
 
