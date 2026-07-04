@@ -3,7 +3,7 @@
 ## v0.1
 
 - macOS + iTerm2 direct path insertion.
-- iTerm2 direct paste installed by default only when the Python RPC runtime is ready; runtime-missing Macs fail safely until a non-polluting architecture is proven.
+- iTerm2 direct paste installed by default through Python RPC, with installer-managed runtime provisioning and safe-fail if provisioning is unavailable.
 - Foreground SSH target detection at paste time.
 - SSH stdin upload.
 - Payload-only paste primitive.

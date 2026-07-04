@@ -94,7 +94,7 @@ if [[ $INSTALL_RC -ne 0 ]]; then
     SAFE_FAIL_STATUS="fail"
   fi
   cat > "$EVIDENCE" <<MSG
-# sshpic iTerm2 E2E Evidence: SAFE_FAIL_RUNTIME_MISSING
+# sshpic iTerm2 E2E Evidence: SAFE_FAIL_RUNTIME_UNAVAILABLE
 
 - Date UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 - Hostname: $(hostname)
@@ -109,8 +109,8 @@ if [[ $INSTALL_RC -ne 0 ]]; then
 
 ## Result
 
-Install failed safely only if the install log contains the expected missing
-iTerm2 Python runtime message and the installer leaves no Global Cmd+V hook,
+Install failed safely only if the install log contains the expected iTerm2
+Python runtime unavailable/provisioning failure message and the installer leaves no Global Cmd+V hook,
 AutoLaunch helper, or active sshpic DynamicProfile.
 MSG
   echo "installer failed safely before E2E preflight could complete" >&2

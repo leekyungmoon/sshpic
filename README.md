@@ -34,9 +34,9 @@ cd sshpic
 curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh | bash
 ```
 
-The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, and cleans old sshpic iTerm2 integration state.
+The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, cleans old sshpic iTerm2 integration state, and attempts to provision the iTerm2 Python runtime automatically.
 
-Current direct `Cmd+V` integration is enabled only when the iTerm2 Python runtime is already ready. Runtime-missing Macs fail safely instead of installing the rejected no-Python Run Coprocess hook, because that hook can corrupt ordinary paste.
+If runtime provisioning succeeds, normal `Cmd+V` image paste is enabled through the Python RPC path. If runtime provisioning fails, install fails safely instead of installing the rejected no-Python Run Coprocess hook, because that hook can corrupt ordinary paste.
 
 ## ⚡ Quick Start
 
@@ -75,8 +75,8 @@ Codex CLI, Claude Code, or another terminal agent must separately know how to us
 
 | Platform / terminal | Status |
 |---|---|
-| macOS + iTerm2 with Python RPC runtime ready | v0.1 target |
-| macOS + iTerm2 without Python RPC runtime | Safe fail; default Cmd+V hook disabled |
+| macOS + iTerm2 with Python RPC runtime ready/provisioned | v0.1 target |
+| macOS + iTerm2 when runtime provisioning fails | Safe fail; default Cmd+V hook disabled |
 | Ubuntu + terminal | TBD |
 | Windows / WSL | TBD |
 | macOS Terminal.app | TBD |

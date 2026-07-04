@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,16 +31,19 @@ const (
 
 var (
 	installCmdVInvokeScriptFunction = InstallCmdV
+	enablePythonAPI                 = EnablePythonAPI
+	provisionPythonRuntime          = ProvisionPythonRuntime
 )
 
 type InstallOptions struct {
-	HomeDir      string
-	BinaryPath   string
-	RemoteHost   string
-	Force        bool
-	Open         bool // Deprecated no-op kept for CLI compatibility.
-	GlobalKeyMap bool
-	LaunchDaemon bool
+	HomeDir                string
+	BinaryPath             string
+	RemoteHost             string
+	Force                  bool
+	Open                   bool // Deprecated no-op kept for CLI compatibility.
+	GlobalKeyMap           bool
+	LaunchDaemon           bool
+	ProvisionPythonRuntime bool
 }
 
 type InstallResult struct {
@@ -57,6 +61,7 @@ type InstallResult struct {
 	PythonAPIEnabled          bool
 	PythonRuntimeReady        bool
 	PythonRuntimePath         string
+	PythonRuntimeProvisioned  bool
 	CoprocessFallback         bool
 	CoprocessCommand          string
 	CmdVRestored              bool
@@ -141,6 +146,23 @@ func Install(ctx context.Context, cfg config.Config, cfgPath string, opts Instal
 		result.PythonRuntimeReady = runtimeStatus.Ready
 		result.PythonRuntimePath = runtimeStatus.Path
 		if !runtimeStatus.Ready {
+			if opts.ProvisionPythonRuntime {
+				provisionedStatus, warnings, err := provisionPythonRuntime(ctx, home)
+				result.Warnings = append(result.Warnings, warnings...)
+				if err == nil && provisionedStatus.Ready {
+					runtimeStatus = provisionedStatus
+					result.PythonRuntimeProvisioned = true
+					result.PythonRuntimeReady = true
+					result.PythonRuntimePath = provisionedStatus.Path
+				} else if err != nil {
+					result.Warnings = append(result.Warnings, "could not auto-provision iTerm2 Python runtime: "+err.Error())
+					runtimeStatus.Reason = "auto-provision failed: " + err.Error() + "; previous runtime status: " + runtimeStatus.Reason
+				} else {
+					runtimeStatus.Reason = "auto-provision did not produce a ready runtime: " + provisionedStatus.Reason
+				}
+			}
+		}
+		if !runtimeStatus.Ready {
 			if removed, err := RemovePythonRPCScript(home); err != nil {
 				result.Warnings = append(result.Warnings, "could not remove iTerm2 sshpic paste helper: "+err.Error())
 			} else if removed != "" {
@@ -154,7 +176,7 @@ func Install(ctx context.Context, cfg config.Config, cfgPath string, opts Instal
 		}
 		result.ScriptPath = scriptPath
 		result.Warnings = append(result.Warnings, warnings...)
-		if err := EnablePythonAPI(ctx); err != nil {
+		if err := enablePythonAPI(ctx); err != nil {
 			return result, err
 		}
 		result.PythonAPIEnabled = true
@@ -328,6 +350,7 @@ func DetectPythonRuntime(home string) PythonRuntimeStatus {
 
 func pythonRuntimeCandidates(home string) []string {
 	return []string{
+		filepath.Join(home, "Library", "ApplicationSupport", "iTerm2", "iterm2env"),
 		filepath.Join(home, ".config", "iterm2", "AppSupport", "iterm2env"),
 		filepath.Join(home, "Library", "Application Support", "iTerm2", "iterm2env"),
 	}
@@ -355,8 +378,13 @@ func inspectPythonRuntime(base string) PythonRuntimeStatus {
 		status.Reason = fmt.Sprintf("runtime version %d is older than required %d", status.Version, minPythonEnvVersion)
 		return status
 	}
-	if !runtimeHasPython(base) {
+	python := runtimePythonExecutable(base)
+	if python == "" {
 		status.Reason = "runtime python3 executable not found under " + filepath.Join(base, "versions")
+		return status
+	}
+	if !pythonCanImportITerm2(python) {
+		status.Reason = "runtime python3 cannot import iterm2 module"
 		return status
 	}
 	status.Ready = true
@@ -365,16 +393,190 @@ func inspectPythonRuntime(base string) PythonRuntimeStatus {
 }
 
 func runtimeHasPython(base string) bool {
-	matches, err := filepath.Glob(filepath.Join(base, "versions", "*", "bin", "python3"))
-	if err != nil || len(matches) == 0 {
-		return false
-	}
+	return len(runtimePythonExecutables(base)) > 0
+}
+
+func runtimePythonExecutable(base string) string {
+	matches := runtimePythonExecutables(base)
 	for _, match := range matches {
-		if info, err := os.Stat(match); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
-			return true
+		if pythonCanImportITerm2(match) {
+			return match
 		}
 	}
-	return false
+	if len(matches) > 0 {
+		return matches[0]
+	}
+	return ""
+}
+
+func runtimePythonExecutables(base string) []string {
+	matches, err := filepath.Glob(filepath.Join(base, "versions", "*", "bin", "python3"))
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+	sort.Strings(matches)
+	executables := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if info, err := os.Stat(match); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			executables = append(executables, match)
+		}
+	}
+	return executables
+}
+
+func pythonCanImportITerm2(python string) bool {
+	if strings.TrimSpace(python) == "" {
+		return false
+	}
+	cmd := exec.Command(python, "-c", "import iterm2")
+	return cmd.Run() == nil
+}
+
+func ProvisionPythonRuntime(ctx context.Context, home string) (PythonRuntimeStatus, []string, error) {
+	var warnings []string
+	base, linkWarnings, err := pythonRuntimeProvisionBase(home)
+	warnings = append(warnings, linkWarnings...)
+	if err != nil {
+		return PythonRuntimeStatus{Path: base, Reason: err.Error()}, warnings, err
+	}
+	sourcePython, err := findProvisionSourcePython()
+	if err != nil {
+		return PythonRuntimeStatus{Path: base, Reason: err.Error()}, warnings, err
+	}
+	versionDir := filepath.Join(base, "versions", "sshpic")
+	if err := safeRemoveProvisionTarget(base, versionDir); err != nil {
+		return PythonRuntimeStatus{Path: base, Reason: err.Error()}, warnings, err
+	}
+	if err := os.MkdirAll(filepath.Dir(versionDir), 0o700); err != nil {
+		return PythonRuntimeStatus{Path: base, Reason: err.Error()}, warnings, err
+	}
+	if err := runProvisionCommand(ctx, sourcePython, "-m", "venv", versionDir); err != nil {
+		return PythonRuntimeStatus{Path: base, Reason: err.Error()}, warnings, fmt.Errorf("create iTerm2 Python venv: %w", err)
+	}
+	venvPython := filepath.Join(versionDir, "bin", "python3")
+	if err := runProvisionCommand(ctx, venvPython, "-m", "pip", "install", "--upgrade", "pip"); err != nil {
+		warnings = append(warnings, "could not upgrade pip in iTerm2 Python runtime: "+err.Error())
+	}
+	if err := runProvisionCommand(ctx, venvPython, "-m", "pip", "install", "--upgrade", "iterm2"); err != nil {
+		return PythonRuntimeStatus{Path: base, Reason: err.Error()}, warnings, fmt.Errorf("install iTerm2 Python API package: %w", err)
+	}
+	metadata := fmt.Sprintf("{\"version\":%d,\"managed_by\":\"sshpic\"}\n", minPythonEnvVersion)
+	if err := os.WriteFile(filepath.Join(base, "iterm2env-metadata.json"), []byte(metadata), 0o600); err != nil {
+		return PythonRuntimeStatus{Path: base, Reason: err.Error()}, warnings, err
+	}
+	status := inspectPythonRuntime(base)
+	if !status.Ready {
+		return status, warnings, fmt.Errorf("provisioned runtime is not ready: %s", status.Reason)
+	}
+	return status, warnings, nil
+}
+
+func pythonRuntimeProvisionBase(home string) (string, []string, error) {
+	var warnings []string
+	if strings.TrimSpace(home) == "" {
+		return "", warnings, fmt.Errorf("cannot determine home directory")
+	}
+	libraryDir := filepath.Join(home, "Library")
+	realApplicationSupport := filepath.Join(libraryDir, "Application Support")
+	noSpaceApplicationSupport := filepath.Join(libraryDir, "ApplicationSupport")
+	realITerm2 := filepath.Join(realApplicationSupport, "iTerm2")
+	noSpaceITerm2 := filepath.Join(noSpaceApplicationSupport, "iTerm2")
+	if err := os.MkdirAll(realITerm2, 0o700); err != nil {
+		return filepath.Join(noSpaceITerm2, "iterm2env"), warnings, err
+	}
+	if info, err := os.Lstat(noSpaceApplicationSupport); err == nil {
+		if info.Mode()&os.ModeSymlink == 0 && !info.IsDir() {
+			warnings = append(warnings, "existing ~/Library/ApplicationSupport is not a directory or symlink; using ~/Library/Application Support/iTerm2 for runtime")
+			return filepath.Join(realITerm2, "iterm2env"), warnings, nil
+		}
+	} else if os.IsNotExist(err) {
+		if err := os.Symlink(realApplicationSupport, noSpaceApplicationSupport); err != nil {
+			warnings = append(warnings, "could not create ~/Library/ApplicationSupport symlink; using ~/Library/Application Support/iTerm2 for runtime")
+			return filepath.Join(realITerm2, "iterm2env"), warnings, nil
+		}
+	} else {
+		return filepath.Join(realITerm2, "iterm2env"), warnings, err
+	}
+	dotDir := filepath.Join(home, ".config", "iterm2")
+	dotLinkPath := filepath.Join(dotDir, "AppSupport")
+	if err := os.MkdirAll(dotDir, 0o700); err == nil {
+		if info, err := os.Lstat(dotLinkPath); err == nil {
+			if info.Mode()&os.ModeSymlink == 0 && !info.IsDir() {
+				warnings = append(warnings, "existing ~/.config/iterm2/AppSupport is not a directory or symlink; using ~/Library/ApplicationSupport/iTerm2 for runtime")
+			}
+		} else if os.IsNotExist(err) {
+			if err := os.Symlink(noSpaceITerm2, dotLinkPath); err != nil {
+				warnings = append(warnings, "could not create ~/.config/iterm2/AppSupport symlink; using ~/Library/ApplicationSupport/iTerm2 for runtime")
+			}
+		} else {
+			warnings = append(warnings, "could not inspect ~/.config/iterm2/AppSupport; using ~/Library/ApplicationSupport/iTerm2 for runtime")
+		}
+	} else {
+		warnings = append(warnings, "could not create ~/.config/iterm2; using ~/Library/ApplicationSupport/iTerm2 for runtime")
+	}
+	return filepath.Join(noSpaceITerm2, "iterm2env"), warnings, nil
+}
+
+func findProvisionSourcePython() (string, error) {
+	candidates := []string{}
+	if env := strings.TrimSpace(os.Getenv("SSHPIC_ITERM2_PYTHON")); env != "" {
+		candidates = append(candidates, env)
+	}
+	candidates = append(candidates, "python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3")
+	for _, candidate := range candidates {
+		path := candidate
+		if !filepath.IsAbs(candidate) {
+			found, err := exec.LookPath(candidate)
+			if err != nil {
+				continue
+			}
+			path = found
+		}
+		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			if pythonSupportsVenv(path) {
+				return path, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("python3 with venv support not found")
+}
+
+func pythonSupportsVenv(python string) bool {
+	cmd := exec.Command(python, "-m", "venv", "--help")
+	return cmd.Run() == nil
+}
+
+func safeRemoveProvisionTarget(base, target string) error {
+	baseClean := filepath.Clean(base)
+	targetClean := filepath.Clean(target)
+	rel, err := filepath.Rel(baseClean, targetClean)
+	if err != nil {
+		return err
+	}
+	if rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return fmt.Errorf("refusing to remove runtime target outside iTerm2 env: %s", target)
+	}
+	if !strings.Contains(targetClean, "iterm2env") || filepath.Base(targetClean) != "sshpic" {
+		return fmt.Errorf("refusing to remove unexpected runtime target: %s", target)
+	}
+	return os.RemoveAll(targetClean)
+}
+
+func runProvisionCommand(ctx context.Context, name string, args ...string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(cmdCtx, name, args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(out.String())
+		if detail != "" {
+			return fmt.Errorf("%w: %s", err, detail)
+		}
+		return err
+	}
+	return nil
 }
 
 func InstallPythonRPCScript(home, binary string) (string, []string, error) {
@@ -761,6 +963,9 @@ func InstallSummary(result InstallResult) string {
 	if result.PythonAPIEnabled {
 		b.WriteString("iTerm2 Python API: enabled\n")
 	}
+	if result.PythonRuntimeProvisioned {
+		b.WriteString("iTerm2 Python runtime: auto-provisioned at " + result.PythonRuntimePath + "\n")
+	}
 	if result.CoprocessFallback {
 		b.WriteString("iTerm2 Python API: not required; experimental no-Python fallback installed\n")
 	}
@@ -806,10 +1011,12 @@ need to click through iTerm2 settings or run an upload/debug command after each
 screenshot.
 
 Install strategy:
-- If the iTerm2 Python runtime is ready, sshpic installs the %q Python RPC path.
-- If the runtime is unavailable, sshpic refuses to install a default Cmd+V hook.
-  The no-Python Run Coprocess/native Paste delegation experiment is disabled
-  because real Mac testing showed it can corrupt ordinary paste.
+- sshpic uses the %q Python RPC path.
+- If the iTerm2 Python runtime is missing, the installer attempts to provision
+  it automatically under iTerm2's iterm2env directory.
+- If provisioning fails, sshpic refuses to install a default Cmd+V hook. The
+  no-Python Run Coprocess/native Paste delegation experiment is disabled because
+  real Mac testing showed it can corrupt ordinary paste.
 
 Advanced Python RPC fallback for dotfiles or locked-down machines only:
 1. iTerm2 → Settings → Profiles → Keys → Key Mappings.
@@ -824,9 +1031,9 @@ Behavior:
 - No newline is emitted unless paste.insert_newline=true or --insert-newline is used.
 
 Known limitation:
-- Runtime-missing Macs are safe-fail only for direct Cmd+V integration until a
-  non-polluting architecture is proven. Do not install a no-Python Global Cmd+V
-  hook as a default path.
+- Macs where iTerm2 Python runtime provisioning fails are safe-fail only for
+  direct Cmd+V integration until a non-polluting architecture is proven. Do not
+  install a no-Python Global Cmd+V hook as a default path.
 `, shortcut, cmd, shortcut, scriptFunctionName, shortcut, scriptFunctionInvocation)
 	return Snippet{Terminal: "iterm2", Text: text}
 }

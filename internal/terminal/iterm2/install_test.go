@@ -198,6 +198,77 @@ func TestInstallRefusesNoPythonCoprocessFallbackWhenRuntimeMissingAndRemovesHelp
 	}
 }
 
+func TestInstallAutoProvisionsPythonRuntimeWhenMissing(t *testing.T) {
+	home := t.TempDir()
+	fakeBin := t.TempDir()
+	fakePython := filepath.Join(fakeBin, "python3")
+	if err := os.WriteFile(fakePython, []byte(`#!/bin/sh
+if [ "$1" = "-m" ] && [ "$2" = "venv" ] && [ "$3" = "--help" ]; then
+  exit 0
+fi
+if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+  target="$3"
+  mkdir -p "$target/bin"
+  cat > "$target/bin/python3" <<'PY'
+#!/bin/sh
+exit 0
+PY
+  chmod +x "$target/bin/python3"
+  exit 0
+fi
+exit 0
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	originalInstallCmdV := installCmdVInvokeScriptFunction
+	originalEnablePythonAPI := enablePythonAPI
+	defer func() {
+		installCmdVInvokeScriptFunction = originalInstallCmdV
+		enablePythonAPI = originalEnablePythonAPI
+	}()
+	installCmdVInvokeScriptFunction = func(ctx context.Context, invocation string) (string, error) {
+		if invocation != scriptFunctionInvocation {
+			t.Fatalf("invocation=%q", invocation)
+		}
+		return "0x76-0x100000", nil
+	}
+	enablePythonAPI = func(ctx context.Context) error { return nil }
+
+	result, err := Install(context.Background(), config.Defaults(), "", InstallOptions{
+		HomeDir:                home,
+		BinaryPath:             "/usr/local/bin/sshpic",
+		GlobalKeyMap:           true,
+		ProvisionPythonRuntime: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.PythonRuntimeProvisioned || !result.PythonRuntimeReady || result.PythonRuntimePath == "" {
+		t.Fatalf("runtime not provisioned: %+v", result)
+	}
+	if result.CoprocessFallback || result.GlobalCommand != "" {
+		t.Fatalf("provisioned install must use Python RPC, not no-Python fallback: %+v", result)
+	}
+	if result.GlobalKey != "0x76-0x100000" || result.GlobalFunction != scriptFunctionInvocation || !result.PythonAPIEnabled {
+		t.Fatalf("Python RPC keymap not installed: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(result.PythonRuntimePath, "iterm2env-metadata.json")); err != nil {
+		t.Fatalf("metadata not written: %v", err)
+	}
+	if _, err := os.Stat(result.ScriptPath); err != nil {
+		t.Fatalf("Python RPC script not written: %v", err)
+	}
+	wantRuntimePath := filepath.Join(home, "Library", "ApplicationSupport", "iTerm2", "iterm2env")
+	if result.PythonRuntimePath != wantRuntimePath {
+		t.Fatalf("runtime path=%q, want iTerm2 no-space runtime path %q", result.PythonRuntimePath, wantRuntimePath)
+	}
+	if info, err := os.Lstat(filepath.Join(home, "Library", "ApplicationSupport")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected ~/Library/ApplicationSupport symlink for iTerm2 runtime, info=%v err=%v", info, err)
+	}
+}
+
 func TestInstallDisablesAllLegacySSHpicDynamicProfiles(t *testing.T) {
 	home := t.TempDir()
 	libraryProfile := legacyDynamicProfilePath(home)

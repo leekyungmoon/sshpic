@@ -34,7 +34,7 @@ After a successful install, `sshpic` uploads the local image over SSH and insert
 ## Release evidence helpers
 
 ```sh
-# Run on macOS in iTerm2. Runtime-missing Macs should fail safely with no Cmd+V hook residue.
+# Run on macOS in iTerm2. The installer should auto-provision the Python RPC runtime or fail safely with no Cmd+V hook residue.
 scripts/verify-iterm2-e2e.sh
 
 # Run only with a real SSH host and disposable sshpic-specific dir.

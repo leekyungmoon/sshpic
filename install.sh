@@ -27,8 +27,21 @@ install_pngpaste_if_possible() {
   fi
 }
 
+install_python_if_possible() {
+  [ "$(uname -s)" = "Darwin" ] || return 0
+  if command -v python3 >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v brew >/dev/null 2>&1; then
+    brew install python
+  else
+    echo "warning: python3 is needed to auto-provision the iTerm2 Python runtime; install Homebrew or python3" >&2
+  fi
+}
+
 need_go
 install_pngpaste_if_possible
+install_python_if_possible
 
 if [ -f ./cmd/sshpic/main.go ] && [ -f ./go.mod ]; then
   go install ./cmd/sshpic

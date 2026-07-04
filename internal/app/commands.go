@@ -137,11 +137,12 @@ func runInstall(pa parsedArgs, stdout, stderr io.Writer) int {
 		}
 	}
 	result, err := iterm2.Install(context.Background(), cfg, path, iterm2.InstallOptions{
-		BinaryPath:   exe,
-		RemoteHost:   pa.Values["remote_host"],
-		Force:        pa.Bools["force"],
-		GlobalKeyMap: true,
-		LaunchDaemon: true,
+		BinaryPath:             exe,
+		RemoteHost:             pa.Values["remote_host"],
+		Force:                  pa.Bools["force"],
+		GlobalKeyMap:           true,
+		LaunchDaemon:           true,
+		ProvisionPythonRuntime: true,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
