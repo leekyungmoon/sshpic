@@ -6,11 +6,17 @@ Paste local screenshots into remote SSH coding-agent terminals with normal `Cmd+
 
 ## Before / After
 
-| Before sshpic | After sshpic |
-|---|---|
-| Copy a screenshot, then stop coding to move the file across SSH. | Copy a screenshot and press `Cmd+V` in the SSH session you are already using. |
-| Type upload/debug commands after every screenshot. | The paste integration uploads over SSH and inserts only the remote path. |
-| Use cloud image links or ad-hoc `scp` workarounds. | Keep screenshots local-to-SSH: no cloud upload and no remote install. |
+```text
+Before: screenshot → leave Codex → upload/scp somehow → copy path → return → paste path
+After:  screenshot → stay in Codex → Cmd+V → remote image path appears
+```
+
+| Moment | Before sshpic | With sshpic |
+|---|---|---|
+| You capture a screenshot on your Mac | The remote coding flow stops while you move the file. | Your cursor stays in the SSH/Codex input. |
+| The image needs to reach the SSH host | You run `scp`, use a cloud link, or type an upload helper. | `Cmd+V` uploads it over the existing SSH path. |
+| The terminal receives the result | Extra commands, debug output, or manually copied paths can leak into the prompt. | Only the remote image path is inserted. |
+| You do it again | Every screenshot repeats the interruption. | Every screenshot uses the same paste gesture. |
 
 ## Install
 
@@ -97,14 +103,6 @@ Read [docs/security.md](docs/security.md) and [SECURITY.md](SECURITY.md) before 
 | Cloud image uploader | ✅ | ❌ | ✅ | Easy, but screenshots leave your SSH boundary. |
 | Clipboard daemon | ✅ | ✅ | ❌ | Automatic, but keeps a watcher running. |
 | `sshpic` | ✅ | ✅ | ✅ | Paste-first flow for remote SSH coding-agent sessions. |
-
-## Roadmap
-
-- Validate fresh macOS+iTerm2 installs across more machines.
-- Package Homebrew formula after release validation.
-- Add verified Terminal.app, Warp, Ghostty, WezTerm, and Kitty integrations after real tests.
-- Add Linux clipboard/screenshot providers after real platform tests.
-- Add Windows/WSL provider after real platform tests.
 
 ## Troubleshooting
 
