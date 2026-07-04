@@ -103,7 +103,7 @@ func TestDynamicProfileJSONRemainsLegacyOnly(t *testing.T) {
 	}
 }
 
-func TestInstallWritesConfigAndPythonRPCButNoDynamicProfile(t *testing.T) {
+func TestInstallWritesConfigButNoScriptOrDynamicProfileWithoutKeymap(t *testing.T) {
 	home := t.TempDir()
 	sshDir := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
@@ -129,8 +129,8 @@ func TestInstallWritesConfigAndPythonRPCButNoDynamicProfile(t *testing.T) {
 	if _, err := os.Stat(result.ConfigPath); err != nil {
 		t.Fatalf("config not written: %v", err)
 	}
-	if _, err := os.Stat(result.ScriptPath); err != nil {
-		t.Fatalf("python rpc script not written: %v", err)
+	if result.ScriptPath != "" {
+		t.Fatalf("default unit install without keymap should not write Python RPC script: %+v", result)
 	}
 	if _, err := os.Stat(result.DynamicProfilePath); !os.IsNotExist(err) {
 		t.Fatalf("default install must not write DynamicProfile, stat err=%v", err)
@@ -141,6 +141,53 @@ func TestInstallWritesConfigAndPythonRPCButNoDynamicProfile(t *testing.T) {
 	}
 	if strings.Contains(string(writtenConfig), `remote_host = "codex141"`) {
 		t.Fatalf("installer must not pin config to first discovered host:\n%s", string(writtenConfig))
+	}
+}
+
+func TestDetectPythonRuntimeReady(t *testing.T) {
+	home := t.TempDir()
+	base := filepath.Join(home, ".config", "iterm2", "AppSupport", "iterm2env")
+	python := filepath.Join(base, "versions", "3.11.0", "bin", "python3")
+	if err := os.MkdirAll(filepath.Dir(python), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "iterm2env-metadata.json"), []byte(`{"version":72}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(python, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	status := DetectPythonRuntime(home)
+	if !status.Ready || status.Version != 72 || status.Path != base {
+		t.Fatalf("status=%+v", status)
+	}
+}
+
+func TestDetectPythonRuntimeRejectsMissingRuntime(t *testing.T) {
+	status := DetectPythonRuntime(t.TempDir())
+	if status.Ready || !strings.Contains(status.Reason, "metadata") {
+		t.Fatalf("status=%+v", status)
+	}
+}
+
+func TestInstallRefusesKeymapWhenPythonRuntimeMissingAndRemovesHelper(t *testing.T) {
+	home := t.TempDir()
+	legacyScript := filepath.Join(home, ".config", "iterm2", "AppSupport", "Scripts", "AutoLaunch", autoLaunchScriptFile)
+	if err := os.MkdirAll(filepath.Dir(legacyScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyScript, []byte("old helper"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Install(context.Background(), config.Defaults(), "", InstallOptions{HomeDir: home, BinaryPath: "/usr/local/bin/sshpic", GlobalKeyMap: true})
+	if err == nil || !strings.Contains(err.Error(), "Download Python runtime popup") {
+		t.Fatalf("expected runtime refusal, result=%+v err=%v", result, err)
+	}
+	if result.PythonRuntimeReady {
+		t.Fatalf("runtime should not be ready: %+v", result)
+	}
+	if _, statErr := os.Stat(legacyScript); !os.IsNotExist(statErr) {
+		t.Fatalf("legacy helper should be removed, stat err=%v", statErr)
 	}
 }
 

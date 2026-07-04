@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ const (
 	scriptFunctionName       = "sshpic_paste"
 	scriptFunctionInvocation = "sshpic_paste()"
 	defaultsDomain           = "com.googlecode.iterm2"
+	minPythonEnvVersion      = 72
 )
 
 type InstallOptions struct {
@@ -48,8 +50,19 @@ type InstallResult struct {
 	GlobalFunction           string
 	OpenedProfile            string
 	PythonAPIEnabled         bool
+	PythonRuntimeReady       bool
+	PythonRuntimePath        string
+	CmdVRestored             bool
 	ScriptLaunched           bool
 	Warnings                 []string
+}
+
+type PythonRuntimeStatus struct {
+	Ready        bool
+	Path         string
+	MetadataPath string
+	Version      int
+	Reason       string
 }
 
 type dynamicProfiles struct {
@@ -110,14 +123,29 @@ func Install(ctx context.Context, cfg config.Config, cfgPath string, opts Instal
 		result.LegacyDynamicProfilePath = disabled
 	}
 
-	scriptPath, warnings, err := InstallPythonRPCScript(home, binary)
-	if err != nil {
-		return result, err
-	}
-	result.ScriptPath = scriptPath
-	result.Warnings = append(result.Warnings, warnings...)
-
 	if opts.GlobalKeyMap {
+		if restored, err := RemoveSSHpicCmdV(ctx, home); err != nil {
+			result.Warnings = append(result.Warnings, "could not restore previous sshpic Cmd+V hook: "+err.Error())
+		} else if restored {
+			result.CmdVRestored = true
+		}
+		runtimeStatus := DetectPythonRuntime(home)
+		result.PythonRuntimeReady = runtimeStatus.Ready
+		result.PythonRuntimePath = runtimeStatus.Path
+		if !runtimeStatus.Ready {
+			if removed, err := RemovePythonRPCScript(home); err != nil {
+				result.Warnings = append(result.Warnings, "could not remove iTerm2 sshpic paste helper: "+err.Error())
+			} else if removed != "" {
+				result.ScriptPath = removed
+			}
+			return result, fmt.Errorf("iTerm2 Python runtime is not installed; refusing to install Cmd+V hook because it would trigger iTerm2's Download Python runtime popup (%s); previous sshpic iTerm2 hook/helper were removed where possible, restart iTerm2 once to flush cached keymaps", runtimeStatus.Reason)
+		}
+		scriptPath, warnings, err := InstallPythonRPCScript(home, binary)
+		if err != nil {
+			return result, err
+		}
+		result.ScriptPath = scriptPath
+		result.Warnings = append(result.Warnings, warnings...)
 		if err := EnablePythonAPI(ctx); err != nil {
 			return result, err
 		}
@@ -178,6 +206,10 @@ func DefaultsDictForInvokeScriptFunction(invocation string) string {
 	return fmt.Sprintf("{ Action = 60; Text = \"%s\"; }", escapeDefaultsString(invocation))
 }
 
+func DefaultsDictForPasteOrSend() string {
+	return "{ Action = 70; Text = \"\"; }"
+}
+
 func escapeDefaultsString(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
@@ -194,6 +226,138 @@ func EnablePythonAPI(ctx context.Context) error {
 	return nil
 }
 
+func RemoveSSHpicCmdV(ctx context.Context, home string) (bool, error) {
+	if runtime.GOOS != "darwin" {
+		return false, nil
+	}
+	key, err := KeyCodeForShortcut("cmd+v")
+	if err != nil {
+		return false, err
+	}
+	if removed, err := removeSSHpicCmdVWithPlistBuddy(ctx, home, key); err != nil {
+		return false, err
+	} else if removed {
+		return true, nil
+	}
+	existing, err := readDefaultsGlobalKey(ctx, key)
+	if err != nil {
+		return false, nil
+	}
+	if !strings.Contains(existing, "sshpic") && !strings.Contains(existing, scriptFunctionInvocation) {
+		return false, nil
+	}
+	cmd := exec.CommandContext(ctx, "defaults", "write", defaultsDomain, "GlobalKeyMap", "-dict-add", key, DefaultsDictForPasteOrSend())
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return false, fmt.Errorf("restore iTerm2 Cmd+V paste mapping: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return true, nil
+}
+
+func readDefaultsGlobalKey(ctx context.Context, key string) (string, error) {
+	cmd := exec.CommandContext(ctx, "defaults", "read", defaultsDomain, "GlobalKeyMap", key)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func removeSSHpicCmdVWithPlistBuddy(ctx context.Context, home, key string) (bool, error) {
+	plist := filepath.Join(home, "Library", "Preferences", defaultsDomain+".plist")
+	if _, err := os.Stat(plist); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	printCmd := exec.CommandContext(ctx, "/usr/libexec/PlistBuddy", "-c", "Print :GlobalKeyMap:"+key, plist)
+	out, err := printCmd.CombinedOutput()
+	if err != nil {
+		return false, nil
+	}
+	text := string(out)
+	if !strings.Contains(text, "sshpic") && !strings.Contains(text, scriptFunctionInvocation) {
+		return false, nil
+	}
+	deleteCmd := exec.CommandContext(ctx, "/usr/libexec/PlistBuddy", "-c", "Delete :GlobalKeyMap:"+key, plist)
+	if out, err := deleteCmd.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("delete sshpic iTerm2 Cmd+V key from plist: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	_ = exec.CommandContext(ctx, "defaults", "synchronize", defaultsDomain).Run()
+	return true, nil
+}
+
+func DetectPythonRuntime(home string) PythonRuntimeStatus {
+	candidates := pythonRuntimeCandidates(home)
+	for _, base := range candidates {
+		status := inspectPythonRuntime(base)
+		if status.Ready {
+			return status
+		}
+	}
+	if len(candidates) == 0 {
+		return PythonRuntimeStatus{Reason: "no candidate runtime paths"}
+	}
+	status := inspectPythonRuntime(candidates[0])
+	if status.Reason == "" {
+		status.Reason = "runtime metadata not found"
+	}
+	return status
+}
+
+func pythonRuntimeCandidates(home string) []string {
+	return []string{
+		filepath.Join(home, ".config", "iterm2", "AppSupport", "iterm2env"),
+		filepath.Join(home, "Library", "Application Support", "iTerm2", "iterm2env"),
+	}
+}
+
+func inspectPythonRuntime(base string) PythonRuntimeStatus {
+	status := PythonRuntimeStatus{
+		Path:         base,
+		MetadataPath: filepath.Join(base, "iterm2env-metadata.json"),
+	}
+	data, err := os.ReadFile(status.MetadataPath)
+	if err != nil {
+		status.Reason = "metadata not found at " + status.MetadataPath
+		return status
+	}
+	var metadata struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		status.Reason = "metadata is not valid JSON"
+		return status
+	}
+	status.Version = metadata.Version
+	if status.Version < minPythonEnvVersion {
+		status.Reason = fmt.Sprintf("runtime version %d is older than required %d", status.Version, minPythonEnvVersion)
+		return status
+	}
+	if !runtimeHasPython(base) {
+		status.Reason = "runtime python3 executable not found under " + filepath.Join(base, "versions")
+		return status
+	}
+	status.Ready = true
+	status.Reason = "ready"
+	return status
+}
+
+func runtimeHasPython(base string) bool {
+	matches, err := filepath.Glob(filepath.Join(base, "versions", "*", "bin", "python3"))
+	if err != nil || len(matches) == 0 {
+		return false
+	}
+	for _, match := range matches {
+		if info, err := os.Stat(match); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func InstallPythonRPCScript(home, binary string) (string, []string, error) {
 	dir, warnings, err := autoLaunchDir(home)
 	if err != nil {
@@ -207,6 +371,30 @@ func InstallPythonRPCScript(home, binary string) (string, []string, error) {
 		return "", warnings, err
 	}
 	return path, warnings, nil
+}
+
+func RemovePythonRPCScript(home string) (string, error) {
+	var removed string
+	for _, path := range pythonRPCScriptCandidates(home) {
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return removed, err
+		}
+		if err := os.Remove(path); err != nil {
+			return removed, err
+		}
+		removed = path
+	}
+	return removed, nil
+}
+
+func pythonRPCScriptCandidates(home string) []string {
+	return []string{
+		filepath.Join(home, ".config", "iterm2", "AppSupport", "Scripts", "AutoLaunch", autoLaunchScriptFile),
+		filepath.Join(home, "Library", "Application Support", "iTerm2", "Scripts", "AutoLaunch", autoLaunchScriptFile),
+	}
 }
 
 func LaunchPythonRPCScript(ctx context.Context, scriptPath string) (bool, string) {

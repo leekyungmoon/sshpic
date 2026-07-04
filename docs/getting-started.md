@@ -25,7 +25,7 @@ copy image locally
 Cmd+V
 ```
 
-`sshpic` uploads the local image over SSH and inserts the remote path into the active Codex terminal input.
+After a successful install, `sshpic` uploads the local image over SSH and inserts the remote path into the active Codex terminal input.
 
 ## What sshpic does not do
 

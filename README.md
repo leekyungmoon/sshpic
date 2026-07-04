@@ -28,7 +28,7 @@ cd sshpic
 ./install.sh
 ```
 
-The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, and enables normal `Cmd+V` image paste in iTerm2.
+The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, and enables normal `Cmd+V` image paste in iTerm2. If the local iTerm2 runtime is not ready, install fails before adding a paste hook instead of triggering an iTerm2 popup later.
 
 ## Quick Start
 
@@ -70,11 +70,9 @@ Codex CLI, Claude Code, or another terminal agent must separately know how to us
 | Platform / terminal | Status |
 |---|---|
 | macOS + iTerm2 | v0.1 target |
-| macOS Terminal.app | TBD |
-| Warp / Ghostty | TBD |
-| WezTerm / Kitty | TBD |
-| Linux | TBD |
+| Ubuntu + terminal | TBD |
 | Windows / WSL | TBD |
+| macOS Terminal.app | TBD |
 
 ## Security note
 
@@ -94,12 +92,12 @@ Read [docs/security.md](docs/security.md) and [SECURITY.md](SECURITY.md) before 
 
 ## Comparison
 
-| Option | Tradeoff |
-|---|---|
-| Manual `scp` / upload command | Works, but interrupts every screenshot flow. |
-| Cloud image uploader | Convenient, but sends screenshots to third-party storage. |
-| Clipboard daemon | Automatic, but adds background process and trust surface. |
-| `sshpic` | Normal `Cmd+V` flow in iTerm2 SSH sessions, SSH-only transfer, no remote install. |
+| Option | Normal `Cmd+V` | SSH-only transfer | No cloud | No remote install | Tradeoff |
+|---|---:|---:|---:|---:|---|
+| Manual `scp` / upload command | ❌ | ✅ | ✅ | ✅ | Works, but interrupts every screenshot flow. |
+| Cloud image uploader | ✅ | ❌ | ❌ | ✅ | Convenient, but sends screenshots to third-party storage. |
+| Clipboard daemon | ✅ | ✅ | ✅ | ✅ | Automatic, but adds background process and trust surface. |
+| `sshpic` | ✅ | ✅ | ✅ | ✅ | Normal paste flow for remote SSH coding-agent sessions. |
 
 ## Roadmap
 

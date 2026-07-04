@@ -1,8 +1,12 @@
 # Troubleshooting
 
-## `Cmd+V` does not insert a path after install
+## Install refuses because the iTerm2 Python runtime is missing
 
-The default installer uses the iTerm2 Python API, not Run Coprocess. It writes an AutoLaunch script and attempts to launch it immediately through iTerm2's `it2run` helper.
+Current `main` refuses to install the `Cmd+V` hook when iTerm2 would show its own “Download Python runtime?” popup. That is intentional: a popup after install is a broken normal UX.
+
+When this happens, sshpic removes its previous iTerm2 paste hook and AutoLaunch helper where possible, then exits non-zero. Restart iTerm2 once to flush any cached keymap from a previous failed install.
+
+## `Cmd+V` does not insert a path after a successful install
 
 Check:
 
@@ -11,7 +15,7 @@ sshpic doctor
 cat ~/.cache/sshpic/sshpic.log
 ```
 
-If iTerm2 was already running and the helper did not launch, quit and reopen iTerm2 once. That is an iTerm2 AutoLaunch reload boundary, not a per-screenshot step.
+A successful install should not show iTerm2 Coprocess or Python runtime popups.
 
 ## Image paste logs `remote_host is required`
 
