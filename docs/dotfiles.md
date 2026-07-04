@@ -8,7 +8,7 @@ Config path:
 ~/.config/sshpic/config.toml
 ```
 
-iTerm2 Python API AutoLaunch script path:
+When Python RPC is available, sshpic uses this iTerm2 AutoLaunch script path:
 
 ```text
 ~/.config/iterm2/AppSupport/Scripts/AutoLaunch/sshpic_smart_paste.py

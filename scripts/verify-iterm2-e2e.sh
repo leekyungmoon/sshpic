@@ -58,25 +58,8 @@ HELPER_B="$HOME/Library/Application Support/iTerm2/Scripts/AutoLaunch/sshpic_sma
 PROFILE="$HOME/Library/Application Support/iTerm2/DynamicProfiles/sshpic.json"
 
 if [[ $INSTALL_RC -ne 0 ]]; then
-  if grep -F 'Download Python runtime popup' "$INSTALL_LOG" >/dev/null; then
-    RESIDUALS=()
-    if grep -F 'sshpic' <<<"$KEYMAP" >/dev/null || grep -F 'sshpic_paste()' <<<"$KEYMAP" >/dev/null; then
-      RESIDUALS+=("sshpic GlobalKeyMap entry still present")
-    fi
-    [[ -e "$HELPER_A" ]] && RESIDUALS+=("helper still present: $HELPER_A")
-    [[ -e "$HELPER_B" ]] && RESIDUALS+=("helper still present: $HELPER_B")
-    [[ -e "$PROFILE" ]] && RESIDUALS+=("DynamicProfile still present: $PROFILE")
-
-    if (( ${#RESIDUALS[@]} > 0 )); then
-      {
-        echo "Runtime-missing safe-fail cleanup failed:"
-        printf '  - %s\n' "${RESIDUALS[@]}"
-      } >&2
-      exit 1
-    fi
-
-    cat > "$EVIDENCE" <<MSG
-# sshpic iTerm2 E2E Evidence: SAFE_FAIL_PASS
+  cat > "$EVIDENCE" <<MSG
+# sshpic iTerm2 E2E Evidence: INSTALL_FAILED
 
 - Date UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 - Hostname: $(hostname)
@@ -87,39 +70,11 @@ if [[ $INSTALL_RC -ne 0 ]]; then
 
 ## Result
 
-SAFE_FAIL_PASS: iTerm2 Python runtime is missing, so sshpic refused to install the Cmd+V hook before iTerm2 could show a runtime download popup.
-
-## Verified
-
-- Built sshpic locally.
-- Ran \`$BIN doctor\` and captured readiness output.
-- Ran \`$BIN install iterm2\`.
-- Install exited non-zero before creating a success-looking setup.
-- No sshpic GlobalKeyMap entry remains.
-- No sshpic AutoLaunch helper remains at:
-  - \`$HELPER_A\`
-  - \`$HELPER_B\`
-- No sshpic DynamicProfile remains at \`$PROFILE\`.
-
-## Codex E2E
-
-Skipped intentionally because install did not succeed. Run the success-path test on a Mac where \`sshpic doctor\` reports \`iterm2_python_runtime\` as \`ok\`.
+Install failed. Runtime-missing Macs are expected to install the no-Python Cmd+V fallback now, so this is not an accepted SAFE_FAIL path.
 MSG
-
-    cat <<MSG
-Prepared iTerm2 E2E evidence file:
-  $EVIDENCE
-
-Result:
-  SAFE_FAIL_PASS — iTerm2 runtime missing, install refused hook, no popup path installed.
-
-Codex E2E skipped because install did not succeed.
-MSG
-    exit 0
-  fi
-
   echo "installer failed before E2E preflight could complete" >&2
   cat "$INSTALL_LOG" >&2
+  echo "Evidence: $EVIDENCE" >&2
   exit "$INSTALL_RC"
 fi
 
@@ -133,12 +88,31 @@ if ! grep -F '0x76-0x100000' <<<"$KEYMAP" >/dev/null; then
   echo "iTerm2 GlobalKeyMap does not contain Cmd+V key 0x76-0x100000 after install" >&2
   exit 1
 fi
-if ! grep -F 'sshpic_paste()' <<<"$KEYMAP" >/dev/null; then
-  echo "iTerm2 GlobalKeyMap does not contain expected sshpic_paste() function after install" >&2
+
+MODE=""
+if grep -F 'sshpic_paste()' <<<"$KEYMAP" >/dev/null; then
+  MODE="PYTHON_RPC"
+fi
+if grep -F 'iterm2-paste' <<<"$KEYMAP" >/dev/null && \
+   grep -F -- '--session-tty' <<<"$KEYMAP" >/dev/null && \
+   grep -F -- '--session-job-pid' <<<"$KEYMAP" >/dev/null; then
+  MODE="NO_PYTHON_COPROCESS"
+fi
+if [[ -z "$MODE" ]]; then
+  echo "iTerm2 GlobalKeyMap does not contain a recognized sshpic Cmd+V integration" >&2
+  echo "$KEYMAP" >&2
   exit 1
 fi
-if grep -F 'Action = 35' <<<"$KEYMAP" >/dev/null && grep -F 'sshpic paste --output=payload' <<<"$KEYMAP" >/dev/null; then
-  echo "iTerm2 GlobalKeyMap still contains legacy sshpic Run Coprocess mapping" >&2
+if grep -F 'sshpic paste --output=payload' <<<"$KEYMAP" >/dev/null; then
+  echo "iTerm2 GlobalKeyMap still contains legacy sshpic paste command mapping" >&2
+  exit 1
+fi
+if grep -F -- '--remote-host' <<<"$KEYMAP" >/dev/null; then
+  echo "iTerm2 GlobalKeyMap pins a remote host; install must target the active ssh session instead" >&2
+  exit 1
+fi
+if [[ "$MODE" == "NO_PYTHON_COPROCESS" ]] && ! grep -F 'sshpic.log' <<<"$KEYMAP" >/dev/null; then
+  echo "no-Python fallback must redirect integration errors to sshpic.log" >&2
   exit 1
 fi
 
@@ -151,6 +125,7 @@ cat > "$EVIDENCE" <<MSG
 - sshpic binary: $BIN
 - SSH host for manual check: $E2E_HOST
 - Remote dir expectation: $REMOTE_DIR_DISPLAY
+- Integration mode: $MODE
 - Install log: $INSTALL_LOG
 - Doctor log: $DOCTOR_LOG
 
@@ -159,9 +134,11 @@ cat > "$EVIDENCE" <<MSG
 - Built sshpic locally.
 - Ran \`$BIN doctor\` and captured readiness output.
 - Ran \`$BIN install iterm2\` without \`--remote-host\`.
-- Verified iTerm2 GlobalKeyMap Cmd+V key \`0x76-0x100000\` invokes \`sshpic_paste()\`.
-- Verified the keymap is not the legacy sshpic Run Coprocess payload command.
+- Verified iTerm2 GlobalKeyMap Cmd+V key \`0x76-0x100000\` is installed.
+- Verified the keymap does not pin a remote host.
+- Verified the keymap is not the legacy \`sshpic paste --output=payload\` command.
 - Confirmed pngpaste and ssh are available.
+- Integration mode: \`$MODE\`.
 
 ## Manual flow to complete
 
@@ -197,6 +174,9 @@ MSG
 cat <<MSG
 Prepared iTerm2 E2E evidence file:
   $EVIDENCE
+
+Integration mode:
+  $MODE
 
 Tester flow:
   ssh $E2E_HOST

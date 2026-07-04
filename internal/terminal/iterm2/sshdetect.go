@@ -27,13 +27,86 @@ func DetectSSHTarget(ctx context.Context, sess SessionContext) (SSHTarget, bool)
 		target.Source = "commandLine"
 		return target, true
 	}
+	if strings.TrimSpace(sess.JobPID) != "" {
+		if target, ok := SSHTargetFromPID(ctx, sess.JobPID); ok {
+			target.Source = "jobPid"
+			return target, true
+		}
+	}
 	if strings.TrimSpace(sess.TTY) != "" {
 		if target, ok := SSHTargetFromTTY(ctx, sess.TTY); ok {
 			target.Source = "tty"
 			return target, true
 		}
 	}
+	if target, ok := SingleSSHTarget(ctx); ok {
+		target.Source = "single-ssh-process"
+		return target, true
+	}
 	return SSHTarget{}, false
+}
+
+func SSHTargetFromPID(ctx context.Context, pid string) (SSHTarget, bool) {
+	pid = cleanPID(pid)
+	if pid == "" {
+		return SSHTarget{}, false
+	}
+	cmd := exec.CommandContext(ctx, "ps", "-p", pid, "-o", "command=")
+	out, err := cmd.Output()
+	if err != nil {
+		return SSHTarget{}, false
+	}
+	return SSHTargetFromProcessList(string(out))
+}
+
+func SingleSSHTarget(ctx context.Context) (SSHTarget, bool) {
+	cmd := exec.CommandContext(ctx, "ps", "-axo", "command=")
+	out, err := cmd.Output()
+	if err != nil {
+		return SSHTarget{}, false
+	}
+	return SingleSSHTargetFromProcessList(string(out))
+}
+
+func SingleSSHTargetFromProcessList(out string) (SSHTarget, bool) {
+	var found SSHTarget
+	foundKey := ""
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		target, ok := SSHTargetFromCommandLine(line)
+		if !ok {
+			continue
+		}
+		key := strings.Join(target.Args, "\x00")
+		if foundKey == "" {
+			found = target
+			foundKey = key
+			continue
+		}
+		if key != foundKey {
+			return SSHTarget{}, false
+		}
+	}
+	if foundKey == "" {
+		return SSHTarget{}, false
+	}
+	return found, true
+}
+
+func cleanPID(pid string) string {
+	pid = strings.TrimSpace(pid)
+	if pid == "" || strings.HasPrefix(pid, `\(`) {
+		return ""
+	}
+	for _, r := range pid {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return pid
 }
 
 func SSHTargetFromTTY(ctx context.Context, tty string) (SSHTarget, bool) {

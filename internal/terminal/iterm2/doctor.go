@@ -29,7 +29,7 @@ func DoctorChecks() []Check {
 	if runtime.Ready {
 		checks = append(checks, Check{Name: "iterm2_python_runtime", Status: "ok", Detail: fmt.Sprintf("version=%d path=%s", runtime.Version, runtime.Path)})
 	} else {
-		checks = append(checks, Check{Name: "iterm2_python_runtime", Status: "warn", Detail: "not ready; install iterm2 will refuse Cmd+V hook instead of triggering iTerm2 runtime popup: " + runtime.Reason})
+		checks = append(checks, Check{Name: "iterm2_python_runtime", Status: "warn", Detail: "not ready; installer will use the no-Python Cmd+V fallback instead: " + runtime.Reason})
 	}
 	return checks
 }

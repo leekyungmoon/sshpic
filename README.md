@@ -34,7 +34,7 @@ cd sshpic
 ./install.sh
 ```
 
-The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, and enables normal `Cmd+V` image paste in iTerm2. If the local iTerm2 runtime is not ready, install fails before adding a paste hook instead of triggering an iTerm2 popup later.
+The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, and enables normal `Cmd+V` image paste in iTerm2. If the local iTerm2 Python runtime is unavailable, the installer uses a no-Python fallback instead of asking the user to configure iTerm2 manually.
 
 ## Quick Start
 

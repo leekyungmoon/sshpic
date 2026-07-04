@@ -74,3 +74,20 @@ func TestSSHTargetFromCommandLineRejectsNonSSH(t *testing.T) {
 		t.Fatalf("unexpected target=%+v", target)
 	}
 }
+
+func TestSingleSSHTargetFromProcessListUsesOnlySSHWhenUnique(t *testing.T) {
+	target, ok := SingleSSHTargetFromProcessList("launchd\n/usr/bin/ssh -p 2222 alice@example.com\nssh-agent -l\n")
+	if !ok {
+		t.Fatal("expected unique ssh target")
+	}
+	want := []string{"-p", "2222", "alice@example.com"}
+	if target.Host != "alice@example.com" || target.User != "alice" || !reflect.DeepEqual(target.Args, want) {
+		t.Fatalf("target=%+v want args=%v", target, want)
+	}
+}
+
+func TestSingleSSHTargetFromProcessListRejectsMultipleDifferentTargets(t *testing.T) {
+	if target, ok := SingleSSHTargetFromProcessList("ssh first-host\nssh second-host\n"); ok {
+		t.Fatalf("unexpected target=%+v", target)
+	}
+}

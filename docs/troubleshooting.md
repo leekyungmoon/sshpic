@@ -1,10 +1,10 @@
 # Troubleshooting
 
-## Install refuses because the iTerm2 Python runtime is missing
+## iTerm2 Python runtime is missing
 
-Current `main` refuses to install the `Cmd+V` hook when iTerm2 would show its own “Download Python runtime?” popup. That is intentional: a popup after install is a broken normal UX.
+`sshpic` does not need the iTerm2 Python runtime to read the clipboard, upload over SSH, or produce the remote path. Python is only one possible way to wire `Cmd+V` into iTerm2.
 
-When this happens, sshpic removes its previous iTerm2 paste hook and AutoLaunch helper where possible, then exits non-zero. Restart iTerm2 once to flush any cached keymap from a previous failed install.
+Current `main` therefore does not stop at “runtime missing.” If the Python runtime is unavailable, `sshpic install iterm2` installs a no-Python `Cmd+V` fallback that runs the payload helper quietly and redirects integration errors to `~/.cache/sshpic/sshpic.log`.
 
 For repeatable tester evidence, run:
 
@@ -12,7 +12,7 @@ For repeatable tester evidence, run:
 scripts/verify-iterm2-e2e.sh
 ```
 
-On runtime-missing Macs the script records `SAFE_FAIL_PASS`, verifies that no sshpic keymap/helper/profile remains, and skips Codex E2E intentionally.
+On runtime-missing Macs the script should still reach the `ssh → codex → image Cmd+V` checklist.
 
 ## `Cmd+V` does not insert a path after a successful install
 
@@ -44,7 +44,7 @@ If you are inside local tmux or another wrapper that hides the local `ssh` proce
 
 That is the legacy installer path and should not be used by current `main`.
 
-Run the latest installer once. It disables `~/Library/Application Support/iTerm2/DynamicProfiles/sshpic.json` when present. It installs the `Cmd+V` action only when the local iTerm2 Python runtime is already ready; otherwise it refuses safely and removes sshpic hook/helper state where possible.
+Run the latest installer once. It disables `~/Library/Application Support/iTerm2/DynamicProfiles/sshpic.json` when present. If the iTerm2 Python runtime is ready it installs the Python RPC path; otherwise it installs the no-Python fallback and removes stale helper state where possible.
 
 ## `sshpic paste --output=payload` prints nothing
 
@@ -88,10 +88,7 @@ Run this from macOS/iTerm2:
 scripts/verify-iterm2-e2e.sh
 ```
 
-The evidence helper has two valid outcomes:
-
-- `SAFE_FAIL_PASS`: iTerm2 Python runtime is missing, install is refused safely, and no sshpic hook/helper/profile remains.
-- `READY_FOR_MANUAL_CODEX_CHECK`: install succeeded; complete the real target flow by opening iTerm2, running `ssh <host>`, running `codex`, copying a local PNG, pressing `Cmd+V` in the Codex input, and verifying that a `/home/<user>/.sshpic/images/...png` path is inserted with no popup.
+The evidence helper should produce `READY_FOR_MANUAL_CODEX_CHECK` after install succeeds. Complete the real target flow by opening iTerm2, running `ssh <host>`, running `codex`, copying a local PNG, pressing `Cmd+V` in the Codex input, and verifying that a `/home/<user>/.sshpic/images/...png` path is inserted with no popup.
 
 ## How do I prove real SSH upload behavior?
 

@@ -28,6 +28,11 @@ const (
 	minPythonEnvVersion      = 72
 )
 
+var (
+	installCmdVInvokeScriptFunction = InstallCmdV
+	installCmdVRunCoprocess         = InstallCmdVCoprocess
+)
+
 type InstallOptions struct {
 	HomeDir      string
 	BinaryPath   string
@@ -52,6 +57,8 @@ type InstallResult struct {
 	PythonAPIEnabled         bool
 	PythonRuntimeReady       bool
 	PythonRuntimePath        string
+	CoprocessFallback        bool
+	CoprocessCommand         string
 	CmdVRestored             bool
 	ScriptLaunched           bool
 	Warnings                 []string
@@ -138,7 +145,17 @@ func Install(ctx context.Context, cfg config.Config, cfgPath string, opts Instal
 			} else if removed != "" {
 				result.ScriptPath = removed
 			}
-			return result, fmt.Errorf("iTerm2 Python runtime is not installed; refusing to install Cmd+V hook because it would trigger iTerm2's Download Python runtime popup (%s); previous sshpic iTerm2 hook/helper were removed where possible, restart iTerm2 once to flush cached keymaps", runtimeStatus.Reason)
+			command := SafeCoprocessCommand(binary)
+			key, err := installCmdVRunCoprocess(ctx, command)
+			if err != nil {
+				return result, err
+			}
+			result.GlobalKey = key
+			result.GlobalCommand = command
+			result.CoprocessFallback = true
+			result.CoprocessCommand = command
+			result.Warnings = append(result.Warnings, "iTerm2 Python runtime is not ready; installed no-Python Cmd+V fallback instead")
+			return result, nil
 		}
 		scriptPath, warnings, err := InstallPythonRPCScript(home, binary)
 		if err != nil {
@@ -150,7 +167,7 @@ func Install(ctx context.Context, cfg config.Config, cfgPath string, opts Instal
 			return result, err
 		}
 		result.PythonAPIEnabled = true
-		key, err := InstallCmdV(ctx, scriptFunctionInvocation)
+		key, err := installCmdVInvokeScriptFunction(ctx, scriptFunctionInvocation)
 		if err != nil {
 			return result, err
 		}
@@ -172,11 +189,22 @@ func InstallCmdV(ctx context.Context, invocation string) (string, error) {
 	if strings.TrimSpace(invocation) == "" {
 		return "", fmt.Errorf("empty script function invocation")
 	}
+	return installCmdVDict(ctx, DefaultsDictForInvokeScriptFunction(invocation))
+}
+
+// InstallCmdVCoprocess configures iTerm2 Cmd+V to run a no-Python coprocess fallback.
+func InstallCmdVCoprocess(ctx context.Context, command string) (string, error) {
+	if strings.TrimSpace(command) == "" {
+		return "", fmt.Errorf("empty coprocess command")
+	}
+	return installCmdVDict(ctx, DefaultsDictForRunCoprocess(command))
+}
+
+func installCmdVDict(ctx context.Context, dict string) (string, error) {
 	key, err := KeyCodeForShortcut("cmd+v")
 	if err != nil {
 		return "", err
 	}
-	dict := DefaultsDictForInvokeScriptFunction(invocation)
 	cmd := exec.CommandContext(ctx, "defaults", "write", defaultsDomain, "GlobalKeyMap", "-dict-add", key, dict)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -644,9 +672,17 @@ func InstallSummary(result InstallResult) string {
 	if result.PythonAPIEnabled {
 		b.WriteString("iTerm2 Python API: enabled\n")
 	}
+	if result.CoprocessFallback {
+		b.WriteString("iTerm2 Python API: not required; no-Python Cmd+V fallback installed\n")
+	}
 	if result.GlobalKey != "" {
 		b.WriteString("global Cmd+V key: " + result.GlobalKey + "\n")
-		b.WriteString("global function: " + result.GlobalFunction + "\n")
+		if result.GlobalFunction != "" {
+			b.WriteString("global function: " + result.GlobalFunction + "\n")
+		}
+		if result.GlobalCommand != "" {
+			b.WriteString("global action: no-Python payload helper\n")
+		}
 	}
 	if result.ScriptLaunched {
 		b.WriteString("iTerm2 paste helper: launched\n")
@@ -670,20 +706,26 @@ func SnippetFor(cfg config.Config) Snippet {
 	text := fmt.Sprintf(`# iTerm2 direct-paste snippet for sshpic v0.1
 # v0.1 direct-paste target: macOS + iTerm2.
 # Default shortcut: %s
-# Payload command used by the installed Python RPC: %s
+# Payload primitive: %s
 
 The normal install path is:
 
     sshpic install iterm2
 
-That command installs the iTerm2 global %s mapping automatically. The mapping
-invokes the %q Python API function, which calls sshpic and inserts only the
-payload into the focused session.
+That command installs the iTerm2 global %s mapping automatically. Users should not
+need to click through iTerm2 settings or run an upload/debug command after each
+screenshot.
+
+Install strategy:
+- If the iTerm2 Python runtime is ready, sshpic installs the %q Python RPC path.
+- If the runtime is unavailable, sshpic installs a no-Python Cmd+V fallback that
+  runs the same payload helper quietly and logs integration errors to
+  ~/.cache/sshpic/sshpic.log.
 
 Advanced fallback for dotfiles or locked-down machines only:
 1. iTerm2 → Settings → Profiles → Keys → Key Mappings.
 2. Add a mapping for %q.
-3. Action: "Invoke Script Function...".
+3. Action: "Invoke Script Function..." when Python RPC is available.
 4. Invocation: %s
 
 Behavior:
@@ -692,8 +734,9 @@ Behavior:
 - No newline is emitted unless paste.insert_newline=true or --insert-newline is used.
 
 Known limitation:
-- The legacy Run Coprocess integration is intentionally not used by the default installer because
-  it can conflict with active coprocesses and show iTerm2 stderr popups.
+- The no-Python fallback uses iTerm2's coprocess insertion mechanism because
+  iTerm2 documents coprocess stdout as keyboard input. If a session already has
+  an active coprocess, use the Python RPC path when available.
 `, shortcut, cmd, shortcut, scriptFunctionName, shortcut, scriptFunctionInvocation)
 	return Snippet{Terminal: "iterm2", Text: text}
 }
@@ -783,6 +826,12 @@ func collectHosts(groups ...interface{}) []string {
 func profileGUID(host string) string {
 	sum := sha1.Sum([]byte("sshpic:" + host))
 	return "sshpic-" + hex.EncodeToString(sum[:8])
+}
+
+func SafeCoprocessCommand(binary string) string {
+	quotedBinary := shellquote.Quote(firstNonEmpty(strings.TrimSpace(binary), "sshpic"))
+	inner := "mkdir -p \"$HOME/.cache/sshpic\" && " + quotedBinary + " iterm2-paste --output=payload --session-tty '\\(tty)' --session-job-pid '\\(jobPid)' 2>> \"$HOME/.cache/sshpic/sshpic.log\""
+	return "/bin/sh -lc " + shellquote.Quote(inner)
 }
 
 func globalCoprocessCommand(binary string, cfg config.Config) string {

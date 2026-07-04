@@ -3,7 +3,7 @@
 ## v0.1
 
 - macOS + iTerm2 direct path insertion.
-- iTerm2 Python API paste function installed by default.
+- iTerm2 direct paste installed by default, using Python RPC when available and a no-Python fallback otherwise.
 - Foreground SSH target detection at paste time.
 - SSH stdin upload.
 - Payload-only paste primitive.

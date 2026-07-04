@@ -170,7 +170,7 @@ func TestDetectPythonRuntimeRejectsMissingRuntime(t *testing.T) {
 	}
 }
 
-func TestInstallRefusesKeymapWhenPythonRuntimeMissingAndRemovesHelper(t *testing.T) {
+func TestInstallUsesNoPythonCoprocessFallbackWhenRuntimeMissingAndRemovesHelper(t *testing.T) {
 	home := t.TempDir()
 	legacyScript := filepath.Join(home, ".config", "iterm2", "AppSupport", "Scripts", "AutoLaunch", autoLaunchScriptFile)
 	if err := os.MkdirAll(filepath.Dir(legacyScript), 0o700); err != nil {
@@ -179,12 +179,32 @@ func TestInstallRefusesKeymapWhenPythonRuntimeMissingAndRemovesHelper(t *testing
 	if err := os.WriteFile(legacyScript, []byte("old helper"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+
+	original := installCmdVRunCoprocess
+	defer func() { installCmdVRunCoprocess = original }()
+	var installedCommand string
+	installCmdVRunCoprocess = func(ctx context.Context, command string) (string, error) {
+		installedCommand = command
+		return "0x76-0x100000", nil
+	}
+
 	result, err := Install(context.Background(), config.Defaults(), "", InstallOptions{HomeDir: home, BinaryPath: "/usr/local/bin/sshpic", GlobalKeyMap: true})
-	if err == nil || !strings.Contains(err.Error(), "Download Python runtime popup") {
-		t.Fatalf("expected runtime refusal, result=%+v err=%v", result, err)
+	if err != nil {
+		t.Fatalf("expected no-Python fallback install, result=%+v err=%v", result, err)
 	}
 	if result.PythonRuntimeReady {
 		t.Fatalf("runtime should not be ready: %+v", result)
+	}
+	if !result.CoprocessFallback || result.GlobalKey != "0x76-0x100000" {
+		t.Fatalf("expected coprocess fallback keymap: %+v", result)
+	}
+	for _, want := range []string{"iterm2-paste", "--output=payload", "--session-tty", `\(tty)`, "--session-job-pid", `\(jobPid)`, "2>>", "$HOME/.cache/sshpic"} {
+		if !strings.Contains(installedCommand, want) {
+			t.Fatalf("fallback command missing %q:\n%s", want, installedCommand)
+		}
+	}
+	if strings.Contains(installedCommand, "--remote-host") || strings.Contains(installedCommand, " paste --output=payload") {
+		t.Fatalf("fallback command must not pin host or use legacy paste command:\n%s", installedCommand)
 	}
 	if _, statErr := os.Stat(legacyScript); !os.IsNotExist(statErr) {
 		t.Fatalf("legacy helper should be removed, stat err=%v", statErr)
