@@ -25,6 +25,21 @@ cat ~/.cache/sshpic/sshpic.log
 
 A successful install should not show iTerm2 Coprocess or Python runtime popups.
 
+## Image paste logs `no text in clipboard`
+
+If this appears after pressing `Cmd+V` with an image on the clipboard, the iTerm2 hook probably ran but could not execute the image clipboard reader in its non-interactive shell environment. Current `main` injects common macOS/Homebrew paths into the no-Python coprocess hook and also resolves tools from `/opt/homebrew/bin` and `/usr/local/bin` even when the hook PATH is minimal.
+
+Refresh the install and rerun the real Codex E2E bundle script:
+
+```sh
+git pull origin main
+./install.sh
+SSHPIC_E2E_HOST='169.213.3.141' \
+  scripts/verify-iterm2-codex-e2e.sh
+```
+
+If it still fails, send the generated evidence bundle; the log should now include the image clipboard read failure detail, not only the text fallback error.
+
 ## Image paste logs `remote_host is required`
 
 For normal iTerm2 use, sshpic detects the foreground local `ssh` command at paste time. This error means no local SSH target was visible to iTerm2 when `Cmd+V` ran.

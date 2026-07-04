@@ -904,7 +904,8 @@ func profileGUID(host string) string {
 
 func SafeCoprocessCommand(binary string) string {
 	quotedBinary := shellquote.Quote(firstNonEmpty(strings.TrimSpace(binary), "sshpic"))
-	inner := "mkdir -p \"$HOME/.cache/sshpic\" && " + quotedBinary + " iterm2-paste --output=payload --session-tty '\\(tty)' --session-job-pid '\\(jobPid)' 2>> \"$HOME/.cache/sshpic/sshpic.log\""
+	pathPrefix := "PATH=\"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH\"; export PATH; "
+	inner := pathPrefix + "mkdir -p \"$HOME/.cache/sshpic\" && " + quotedBinary + " iterm2-paste --output=payload --session-tty '\\(tty)' --session-job-pid '\\(jobPid)' 2>> \"$HOME/.cache/sshpic/sshpic.log\""
 	return "/bin/sh -lc " + shellquote.Quote(inner)
 }
 

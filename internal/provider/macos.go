@@ -10,6 +10,15 @@ import (
 	"strings"
 )
 
+var macToolSearchDirs = []string{
+	"/opt/homebrew/bin",
+	"/usr/local/bin",
+	"/usr/bin",
+	"/bin",
+	"/usr/sbin",
+	"/sbin",
+}
+
 type MacOSProvider struct {
 	ClipboardTool     string
 	ScreenshotTool    string
@@ -24,13 +33,13 @@ func (p MacOSProvider) ReadClipboardImage(ctx context.Context) (LocalImage, erro
 	if err != nil {
 		return LocalImage{}, err
 	}
-	cmd := exec.CommandContext(ctx, tool, path)
+	cmd := exec.CommandContext(ctx, resolveMacTool(tool), path)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.Remove(path)
-		if len(out) > 0 {
-			return LocalImage{}, fmt.Errorf("%w: %s", ErrNoImage, strings.TrimSpace(string(out)))
+		if detail := strings.TrimSpace(string(out)); detail != "" {
+			return LocalImage{}, fmt.Errorf("%w: %s", ErrNoImage, detail)
 		}
-		return LocalImage{}, ErrNoImage
+		return LocalImage{}, fmt.Errorf("%w: %v", ErrNoImage, err)
 	}
 	if info, err := os.Stat(path); err != nil || info.Size() == 0 {
 		_ = os.Remove(path)
@@ -54,7 +63,7 @@ func (p MacOSProvider) capture(ctx context.Context, name string, args ...string)
 		return LocalImage{}, err
 	}
 	cmdArgs := append(args, path)
-	cmd := exec.CommandContext(ctx, tool, cmdArgs...)
+	cmd := exec.CommandContext(ctx, resolveMacTool(tool), cmdArgs...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.Remove(path)
 		return LocalImage{}, fmt.Errorf("screenshot failed: %w: %s", err, strings.TrimSpace(string(out)))
@@ -64,7 +73,7 @@ func (p MacOSProvider) capture(ctx context.Context, name string, args ...string)
 
 func (p MacOSProvider) ReadClipboardText(ctx context.Context) (string, error) {
 	tool := firstNonEmpty(p.TextClipboardTool, "pbpaste")
-	cmd := exec.CommandContext(ctx, tool)
+	cmd := exec.CommandContext(ctx, resolveMacTool(tool))
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
@@ -79,7 +88,7 @@ func (p MacOSProvider) ReadClipboardText(ctx context.Context) (string, error) {
 
 func (p MacOSProvider) CopyTextToClipboard(ctx context.Context, text string) error {
 	tool := firstNonEmpty(p.CopyTool, "pbcopy")
-	cmd := exec.CommandContext(ctx, tool)
+	cmd := exec.CommandContext(ctx, resolveMacTool(tool))
 	cmd.Stdin = strings.NewReader(text)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("copy to clipboard: %w", err)
@@ -113,4 +122,22 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func resolveMacTool(tool string) string {
+	tool = strings.TrimSpace(tool)
+	if tool == "" || strings.ContainsRune(tool, os.PathSeparator) {
+		return tool
+	}
+	if path, err := exec.LookPath(tool); err == nil {
+		return path
+	}
+	for _, dir := range macToolSearchDirs {
+		candidate := filepath.Join(dir, tool)
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return candidate
+		}
+	}
+	return tool
 }

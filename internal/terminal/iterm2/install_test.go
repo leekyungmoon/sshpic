@@ -198,7 +198,7 @@ func TestInstallUsesNoPythonCoprocessFallbackWhenRuntimeMissingAndRemovesHelper(
 	if !result.CoprocessFallback || result.GlobalKey != "0x76-0x100000" {
 		t.Fatalf("expected coprocess fallback keymap: %+v", result)
 	}
-	for _, want := range []string{"iterm2-paste", "--output=payload", "--session-tty", `\(tty)`, "--session-job-pid", `\(jobPid)`, "2>>", "$HOME/.cache/sshpic"} {
+	for _, want := range []string{"/opt/homebrew/bin", "export PATH", "iterm2-paste", "--output=payload", "--session-tty", `\(tty)`, "--session-job-pid", `\(jobPid)`, "2>>", "$HOME/.cache/sshpic"} {
 		if !strings.Contains(installedCommand, want) {
 			t.Fatalf("fallback command missing %q:\n%s", want, installedCommand)
 		}

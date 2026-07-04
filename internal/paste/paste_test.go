@@ -3,6 +3,7 @@ package paste
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -230,10 +231,13 @@ func TestExecuteImageClipboardCopyFailureDoesNotBlockPayload(t *testing.T) {
 
 func TestExecuteEmptyClipboardNoPayload(t *testing.T) {
 	cfg := config.Defaults()
-	src := &fakeSource{imgErr: provider.ErrNoImage, textErr: provider.ErrNoText}
+	src := &fakeSource{imgErr: fmt.Errorf("%w: pngpaste not found", provider.ErrNoImage), textErr: provider.ErrNoText}
 	_, err := Execute(context.Background(), cfg, src, &fakeUploader{}, Options{})
 	if !errors.Is(err, provider.ErrNoText) {
 		t.Fatalf("err=%v", err)
+	}
+	if !strings.Contains(err.Error(), "image clipboard read failed") || !strings.Contains(err.Error(), "pngpaste not found") {
+		t.Fatalf("error should preserve image read context, got %v", err)
 	}
 }
 

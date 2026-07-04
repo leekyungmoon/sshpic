@@ -53,9 +53,9 @@ func Execute(ctx context.Context, cfg config.Config, src provider.LocalImageSour
 	if !cfg.Paste.TextPassthrough {
 		return Result{}, provider.ErrNoImage
 	}
-	text, err := src.ReadClipboardText(ctx)
-	if err != nil {
-		return Result{}, err
+	text, textErr := src.ReadClipboardText(ctx)
+	if textErr != nil {
+		return Result{}, clipboardReadError(textErr, err)
 	}
 	if err := validateTextPayload(text); err != nil {
 		return Result{}, err
@@ -126,6 +126,13 @@ func uploadImage(ctx context.Context, cfg config.Config, img provider.LocalImage
 		}
 	}
 	return Result{Kind: "image", Payload: payload, LocalPath: img.Path, RemotePath: remotePath, Verify: verify, Warnings: warnings}, nil
+}
+
+func clipboardReadError(textErr error, imageErr error) error {
+	if imageErr == nil {
+		return textErr
+	}
+	return fmt.Errorf("%w (image clipboard read failed: %v)", textErr, imageErr)
 }
 
 func clipboardFilename(img provider.LocalImage) string {
