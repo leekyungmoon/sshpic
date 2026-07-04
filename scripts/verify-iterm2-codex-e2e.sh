@@ -682,24 +682,24 @@ $(cat "$REMOTE_VERIFY_LOG")
 
 Send either:
 
-1. The evidence bundle: `$BUNDLE`
+1. The evidence bundle: \`$BUNDLE\`
 2. Or, at minimum, these files:
-   - `$EVIDENCE`
-   - `$SYSTEM_LOG`
-   - `$INSTALL_LOG`
-   - `$DOCTOR_LOG`
-   - `$KEYMAP_GREP_BEFORE`
-   - `$KEYMAP_GREP_AFTER_INSTALL`
-   - `$KEYMAP_GREP_AFTER_E2E`
-   - `$LOG_BEFORE`
-   - `$LOG_AFTER_INSTALL`
-   - `$LOG_AFTER_IMAGE`
-   - `$LOG_AFTER_TEXT`
-   - `$LOG_IMAGE_DELTA`
-   - `$LOG_TEXT_DELTA`
-   - `$IMAGE_TARGET_INVOCATIONS`
-   - `$TEXT_TARGET_BLOCK`
-   - `$REMOTE_VERIFY_LOG`
+   - \`$EVIDENCE\`
+   - \`$SYSTEM_LOG\`
+   - \`$INSTALL_LOG\`
+   - \`$DOCTOR_LOG\`
+   - \`$KEYMAP_GREP_BEFORE\`
+   - \`$KEYMAP_GREP_AFTER_INSTALL\`
+   - \`$KEYMAP_GREP_AFTER_E2E\`
+   - \`$LOG_BEFORE\`
+   - \`$LOG_AFTER_INSTALL\`
+   - \`$LOG_AFTER_IMAGE\`
+   - \`$LOG_AFTER_TEXT\`
+   - \`$LOG_IMAGE_DELTA\`
+   - \`$LOG_TEXT_DELTA\`
+   - \`$IMAGE_TARGET_INVOCATIONS\`
+   - \`$TEXT_TARGET_BLOCK\`
+   - \`$REMOTE_VERIFY_LOG\`
 
 If there is any popup, send the exact popup title/body and a screenshot. Do not send private keys, tokens, or unrelated shell history.
 
