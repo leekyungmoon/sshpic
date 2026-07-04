@@ -34,7 +34,7 @@ After a successful install, `sshpic` uploads the local image over SSH and insert
 ## Release evidence helpers
 
 ```sh
-# Run on macOS in iTerm2. This creates a tester checklist for ssh → codex → image Cmd+V.
+# Run on macOS in iTerm2. Runtime-missing Macs produce SAFE_FAIL_PASS evidence; runtime-ready Macs produce the ssh → codex → image Cmd+V checklist.
 scripts/verify-iterm2-e2e.sh
 
 # Run only with a real SSH host and disposable sshpic-specific dir.

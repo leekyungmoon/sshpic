@@ -6,6 +6,14 @@ Current `main` refuses to install the `Cmd+V` hook when iTerm2 would show its ow
 
 When this happens, sshpic removes its previous iTerm2 paste hook and AutoLaunch helper where possible, then exits non-zero. Restart iTerm2 once to flush any cached keymap from a previous failed install.
 
+For repeatable tester evidence, run:
+
+```sh
+scripts/verify-iterm2-e2e.sh
+```
+
+On runtime-missing Macs the script records `SAFE_FAIL_PASS`, verifies that no sshpic keymap/helper/profile remains, and skips Codex E2E intentionally.
+
 ## `Cmd+V` does not insert a path after a successful install
 
 Check:
@@ -36,7 +44,7 @@ If you are inside local tmux or another wrapper that hides the local `ssh` proce
 
 That is the legacy installer path and should not be used by current `main`.
 
-Run the latest installer once. It disables `~/Library/Application Support/iTerm2/DynamicProfiles/sshpic.json` when present and replaces the `Cmd+V` action with the Python API function.
+Run the latest installer once. It disables `~/Library/Application Support/iTerm2/DynamicProfiles/sshpic.json` when present. It installs the `Cmd+V` action only when the local iTerm2 Python runtime is already ready; otherwise it refuses safely and removes sshpic hook/helper state where possible.
 
 ## `sshpic paste --output=payload` prints nothing
 
@@ -80,7 +88,10 @@ Run this from macOS/iTerm2:
 scripts/verify-iterm2-e2e.sh
 ```
 
-The evidence checklist uses the real target flow: install, open iTerm2, `ssh <host>`, run `codex`, copy a local PNG, press `Cmd+V` in the Codex input, and verify that a `/home/<user>/.sshpic/images/...png` path is inserted with no popup.
+The evidence helper has two valid outcomes:
+
+- `SAFE_FAIL_PASS`: iTerm2 Python runtime is missing, install is refused safely, and no sshpic hook/helper/profile remains.
+- `READY_FOR_MANUAL_CODEX_CHECK`: install succeeded; complete the real target flow by opening iTerm2, running `ssh <host>`, running `codex`, copying a local PNG, pressing `Cmd+V` in the Codex input, and verifying that a `/home/<user>/.sshpic/images/...png` path is inserted with no popup.
 
 ## How do I prove real SSH upload behavior?
 
