@@ -20,18 +20,18 @@ After:  screenshot → stay in Codex → Cmd+V → remote image path appears
 
 ## 🚀 Installation
 
-### 👉 One-liner
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh | bash
-```
-
-### 🤔 From a clone
+### 💻 Clone and install
 
 ```bash
 git clone https://github.com/leekyungmoon/sshpic.git
 cd sshpic
 ./install.sh
+```
+
+### 👉 One-liner
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh | bash
 ```
 
 The installer builds and installs `sshpic`, prepares the macOS clipboard helper when Homebrew is available, creates config if missing, cleans old sshpic iTerm2 integration state, and enables normal `Cmd+V` image paste in iTerm2. If the local iTerm2 Python runtime is unavailable, the installer uses a no-Python fallback instead of asking the user to configure iTerm2 manually.
