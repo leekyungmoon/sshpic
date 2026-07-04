@@ -24,12 +24,11 @@ func SnippetFor(cfg config.Config) Snippet {
 # Default shortcut: %s
 # Payload command: %s
 
-Recommended iTerm2 setup:
-1. iTerm2 → Settings → Profiles → Keys → Key Mappings.
-2. Add a mapping for "%s".
-3. Action: "Run Coprocess...".
-4. Command: %s
-5. Enable it only for profiles where you want sshpic path insertion.
+Recommended setup:
+1. Run 'sshpic install iterm2' to install Cmd+V smart paste automatically.
+2. It writes iTerm2 GlobalKeyMap "%s" as Run Coprocess.
+3. Command: %s
+4. If an already-open tab does not pick it up, quit and reopen iTerm2 once.
 
 Behavior:
 - Image clipboard: sshpic uploads over SSH and the coprocess output inserts the remote image path.
@@ -51,8 +50,8 @@ func InstallGuide(cfg config.Config) string {
 	snippet := SnippetFor(cfg).Text
 	return strings.TrimSpace(snippet) + `
 
-sshpic install iterm2 is intentionally guided in v0.1: it does not mutate SSH config,
-iTerm2 profile plist files, or remote hosts. Copy the mapping above into iTerm2 so the
-normal UX is a keypress that inserts the payload, not a typed upload command.
+sshpic install iterm2 writes the local iTerm2 GlobalKeyMap for Cmd+V smart paste.
+It does not mutate SSH config or remote hosts. The normal UX is Cmd+V inserting the
+payload, not typing an upload command.
 `
 }

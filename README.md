@@ -58,24 +58,25 @@ brew install pngpaste
    sshpic doctor
    ```
 
-4. Print the iTerm2 setup snippet:
+4. Install the local iTerm2 Cmd+V smart-paste hook:
 
    ```sh
-   sshpic snippet iterm2
+   sshpic install iterm2
    ```
 
-5. Copy an image, focus your SSH terminal, and press `Cmd+V` in the configured iTerm2 profile.
+5. Copy an image, focus your SSH terminal, and press `Cmd+V`.
 
 ## iTerm2 shortcut setup
 
-`sshpic` v0.1 is designed around iTerm2 **Run Coprocess**.
+`sshpic` v0.1 is designed around iTerm2 **Run Coprocess**, but the normal setup is automated:
 
-Recommended key mapping:
+```sh
+sshpic install iterm2
+```
 
-- iTerm2 → Settings → Profiles → Keys → Key Mappings
-- Bind normal paste, `Cmd+V`, in the profile where you use SSH/Codex/Claude
-- Action: `Run Coprocess...`
-- Command:
+This writes the iTerm2 GlobalKeyMap for **Cmd+V** automatically. No manual iTerm2 Settings step is part of the normal v0.1 flow.
+
+The installed command is:
 
 ```sh
 sshpic paste --output=payload

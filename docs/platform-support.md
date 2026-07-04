@@ -10,4 +10,4 @@
 | Linux | Roadmap | Provider architecture only |
 | Windows / WSL | Roadmap | Provider architecture only |
 
-Cross-platform code should compile where possible, but v0.1 direct-paste behavior is scoped to macOS + iTerm2. Do not tag a release as iTerm2-supported until the manual E2E checklist in `PLAN.md` has been run on macOS+iTerm2. Use `scripts/verify-iterm2-e2e.sh` to prepare the binary, snippet, and evidence file for that run.
+Cross-platform code should compile where possible, but v0.1 direct-paste behavior is scoped to macOS + iTerm2. Do not tag a release as iTerm2-supported until the E2E checklist in `PLAN.md` has been run on macOS+iTerm2. Use `scripts/verify-iterm2-e2e.sh` to prepare the binary, install the Cmd+V keymap, and write the evidence file for that run.

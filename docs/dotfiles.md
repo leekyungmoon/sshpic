@@ -13,10 +13,16 @@ export SSHPIC_REMOTE_HOST=codex141
 export SSHPIC_REMOTE_DIR='/tmp/sshpic/${USER}'
 ```
 
+Install the local iTerm2 Cmd+V smart-paste hook with:
+
+```sh
+sshpic install iterm2
+```
+
 Print reproducible iTerm2 setup text with:
 
 ```sh
 sshpic snippet iterm2
 ```
 
-The snippet is intentionally text-first so you can document the key mapping without committing local iTerm2 profile plist files.
+Keep `~/.config/sshpic/config.toml` in dotfiles; do not commit local iTerm2 plist files.

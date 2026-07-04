@@ -71,7 +71,11 @@ func remoteStatMode(t *testing.T, host, remotePath string) string {
 	if err != nil {
 		t.Fatalf("remote stat failed: %v: %s", err, string(out))
 	}
-	return strings.TrimSpace(string(out))
+	mode, err := findRemoteMode(string(out))
+	if err != nil {
+		t.Fatalf("remote stat mode parse failed: %v", err)
+	}
+	return mode
 }
 
 func removeRemoteFile(t *testing.T, host, remotePath string) {
@@ -83,4 +87,13 @@ func removeRemoteFile(t *testing.T, host, remotePath string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Logf("remote cleanup failed: %v: %s", err, string(out))
 	}
+}
+
+func findRemoteMode(out string) (string, error) {
+	for _, field := range strings.Fields(out) {
+		if field == "600" || field == "0600" {
+			return field, nil
+		}
+	}
+	return "", fmt.Errorf("mode 600 not found in stat output: %s", out)
 }

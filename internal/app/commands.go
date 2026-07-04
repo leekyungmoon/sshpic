@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -115,6 +116,23 @@ func runInstall(pa parsedArgs, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		fmt.Fprintf(stderr, "cannot determine sshpic executable path: %v\n", err)
+		return 1
+	}
+	exe, _ = filepath.Abs(exe)
+	command := exe + " paste --output=payload"
+	key, err := iterm2.InstallCmdV(context.Background(), command)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "installed iTerm2 Cmd+V smart paste")
+	fmt.Fprintf(stdout, "key: %s\n", key)
+	fmt.Fprintf(stdout, "command: %s\n", command)
+	fmt.Fprintln(stdout, "If already-open iTerm2 tabs do not pick it up, quit and reopen iTerm2 once.")
+	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, iterm2.InstallGuide(cfg))
 	return 0
 }

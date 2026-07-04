@@ -62,6 +62,17 @@ if ! grep -F 'sshpic paste --output=payload' "$SNIPPET" >/dev/null; then
   exit 1
 fi
 
+"$BIN" install iterm2 >/dev/null
+KEYMAP="$(defaults read com.googlecode.iterm2 GlobalKeyMap 2>/dev/null || true)"
+if ! grep -F '0x76-0x100000' <<<"$KEYMAP" >/dev/null; then
+  echo "iTerm2 GlobalKeyMap does not contain Cmd+V key 0x76-0x100000 after install" >&2
+  exit 1
+fi
+if ! grep -F "$BIN paste --output=payload" <<<"$KEYMAP" >/dev/null; then
+  echo "iTerm2 GlobalKeyMap does not contain expected sshpic payload command after install" >&2
+  exit 1
+fi
+
 cat > "$EVIDENCE" <<MSG
 # sshpic iTerm2 E2E Evidence
 
@@ -77,11 +88,13 @@ cat > "$EVIDENCE" <<MSG
 
 - Built sshpic locally.
 - Generated iTerm2 snippet containing \`sshpic paste --output=payload\`.
+- Ran \`$BIN install iterm2\`.
+- Verified iTerm2 GlobalKeyMap Cmd+V key \`0x76-0x100000\` points at \`$BIN paste --output=payload\`.
 - Confirmed pngpaste and ssh are available.
 
 ## Manual shortcut checks to complete
 
-1. Configure iTerm2 Cmd+V Run Coprocess with command: \`$BIN paste --output=payload\`.
+1. If this iTerm2 window was already open and ignores Cmd+V, quit and reopen iTerm2 once.
 2. SSH to \`${SSHPIC_REMOTE_HOST}\` in iTerm2.
 3. Copy an image locally.
 4. Press Cmd+V.
@@ -103,9 +116,9 @@ cat <<MSG
 Prepared iTerm2 E2E evidence file:
   $EVIDENCE
 
-Next manual step:
-  Open iTerm2 key mappings and bind Cmd+V Run Coprocess to:
-    $BIN paste --output=payload
+Next step:
+  Copy an image locally, focus an iTerm2 SSH/Codex/Claude session, and press Cmd+V.
+  If the current iTerm2 window ignores Cmd+V, quit and reopen iTerm2 once.
 
 Then complete the checklist in the evidence file.
 MSG

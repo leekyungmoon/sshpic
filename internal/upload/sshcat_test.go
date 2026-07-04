@@ -63,3 +63,33 @@ func TestFileSHA256(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func TestFindSHA256IgnoresNoisySSHOutput(t *testing.T) {
+	out := `clipctl: dial unix /tmp/clipport.sock: connect: connection refused
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  /tmp/sshpic/file.png`
+	got, err := findSHA256(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestFindSHA256AcceptsUppercase(t *testing.T) {
+	got, err := findSHA256("BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD  file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestFindSHA256RejectsMissingDigest(t *testing.T) {
+	if _, err := findSHA256("clipctl: connect: connection refused"); err == nil {
+		t.Fatal("expected missing digest error")
+	}
+}

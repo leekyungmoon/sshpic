@@ -80,7 +80,10 @@ func (u SSHCat) Verify(ctx context.Context, localPath string, remotePath string)
 	if err != nil {
 		return VerifyResult{}, fmt.Errorf("ssh verify failed: %w: %s", err, sanitize(string(out)))
 	}
-	remote := firstField(string(out))
+	remote, err := findSHA256(string(out))
+	if err != nil {
+		return VerifyResult{LocalSHA: local}, err
+	}
 	result := VerifyResult{LocalSHA: local, RemoteSHA: remote, Match: local == remote}
 	if !result.Match {
 		return result, fmt.Errorf("sha256 mismatch: local %s remote %s", local, remote)
@@ -170,12 +173,24 @@ func FileSHA256(localPath string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func firstField(s string) string {
+func findSHA256(s string) (string, error) {
 	fields := strings.Fields(s)
-	if len(fields) == 0 {
-		return ""
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if len(field) == 64 && isHex(field) {
+			return strings.ToLower(field), nil
+		}
 	}
-	return fields[0]
+	return "", fmt.Errorf("remote sha256 not found in ssh output: %s", sanitize(s))
+}
+
+func isHex(s string) bool {
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func sanitize(s string) string {
