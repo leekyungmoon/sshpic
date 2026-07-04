@@ -5,3 +5,4 @@ coverage.out
 .DS_Store
 
 /sshpic
+/.sshpic-e2e/

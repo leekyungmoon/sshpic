@@ -144,4 +144,18 @@ go vet ./...
 go build ./cmd/sshpic
 ```
 
+Opt-in external E2E checks:
+
+```sh
+# macOS+iTerm2 evidence capture; must be run from macOS/iTerm2
+scripts/verify-iterm2-e2e.sh
+
+# Real SSH upload integration test; requires an SSH host and sshpic-specific dir
+SSHPIC_INTEGRATION_HOST=codex141 \
+SSHPIC_INTEGRATION_REMOTE_DIR="/tmp/sshpic/$USER" \
+  scripts/verify-ssh-integration.sh
+```
+
+These scripts are intentionally not part of default CI because they require local iTerm2 UI state or a real SSH host.
+
 Release automation lives in `.github/workflows/` and `.goreleaser.yaml`.

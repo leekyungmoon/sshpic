@@ -10,6 +10,13 @@ go vet ./...
 go build ./cmd/sshpic
 ```
 
+External, opt-in checks before tagged support claims:
+
+```sh
+scripts/verify-iterm2-e2e.sh
+SSHPIC_INTEGRATION_HOST=<host> SSHPIC_INTEGRATION_REMOTE_DIR="/tmp/sshpic/$USER" scripts/verify-ssh-integration.sh
+```
+
 ## Pull requests
 
 - Keep v0.1 support claims strict: macOS + iTerm2 direct paste only.

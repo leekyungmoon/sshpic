@@ -33,3 +33,25 @@ That is the safe default. Set `paste.insert_newline = true` or pass `--insert-ne
 ## `sshpic clean` refuses a directory
 
 This is expected for dangerous or broad paths. `sshpic clean` only accepts absolute sshpic-specific directories and refuses targets like `/`, `/tmp`, `$HOME`, `~`, and non-sshpic directories.
+
+## How do I prove the iTerm2 shortcut flow?
+
+Run this from macOS/iTerm2:
+
+```sh
+scripts/verify-iterm2-e2e.sh
+```
+
+The script refuses non-macOS/tmux environments because they cannot prove iTerm2 shortcut injection. It creates `.sshpic-e2e/iterm2-e2e-*.md` with the exact checklist to complete after binding Run Coprocess to `sshpic paste --output=payload`.
+
+## How do I prove real SSH upload behavior?
+
+Use the opt-in integration test with a disposable sshpic-specific directory:
+
+```sh
+SSHPIC_INTEGRATION_HOST=codex141 \
+SSHPIC_INTEGRATION_REMOTE_DIR="/tmp/sshpic/$USER" \
+  scripts/verify-ssh-integration.sh
+```
+
+The test is gated behind the `integration` build tag and explicit env vars, so normal `go test ./...` never touches a real SSH host.
