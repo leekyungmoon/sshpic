@@ -1,0 +1,1068 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sshpic hero animation</title>
+  <style>
+    :root {
+      --bg-0: #050912;
+      --bg-1: #081321;
+      --bg-2: #0b1f31;
+      --cyan: #64d8ff;
+      --cyan-soft: rgba(100, 216, 255, 0.24);
+      --blue: #2e8ee8;
+      --green: #60efa0;
+      --green-soft: rgba(96, 239, 160, 0.18);
+      --muted: #8ca6bd;
+      --text: #e8f4ff;
+      --panel: rgba(10, 15, 23, 0.94);
+      --panel-2: rgba(13, 20, 31, 0.92);
+      --hairline: rgba(163, 214, 246, 0.22);
+      --shadow: 0 28px 90px rgba(0, 0, 0, 0.56);
+      --mono: "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background: var(--bg-0);
+      overflow: hidden;
+      font-family: var(--sans);
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    .stage {
+      position: relative;
+      width: 1280px;
+      height: 720px;
+      color: var(--text);
+      overflow: hidden;
+      background:
+        linear-gradient(115deg, rgba(18, 52, 82, 0.34) 0%, rgba(7, 15, 27, 0.0) 35%),
+        linear-gradient(245deg, rgba(18, 86, 75, 0.28) 0%, rgba(6, 10, 18, 0.0) 42%),
+        linear-gradient(180deg, #07111f 0%, #050912 70%, #04070d 100%);
+      isolation: isolate;
+    }
+
+    .stage::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(113, 193, 238, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(113, 193, 238, 0.04) 1px, transparent 1px);
+      background-size: 42px 42px;
+      mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.06) 70%);
+      pointer-events: none;
+    }
+
+    .stage::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border: 1px solid rgba(188, 229, 255, 0.07);
+      pointer-events: none;
+    }
+
+    .label {
+      position: absolute;
+      top: 74px;
+      color: #8bd8ff;
+      font-size: 21px;
+      font-weight: 750;
+      letter-spacing: 0;
+      text-shadow: 0 0 24px rgba(100, 216, 255, 0.28);
+      white-space: nowrap;
+    }
+
+    .label small {
+      display: block;
+      margin-top: 5px;
+      color: rgba(192, 225, 244, 0.66);
+      font-size: 11px;
+      font-weight: 650;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .label.local {
+      left: 175px;
+    }
+
+    .label.remote {
+      left: 775px;
+    }
+
+    .boundary-label {
+      position: absolute;
+      top: 77px;
+      left: 566px;
+      width: 148px;
+      text-align: center;
+      color: rgba(177, 219, 242, 0.82);
+      font-size: 20px;
+      font-weight: 550;
+      letter-spacing: 0;
+    }
+
+    .boundary {
+      position: absolute;
+      top: 112px;
+      left: 639px;
+      width: 2px;
+      height: 458px;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(116, 207, 252, 0.82) 0 10px,
+        transparent 10px 22px
+      );
+      filter: drop-shadow(0 0 10px rgba(100, 216, 255, 0.35));
+      opacity: 0.9;
+    }
+
+    .boundary-hit {
+      position: absolute;
+      top: 318px;
+      left: 631px;
+      width: 18px;
+      height: 68px;
+      border-radius: 10px;
+      background: rgba(104, 218, 255, 0.12);
+      border: 1px solid rgba(104, 218, 255, 0.28);
+      opacity: var(--boundary-pulse, 0);
+      transform: scaleY(var(--boundary-scale, 0.78));
+      filter: blur(0.1px);
+    }
+
+    .window {
+      position: absolute;
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--panel);
+      border: 1px solid var(--hairline);
+      box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+
+    .window::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.035);
+      pointer-events: none;
+    }
+
+    .titlebar {
+      position: relative;
+      height: 34px;
+      background: linear-gradient(180deg, rgba(58, 64, 72, 0.92), rgba(30, 35, 43, 0.96));
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: rgba(236, 246, 255, 0.8);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .traffic {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      display: flex;
+      gap: 8px;
+    }
+
+    .dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+    }
+
+    .dot.red { background: #ff675d; }
+    .dot.yellow { background: #f4bd4f; }
+    .dot.green { background: #60cc68; }
+
+    .mac-window {
+      left: 68px;
+      top: 136px;
+      width: 474px;
+      height: 374px;
+    }
+
+    .mac-content {
+      position: relative;
+      height: 340px;
+      padding: 32px 34px;
+      background:
+        linear-gradient(135deg, rgba(37, 151, 181, 0.58), rgba(6, 22, 41, 0.35) 46%, rgba(32, 130, 95, 0.42)),
+        linear-gradient(180deg, #07111e, #082136);
+    }
+
+    .dashboard {
+      position: relative;
+      width: 368px;
+      height: 236px;
+      margin: 4px auto 0;
+      border-radius: 8px;
+      background: #f7fbff;
+      color: #1d2b3a;
+      box-shadow: 0 18px 46px rgba(0, 0, 0, 0.34);
+      overflow: hidden;
+    }
+
+    .dashboard-top {
+      height: 30px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+      border-bottom: 1px solid #e2edf6;
+      font-size: 8px;
+      color: #5e7184;
+      font-weight: 700;
+    }
+
+    .app-mark {
+      width: 12px;
+      height: 12px;
+      border-radius: 4px;
+      background: linear-gradient(135deg, #10243b, #32b7cc);
+    }
+
+    .top-search {
+      margin-left: auto;
+      width: 86px;
+      height: 14px;
+      border-radius: 7px;
+      background: #eef5fb;
+      border: 1px solid #dde9f2;
+    }
+
+    .dashboard-body {
+      display: grid;
+      grid-template-columns: 72px 1fr 78px;
+      gap: 10px;
+      height: 206px;
+      padding: 10px;
+    }
+
+    .sidebar {
+      border-right: 1px solid #e4eef6;
+      padding-right: 8px;
+    }
+
+    .side-row {
+      height: 11px;
+      border-radius: 4px;
+      margin-bottom: 8px;
+      background: #edf4fa;
+    }
+
+    .side-row.active {
+      background: #d8edf8;
+    }
+
+    .main-card,
+    .side-card,
+    .chart-card {
+      background: #ffffff;
+      border: 1px solid #e4eef6;
+      border-radius: 7px;
+      box-shadow: 0 5px 18px rgba(33, 60, 88, 0.08);
+    }
+
+    .main-card {
+      height: 74px;
+      padding: 12px;
+    }
+
+    .main-card h3 {
+      margin: 0 0 5px;
+      font-size: 14px;
+      letter-spacing: 0;
+      color: #152638;
+    }
+
+    .main-card p {
+      margin: 0;
+      color: #7890a4;
+      font-size: 6px;
+      line-height: 1.5;
+    }
+
+    .button-pill {
+      margin-top: 8px;
+      width: 58px;
+      height: 16px;
+      border-radius: 4px;
+      background: #0a73c9;
+      color: white;
+      display: grid;
+      place-items: center;
+      font-size: 6px;
+      font-weight: 700;
+    }
+
+    .chart-card {
+      height: 104px;
+      margin-top: 10px;
+      padding: 11px;
+    }
+
+    .chart-title {
+      width: 68px;
+      height: 7px;
+      border-radius: 4px;
+      background: #203346;
+      opacity: 0.82;
+    }
+
+    .chart-line {
+      position: relative;
+      height: 60px;
+      margin-top: 13px;
+      background:
+        linear-gradient(#ecf4fa 1px, transparent 1px) 0 0 / 100% 16px;
+    }
+
+    .chart-line svg {
+      position: absolute;
+      inset: 2px 0 0;
+      width: 100%;
+      height: 58px;
+      overflow: visible;
+    }
+
+    .side-stack {
+      display: grid;
+      gap: 10px;
+    }
+
+    .side-card {
+      height: 76px;
+      padding: 10px;
+    }
+
+    .side-card h4 {
+      margin: 0 0 9px;
+      color: #203346;
+      font-size: 8px;
+    }
+
+    .bar {
+      height: 8px;
+      border-radius: 4px;
+      margin-bottom: 7px;
+      background: #e7f0f7;
+      overflow: hidden;
+    }
+
+    .bar span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #2f8de6, #31c48d);
+    }
+
+    .capture-ring {
+      position: absolute;
+      left: 92px;
+      top: 72px;
+      width: 294px;
+      height: 128px;
+      border-radius: 11px;
+      border: 2px solid rgba(99, 222, 255, 0.94);
+      box-shadow:
+        0 0 0 7px rgba(99, 222, 255, 0.08),
+        0 0 34px rgba(99, 222, 255, 0.42);
+      opacity: var(--capture-ring, 0);
+    }
+
+    .clipboard-toast {
+      position: absolute;
+      left: 148px;
+      top: 260px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      height: 34px;
+      padding: 0 13px;
+      border-radius: 17px;
+      background: rgba(7, 16, 26, 0.86);
+      border: 1px solid rgba(91, 229, 160, 0.32);
+      color: #dfffee;
+      font-size: 13px;
+      font-weight: 720;
+      box-shadow: 0 16px 46px rgba(0, 0, 0, 0.35);
+      opacity: var(--clipboard-toast, 0);
+      transform: translateY(calc((1 - var(--clipboard-toast, 0)) * 8px));
+    }
+
+    .check {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: rgba(96, 239, 160, 0.16);
+      border: 1px solid rgba(96, 239, 160, 0.7);
+      color: var(--green);
+      display: grid;
+      place-items: center;
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    .terminal-window {
+      left: 670px;
+      top: 124px;
+      width: 560px;
+      height: 428px;
+    }
+
+    .terminal-body {
+      position: relative;
+      height: 394px;
+      padding: 18px 18px 14px;
+      background:
+        radial-gradient(circle at 78% 18%, rgba(91, 116, 126, 0.1), transparent 32%),
+        linear-gradient(180deg, rgba(22, 23, 25, 0.98), rgba(12, 13, 15, 0.99)),
+        #101214;
+      font-family: var(--mono);
+      color: #d8dde2;
+      font-size: 13px;
+      line-height: 1.28;
+      letter-spacing: 0;
+    }
+
+    .codex-card {
+      border-radius: 10px;
+      border: 1px solid rgba(210, 218, 224, 0.18);
+      background: linear-gradient(180deg, rgba(43, 45, 48, 0.92), rgba(30, 31, 34, 0.94));
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.06),
+        0 14px 38px rgba(0, 0, 0, 0.24);
+      padding: 13px 15px 12px;
+    }
+
+    .codex-card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding-bottom: 10px;
+      margin-bottom: 10px;
+      border-bottom: 1px solid rgba(215, 224, 230, 0.1);
+    }
+
+    .codex-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .codex-mark {
+      width: 24px;
+      height: 24px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      color: #f1f6f8;
+      font-family: var(--sans);
+      font-size: 15px;
+      font-weight: 850;
+      background: linear-gradient(135deg, rgba(86, 104, 113, 0.96), rgba(35, 39, 43, 0.98));
+      border: 1px solid rgba(220, 230, 235, 0.16);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    }
+
+    .codex-title {
+      color: #f3f6f8;
+      font-weight: 850;
+      font-size: 15px;
+      white-space: nowrap;
+    }
+
+    .codex-version {
+      color: rgba(202, 213, 219, 0.56);
+      font-size: 11px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .codex-meta {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 4px;
+    }
+
+    .muted-line {
+      color: #98a5ad;
+    }
+
+    .muted-line .value {
+      color: #eef2f4;
+    }
+
+    .codex-lines {
+      display: grid;
+      gap: 4px;
+      margin: 12px 2px 13px;
+      color: #99a4ac;
+      font-size: 12px;
+    }
+
+    .codex-line {
+      display: flex;
+      gap: 8px;
+      min-height: 16px;
+      align-items: baseline;
+    }
+
+    .line-prefix {
+      flex: 0 0 52px;
+      color: #6f7a81;
+      text-align: right;
+    }
+
+    .line-body {
+      color: #adb8bf;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .terminal-input {
+      position: relative;
+      height: 128px;
+      padding: 15px 18px 14px;
+      border-radius: 13px;
+      background: linear-gradient(180deg, rgba(75, 77, 82, 0.92), rgba(55, 57, 61, 0.95));
+      border: 1px solid rgba(233, 238, 241, 0.17);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.1),
+        0 16px 42px rgba(0, 0, 0, 0.34);
+      color: #f4f6f8;
+      overflow: hidden;
+    }
+
+    .terminal-input::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      border: 1px solid rgba(100, 216, 255, 0.38);
+      background: rgba(100, 216, 255, 0.045);
+      opacity: var(--terminal-focus, 0);
+      pointer-events: none;
+    }
+
+    .composer-content {
+      position: relative;
+      display: grid;
+      gap: 9px;
+      z-index: 1;
+    }
+
+    .image-token {
+      width: max-content;
+      max-width: 100%;
+      min-height: 28px;
+      padding: 5px 10px 5px 9px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      color: #f1f4f6;
+      font-size: 15px;
+      line-height: 1.1;
+      font-weight: 680;
+      background: rgba(24, 26, 29, 0.62);
+      border: 1px solid rgba(230, 237, 241, 0.14);
+      opacity: var(--image-token, 0);
+      transform: translateY(calc((1 - var(--image-token, 0)) * 8px)) scale(calc(0.98 + var(--image-token, 0) * 0.02));
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    }
+
+    .request {
+      color: #f7f8f9;
+      font-size: 14px;
+      line-height: 1.25;
+      white-space: nowrap;
+      width: 100%;
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
+    }
+
+    .cursor {
+      display: inline-block;
+      width: 9px;
+      height: 18px;
+      margin-left: 2px;
+      transform: translateY(3px);
+      background: #f5fbff;
+      box-shadow: 0 0 12px rgba(255, 255, 255, 0.35);
+      opacity: var(--cursor, 0);
+    }
+
+    .composer-chrome {
+      position: absolute;
+      left: 18px;
+      right: 18px;
+      bottom: 10px;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: rgba(229, 235, 238, 0.48);
+      font-family: var(--sans);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .composer-actions {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .composer-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: rgba(229, 235, 238, 0.42);
+    }
+
+    .terminal-status {
+      position: absolute;
+      left: 18px;
+      right: 18px;
+      bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      color: #8b969d;
+      font-family: var(--sans);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+
+    .status-left,
+    .status-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .status-pill {
+      color: #bbc5ca;
+      background: rgba(255, 255, 255, 0.045);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 7px;
+      padding: 4px 8px;
+    }
+
+    .cmdv-cue {
+      position: absolute;
+      left: 124px;
+      top: 242px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 9px 12px;
+      border-radius: 10px;
+      background: rgba(6, 12, 19, 0.84);
+      border: 1px solid rgba(103, 218, 255, 0.3);
+      box-shadow: 0 12px 42px rgba(0, 0, 0, 0.34);
+      opacity: var(--cmdv, 0);
+      transform: translateY(calc((1 - var(--cmdv, 0)) * 8px));
+    }
+
+    .key {
+      min-width: 30px;
+      height: 28px;
+      padding: 0 9px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      color: #e9f8ff;
+      font-family: var(--sans);
+      font-size: 12px;
+      font-weight: 800;
+      background: linear-gradient(180deg, rgba(42, 57, 73, 0.96), rgba(18, 27, 38, 0.98));
+      border: 1px solid rgba(179, 219, 239, 0.22);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    }
+
+    .cue-label {
+      color: rgba(199, 233, 250, 0.82);
+      font-size: 11px;
+      font-weight: 720;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    .flying-card {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 96px;
+      height: 72px;
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(240, 250, 255, 0.98), rgba(203, 230, 242, 0.98));
+      border: 1px solid rgba(166, 225, 255, 0.72);
+      box-shadow:
+        0 18px 54px rgba(0, 0, 0, 0.42),
+        0 0 0 5px rgba(100, 216, 255, 0.08),
+        0 0 32px rgba(100, 216, 255, 0.22);
+      padding: 7px;
+      opacity: var(--flying-card, 0);
+      transform: translate(var(--card-x, 0), var(--card-y, 0)) rotate(var(--card-rot, 0deg)) scale(var(--card-scale, 1));
+      transform-origin: center;
+      z-index: 10;
+    }
+
+    .flying-card::before {
+      content: "";
+      position: absolute;
+      left: 14px;
+      top: 13px;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: #ffd76a;
+      box-shadow: 0 0 0 1px rgba(63, 95, 106, 0.1);
+    }
+
+    .mini-land {
+      position: absolute;
+      left: 13px;
+      right: 13px;
+      bottom: 13px;
+      height: 31px;
+      border-radius: 7px;
+      overflow: hidden;
+      background: linear-gradient(135deg, #71c7ff, #176a8f);
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+    }
+
+    .mini-land::before,
+    .mini-land::after {
+      content: "";
+      position: absolute;
+      bottom: -1px;
+      width: 49px;
+      height: 25px;
+      background: linear-gradient(135deg, #69d07d, #1e8d64);
+      clip-path: polygon(0 100%, 45% 28%, 100% 100%);
+    }
+
+    .mini-land::before {
+      left: -3px;
+    }
+
+    .mini-land::after {
+      right: -5px;
+      background: linear-gradient(135deg, #a5e08c, #38a56d);
+    }
+
+    .flow-glint {
+      position: absolute;
+      left: 535px;
+      top: 353px;
+      width: 210px;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(100, 216, 255, 0.68), transparent);
+      opacity: var(--flow-glint, 0);
+      transform: scaleX(var(--flow-scale, 0));
+      transform-origin: left center;
+      filter: drop-shadow(0 0 8px rgba(100, 216, 255, 0.45));
+    }
+
+    .footer {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 56px;
+      text-align: center;
+      opacity: var(--footer, 0);
+      transform: translateY(calc((1 - var(--footer, 0)) * 8px));
+    }
+
+    .footer-main {
+      color: #dff7ff;
+      font-size: 17px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .footer-sub {
+      margin-top: 8px;
+      color: rgba(181, 214, 231, 0.76);
+      font-size: 13px;
+      font-weight: 620;
+      letter-spacing: 0;
+    }
+  </style>
+</head>
+<body>
+  <main class="stage" aria-label="sshpic hero animation">
+    <div class="label local">LOCAL MAC</div>
+    <div class="boundary-label">SSH boundary</div>
+    <div class="label remote">REMOTE SSH &middot; iTERM2<small>running OpenAI Codex</small></div>
+    <div class="boundary"></div>
+    <div class="boundary-hit"></div>
+
+    <section class="window mac-window" aria-label="Local Mac window">
+      <div class="titlebar">
+        <div class="traffic">
+          <span class="dot red"></span>
+          <span class="dot yellow"></span>
+          <span class="dot green"></span>
+        </div>
+        frontend-reference.png
+      </div>
+      <div class="mac-content">
+        <div class="dashboard" aria-label="Frontend reference screenshot">
+          <div class="dashboard-top">
+            <span class="app-mark"></span>
+            <span>Scout Suite</span>
+            <span class="top-search"></span>
+          </div>
+          <div class="dashboard-body">
+            <div class="sidebar">
+              <div class="side-row active"></div>
+              <div class="side-row"></div>
+              <div class="side-row"></div>
+              <div class="side-row"></div>
+              <div class="side-row"></div>
+              <div class="side-row"></div>
+            </div>
+            <div>
+              <div class="main-card">
+                <h3>SaaS dashboard</h3>
+                <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Integer non maximus justo.</p>
+                <div class="button-pill">Get started</div>
+              </div>
+              <div class="chart-card">
+                <div class="chart-title"></div>
+                <div class="chart-line">
+                  <svg viewBox="0 0 176 58" preserveAspectRatio="none" aria-hidden="true">
+                    <path d="M0 44 C20 34 30 23 46 29 C64 36 71 47 91 36 C110 25 120 15 139 24 C154 31 164 16 176 8" fill="none" stroke="#3594c9" stroke-width="2.4"/>
+                    <path d="M0 58 L0 44 C20 34 30 23 46 29 C64 36 71 47 91 36 C110 25 120 15 139 24 C154 31 164 16 176 8 L176 58 Z" fill="rgba(53,148,201,0.12)"/>
+                  </svg>
+                </div>
+              </div>
+            </div>
+            <div class="side-stack">
+              <div class="side-card">
+                <h4>Business flow</h4>
+                <div class="bar"><span style="width: 78%"></span></div>
+                <div class="bar"><span style="width: 56%"></span></div>
+                <div class="bar"><span style="width: 68%"></span></div>
+              </div>
+              <div class="side-card">
+                <h4>Populations</h4>
+                <div class="bar"><span style="width: 62%"></span></div>
+                <div class="bar"><span style="width: 82%"></span></div>
+                <div class="bar"><span style="width: 48%"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="capture-ring"></div>
+        <div class="clipboard-toast"><span class="check">✓</span><span>Copied to clipboard</span></div>
+      </div>
+    </section>
+
+    <section class="window terminal-window" aria-label="Remote SSH iTerm2 terminal running OpenAI Codex">
+      <div class="titlebar">
+        <div class="traffic">
+          <span class="dot red"></span>
+          <span class="dot yellow"></span>
+          <span class="dot green"></span>
+        </div>
+        REMOTE SSH &middot; iTERM2
+      </div>
+      <div class="terminal-body">
+        <div class="codex-card">
+          <div class="codex-card-top">
+            <div class="codex-brand">
+              <div class="codex-mark">&gt;_</div>
+              <div class="codex-title">OpenAI Codex</div>
+            </div>
+            <div class="codex-version">v0.71.0</div>
+          </div>
+          <div class="codex-meta">
+            <div class="muted-line">model: <span class="value">gpt-5.5 codex high</span></div>
+            <div class="muted-line">directory: <span class="value">~/sshpic</span></div>
+          </div>
+        </div>
+        <div class="codex-lines" aria-label="Codex CLI guidance">
+          <div class="codex-line">
+            <span class="line-prefix">tip</span>
+            <span class="line-body">paste screenshots into this SSH Codex composer with Cmd+V</span>
+          </div>
+          <div class="codex-line">
+            <span class="line-prefix">usage</span>
+            <span class="line-body">/help for commands · /model to switch models · Esc to edit</span>
+          </div>
+          <div class="codex-line">
+            <span class="line-prefix">warning</span>
+            <span class="line-body">image input is shown after Codex reads the pasted remote path</span>
+          </div>
+        </div>
+        <div class="terminal-input">
+          <div class="composer-content">
+            <div id="imageText" class="image-token"></div>
+            <div>
+              <span id="requestText" class="request"></span><span class="cursor"></span>
+            </div>
+          </div>
+          <div class="composer-chrome">
+            <span>Enter to send</span>
+            <div class="composer-actions">
+              <span class="composer-dot"></span>
+              <span class="composer-dot"></span>
+              <span>context ready</span>
+            </div>
+          </div>
+        </div>
+        <div class="terminal-status">
+          <div class="status-left">
+            <span class="status-pill">ssh alice@buildbox</span>
+            <span>Codex composer</span>
+          </div>
+          <div class="status-right">
+            <span>tokens 12%</span>
+            <span>online</span>
+          </div>
+        </div>
+        <div class="cmdv-cue">
+          <span class="key">Cmd</span>
+          <span class="key">V</span>
+          <span class="cue-label">paste into composer</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="flow-glint"></div>
+    <div class="flying-card" aria-hidden="true"><div class="mini-land"></div></div>
+
+    <footer class="footer">
+      <div class="footer-main">sshpic | local screenshot -&gt; remote Codex image</div>
+      <div class="footer-sub">Codex E2E verified &middot; no remote install &middot; no cloud upload</div>
+    </footer>
+  </main>
+
+  <script>
+    const IMAGE_TEXT = "[Image #1]";
+    const REQUEST_TEXT = "Redesign this page with the same polished visual language.";
+
+    const imageEl = document.getElementById("imageText");
+    const requestEl = document.getElementById("requestText");
+    const rootStyle = document.documentElement.style;
+
+    function clamp(value, min = 0, max = 1) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    function smooth(value) {
+      value = clamp(value);
+      return value * value * (3 - 2 * value);
+    }
+
+    function pulse(t, start, end) {
+      const n = clamp((t - start) / (end - start));
+      return Math.sin(n * Math.PI);
+    }
+
+    function fadeInOut(t, start, inEnd, outStart, end) {
+      return Math.min(
+        smooth((t - start) / (inEnd - start)),
+        1 - smooth((t - outStart) / (end - outStart))
+      );
+    }
+
+    function setVar(name, value) {
+      rootStyle.setProperty(name, String(value));
+    }
+
+    function setHeroTime(t) {
+      const capture = fadeInOut(t, 0.95, 1.18, 1.86, 2.16);
+      const toast = fadeInOut(t, 1.05, 1.24, 2.18, 2.52);
+      const cmd = fadeInOut(t, 1.96, 2.14, 2.65, 2.94);
+      const terminalFocus = Math.max(cmd * 0.78, smooth((t - 4.16) / 0.48) * 0.55);
+      const boundary = pulse(t, 3.42, 4.12);
+      const flow = fadeInOut(t, 2.74, 3.18, 4.02, 4.38);
+      const footer = smooth((t - 7.4) / 0.52);
+      const imageToken = smooth((t - 4.3) / 0.9);
+
+      setVar("--capture-ring", capture.toFixed(4));
+      setVar("--clipboard-toast", toast.toFixed(4));
+      setVar("--cmdv", cmd.toFixed(4));
+      setVar("--terminal-focus", terminalFocus.toFixed(4));
+      setVar("--image-token", imageToken.toFixed(4));
+      setVar("--boundary-pulse", (boundary * 0.74).toFixed(4));
+      setVar("--boundary-scale", (0.8 + boundary * 0.32).toFixed(4));
+      setVar("--flow-glint", flow.toFixed(4));
+      setVar("--flow-scale", smooth((t - 2.82) / 1.28).toFixed(4));
+      setVar("--footer", footer.toFixed(4));
+
+      const cardP = smooth((t - 2.8) / 1.5);
+      const cardOpacity = fadeInOut(t, 2.58, 2.82, 4.24, 4.56);
+      const start = { x: 470, y: 326 };
+      const control = { x: 610, y: 300 };
+      const end = { x: 725, y: 328 };
+      const inv = 1 - cardP;
+      const x = inv * inv * start.x + 2 * inv * cardP * control.x + cardP * cardP * end.x;
+      const y = inv * inv * start.y + 2 * inv * cardP * control.y + cardP * cardP * end.y;
+      const rot = -5 + cardP * 10;
+      const scale = 0.88 + Math.sin(cardP * Math.PI) * 0.12;
+      setVar("--flying-card", cardOpacity.toFixed(4));
+      setVar("--card-x", `${x.toFixed(2)}px`);
+      setVar("--card-y", `${y.toFixed(2)}px`);
+      setVar("--card-rot", `${rot.toFixed(2)}deg`);
+      setVar("--card-scale", scale.toFixed(4));
+
+      const requestChars = Math.floor(REQUEST_TEXT.length * smooth((t - 5.1) / 2.3));
+      imageEl.textContent = t >= 4.3 ? IMAGE_TEXT : "";
+      requestEl.textContent = REQUEST_TEXT.slice(0, requestChars);
+
+      const cursorVisible = t >= 4.28 ? (0.55 + Math.sin(t * 7.2) * 0.45) : 0;
+      setVar("--cursor", cursorVisible.toFixed(4));
+    }
+
+    window.__setHeroTime = setHeroTime;
+
+    if (new URLSearchParams(window.location.search).get("render") !== "1") {
+      const start = performance.now();
+      function frame(now) {
+        const t = ((now - start) / 1000) % 9;
+        setHeroTime(t);
+        requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    } else {
+      setHeroTime(0);
+    }
+  </script>
+</body>
+</html>
