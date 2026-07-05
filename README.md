@@ -4,7 +4,6 @@
 
 ![8-second sshpic demo: copy image, press Cmd+V in iTerm2, remote path appears](docs/assets/sshpic-hero.gif)
 
-[▶ Watch the lightweight MP4 demo](docs/assets/sshpic-hero.mp4)
 
 ## ✨ Before / After
 
