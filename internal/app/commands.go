@@ -274,12 +274,18 @@ func buildITerm2Dispatch(ctx context.Context, cfg config.Config, pa parsedArgs) 
 }
 
 func buildITerm2DispatchWithSource(ctx context.Context, cfg config.Config, pa parsedArgs, src provider.LocalImageSource) iterm2DispatchResult {
-	uploader, remoteUser := iterm2Uploader(ctx, cfg, iterm2.SessionContext{
+	sess := iterm2.SessionContext{
 		SessionID:   pa.Values["session_id"],
 		TTY:         pa.Values["session_tty"],
 		CommandLine: pa.Values["session_command_line"],
 		JobPID:      pa.Values["session_job_pid"],
-	})
+	}
+	target, ok := iterm2.DetectSessionSSHTarget(ctx, sess)
+	if !ok {
+		appendIntegrationLog("dispatch classification: native_paste no_session_ssh")
+		return iterm2DispatchResult{Action: "native_paste", Kind: "no_session_ssh", Reason: "active iTerm2 session is not ssh"}
+	}
+	uploader := upload.SSHCat{Args: target.Args}
 	img, err := src.ReadClipboardImage(ctx)
 	if errors.Is(err, provider.ErrNoImage) {
 		appendIntegrationLog("dispatch classification: native_paste no_image")
@@ -289,7 +295,7 @@ func buildITerm2DispatchWithSource(ctx context.Context, cfg config.Config, pa pa
 		appendIntegrationLog("dispatch classification: native_paste image_read_error: " + err.Error())
 		return iterm2DispatchResult{Action: "native_paste", Kind: "unknown", Reason: "image clipboard read failed"}
 	}
-	res, err := paste.UploadClipboardImage(ctx, cfg, img, src, uploader, paste.Options{Now: time.Now(), RemoteUser: remoteUser})
+	res, err := paste.UploadClipboardImage(ctx, cfg, img, src, uploader, paste.Options{Now: time.Now(), RemoteUser: target.User})
 	if err != nil {
 		appendIntegrationLog("dispatch image upload failed: " + err.Error())
 		return iterm2DispatchResult{Action: "native_paste", Kind: "image", Reason: "image upload failed"}

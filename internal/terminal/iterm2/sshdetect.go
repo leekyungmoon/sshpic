@@ -23,6 +23,17 @@ type SSHTarget struct {
 }
 
 func DetectSSHTarget(ctx context.Context, sess SessionContext) (SSHTarget, bool) {
+	if target, ok := DetectSessionSSHTarget(ctx, sess); ok {
+		return target, true
+	}
+	if target, ok := SingleSSHTarget(ctx); ok {
+		target.Source = "single-ssh-process"
+		return target, true
+	}
+	return SSHTarget{}, false
+}
+
+func DetectSessionSSHTarget(ctx context.Context, sess SessionContext) (SSHTarget, bool) {
 	if target, ok := SSHTargetFromCommandLine(sess.CommandLine); ok {
 		target.Source = "commandLine"
 		return target, true
@@ -38,10 +49,6 @@ func DetectSSHTarget(ctx context.Context, sess SessionContext) (SSHTarget, bool)
 			target.Source = "tty"
 			return target, true
 		}
-	}
-	if target, ok := SingleSSHTarget(ctx); ok {
-		target.Source = "single-ssh-process"
-		return target, true
 	}
 	return SSHTarget{}, false
 }

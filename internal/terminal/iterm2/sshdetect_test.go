@@ -1,6 +1,7 @@
 package iterm2
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
@@ -89,5 +90,21 @@ func TestSingleSSHTargetFromProcessListUsesOnlySSHWhenUnique(t *testing.T) {
 func TestSingleSSHTargetFromProcessListRejectsMultipleDifferentTargets(t *testing.T) {
 	if target, ok := SingleSSHTargetFromProcessList("ssh first-host\nssh second-host\n"); ok {
 		t.Fatalf("unexpected target=%+v", target)
+	}
+}
+
+func TestDetectSessionSSHTargetRejectsLocalCodex(t *testing.T) {
+	if target, ok := DetectSessionSSHTarget(context.Background(), SessionContext{CommandLine: "codex"}); ok {
+		t.Fatalf("local codex session must not be treated as ssh target: %+v", target)
+	}
+}
+
+func TestDetectSessionSSHTargetUsesCommandLineSSH(t *testing.T) {
+	target, ok := DetectSessionSSHTarget(context.Background(), SessionContext{CommandLine: "ssh alice@example.com"})
+	if !ok {
+		t.Fatal("expected commandLine ssh target")
+	}
+	if target.Host != "alice@example.com" || target.User != "alice" || target.Source != "commandLine" {
+		t.Fatalf("target=%+v", target)
 	}
 }

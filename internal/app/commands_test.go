@@ -52,7 +52,7 @@ func TestLoadConfigIgnoresITerm2SessionFlags(t *testing.T) {
 func TestITerm2DispatchDelegatesTextToNativePasteWithoutReadingText(t *testing.T) {
 	cfg := config.Defaults()
 	src := &dispatchFakeSource{imgErr: provider.ErrNoImage, text: "must-not-be-read"}
-	result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{}}, src)
+	result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{"session_command_line": "ssh codex-host"}}, src)
 	if result.Action != "native_paste" || result.Kind != "non_image" {
 		t.Fatalf("result=%+v, want native_paste/non_image", result)
 	}
@@ -64,12 +64,28 @@ func TestITerm2DispatchDelegatesTextToNativePasteWithoutReadingText(t *testing.T
 func TestITerm2DispatchDelegatesImageReadErrorsToNativePaste(t *testing.T) {
 	cfg := config.Defaults()
 	src := &dispatchFakeSource{imgErr: errors.New("pngpaste crashed")}
-	result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{}}, src)
+	result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{"session_command_line": "ssh codex-host"}}, src)
 	if result.Action != "native_paste" || result.Kind != "unknown" {
 		t.Fatalf("result=%+v, want native_paste/unknown", result)
 	}
 	if src.textReads != 0 {
 		t.Fatalf("image read errors must fail safe without text retyping, textReads=%d", src.textReads)
+	}
+}
+
+func TestITerm2DispatchDelegatesLocalCodexImageToNativePaste(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.RemoteHost = "configured-host"
+	src := &dispatchFakeSource{img: provider.LocalImage{Path: "/tmp/would-upload.png", Format: "png"}}
+	result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{"session_command_line": "codex"}}, src)
+	if result.Action != "native_paste" || result.Kind != "no_session_ssh" {
+		t.Fatalf("result=%+v, want native_paste/no_session_ssh", result)
+	}
+	if result.Payload != "" {
+		t.Fatalf("local non-SSH dispatch must not insert remote path payload: %+v", result)
+	}
+	if src.imgReads != 0 || src.textReads != 0 {
+		t.Fatalf("local non-SSH dispatch must delegate without reading clipboard, imageReads=%d textReads=%d", src.imgReads, src.textReads)
 	}
 }
 
@@ -130,11 +146,13 @@ func TestWriteDispatchFilesRecordsInsertPayload(t *testing.T) {
 type dispatchFakeSource struct {
 	img       provider.LocalImage
 	imgErr    error
+	imgReads  int
 	text      string
 	textReads int
 }
 
 func (f *dispatchFakeSource) ReadClipboardImage(context.Context) (provider.LocalImage, error) {
+	f.imgReads++
 	return f.img, f.imgErr
 }
 

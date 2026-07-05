@@ -66,6 +66,7 @@ When `Cmd+V` runs in an iTerm2 SSH session:
 3. The remote command creates the directory with `umask 077` and writes the file as mode `0600`.
 4. iTerm2 inserts the remote image path into the focused session input.
 5. If the clipboard contains text instead of an image, sshpic delegates to iTerm2 native Paste so normal text paste remains unchanged.
+6. If the focused iTerm2 session is not an SSH session, sshpic delegates to native Paste and does not upload or insert a remote path.
 
 Payload mode emits no debug text, shell command, terminal control sequence, or accidental newline.
 
