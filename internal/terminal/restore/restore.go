@@ -43,8 +43,18 @@ func Run(ctx context.Context, target string, home string) ([]Result, error) {
 		result, err := runITerm2(ctx, home)
 		return []Result{result}, err
 	case "terminalapp":
-		check := terminalapp.Restore(home)
-		return []Result{{Target: "terminalapp", Status: "no-op", Detail: check.Detail}}, nil
+		restored, err := terminalapp.RestoreForHome(ctx, home)
+		status := "no-op"
+		if restored.Unloaded || len(restored.Removed) > 0 {
+			status = "restored"
+		}
+		return []Result{{
+			Target:   "terminalapp",
+			Status:   status,
+			Detail:   strings.TrimSpace(terminalapp.RestoreSummary(restored)),
+			Removed:  restored.Removed,
+			Warnings: restored.Warnings,
+		}}, err
 	case "ubuntu-terminal":
 		check := ubuntu.Restore(home)
 		return []Result{{Target: "ubuntu-terminal", Status: "no-op", Detail: check.Detail}}, nil

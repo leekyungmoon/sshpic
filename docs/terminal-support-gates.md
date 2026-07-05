@@ -4,12 +4,13 @@ This document records the current review boundary for expanding `sshpic` beyond 
 
 ## Current implemented surface
 
-- The only implemented direct-paste install target is `sshpic install iterm2`.
+- The only supported direct-paste install target is `sshpic install iterm2`.
 - The default iTerm2 `Cmd+V` path uses focused iTerm2 session evidence and delegates ordinary text paste back to iTerm2 native Paste.
 - `sshpic paste --output=payload` remains an explicit payload primitive for integrations and tests; it is not the default text fallback for shortcut hooks.
-- `sshpic restore iterm2` removes sshpic-owned iTerm2 helper/keymap state where present. `sshpic restore terminalapp` and `sshpic restore ubuntu-terminal` are explicit safe no-ops until sshpic owns hooks/helpers for those targets.
-- `sshpic doctor terminalapp` and `sshpic doctor ubuntu-terminal` are read-only safe-fail probes. They install no hook and do not authorize support claims.
-- macOS Terminal.app, Ubuntu GNOME Terminal on X11, and Ubuntu GNOME Terminal on Wayland have no supported install hook or real Codex E2E evidence script in this tree yet.
+- `sshpic restore iterm2` removes sshpic-owned iTerm2 helper/keymap state where present.
+- `sshpic install terminalapp`, `sshpic restore terminalapp`, and `sshpic terminalapp-dispatch` now exist as a macOS Terminal.app testing surface, but Terminal.app remains `TBD` until real Terminal.app E2E passes.
+- `sshpic doctor terminalapp` reports the Terminal.app helper/preflight state without authorizing a support claim.
+- `sshpic doctor ubuntu-terminal` remains a read-only safe-fail probe. Ubuntu GNOME Terminal on X11 and Wayland have no supported install hook or real Codex E2E support bundle in this tree yet.
 
 ## Non-negotiable invariants
 
@@ -24,9 +25,9 @@ This document records the current review boundary for expanding `sshpic` beyond 
 | Track | Current repo state | Documentation stance |
 |---|---|---|
 | Stage 1: shared dispatch core | iTerm2 shortcut dispatch has regression coverage for native-paste delegation, local Codex image materialization, focused SSH upload, and generic local shell safety. A terminal-neutral adapter package is not yet a public support surface. | Preserve iTerm2 behavior; do not generalize it into Terminal.app/Ubuntu claims. |
-| Stage 1.5: restore / rollback | iTerm2 install and E2E scripts include safe-fail and restore evidence; `sshpic restore iterm2` reuses those cleanup primitives. Terminal.app/Ubuntu restore targets intentionally no-op until hooks exist. | New hook docs must require restore proof before install instructions. |
-| Stage 2: terminal capability probes | iTerm2 doctor/runtime checks exist. `sshpic doctor terminalapp` and `sshpic doctor ubuntu-terminal` provide read-only safe-fail diagnostics only. | Doctor output is not Terminal.app/Ubuntu support evidence without real E2E. |
-| E2E evidence scripts | iTerm2 smoke, real Codex E2E, SSH integration, and rejected native-paste probe scripts exist. Terminal.app and Ubuntu Codex E2E scripts now exist as safe-fail evidence harnesses only; they are not support passes until real target bundles pass. | Keep Terminal.app and Ubuntu rows `TBD` until target-specific scripts pass on real machines. |
+| Stage 1.5: restore / rollback | iTerm2 install and E2E scripts include safe-fail and restore evidence; `sshpic restore iterm2` reuses those cleanup primitives. Terminal.app restore removes only sshpic-owned LaunchAgent/helper artifacts; Ubuntu restore remains a safe no-op foundation. | New hook docs must require restore proof before install instructions. |
+| Stage 2: terminal capability probes | iTerm2 doctor/runtime checks exist. `sshpic doctor terminalapp` reports helper/preflight state; `sshpic doctor ubuntu-terminal` provides read-only safe-fail diagnostics only. | Doctor output is not Terminal.app/Ubuntu support evidence without real E2E. |
+| E2E evidence scripts | iTerm2 smoke, real Codex E2E, SSH integration, and rejected native-paste probe scripts exist. Terminal.app and Ubuntu Codex E2E scripts now exist as evidence harnesses; they are not support passes until real target bundles pass. | Keep Terminal.app and Ubuntu rows `TBD` until target-specific scripts pass on real machines. |
 | Release/support language | README and platform docs identify macOS + iTerm2 as the v0.1 target and keep other terminals TBD. | Release notes must distinguish binary/provider availability from direct-paste support. |
 
 ## Required evidence before changing status

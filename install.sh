@@ -61,7 +61,7 @@ case "$(uname -s)" in
     ;;
   Linux)
     echo "installed sshpic: $bin"
-    echo "Ubuntu terminal direct-paste integration is not enabled; run: $bin doctor ubuntu-terminal" >&2
+    echo "Ubuntu GNOME Terminal direct-paste integration remains TBD; run: $bin doctor ubuntu-terminal" >&2
     ;;
   *)
     echo "installed sshpic: $bin"

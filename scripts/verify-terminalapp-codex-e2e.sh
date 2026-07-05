@@ -8,6 +8,7 @@ RUN_DIR="$EVIDENCE_DIR/terminalapp-codex-$STAMP"
 EVIDENCE="$RUN_DIR/evidence.md"
 SYSTEM_LOG="$RUN_DIR/system.txt"
 DOCTOR_LOG="$RUN_DIR/doctor-terminalapp.txt"
+DISPATCH_LOG="$RUN_DIR/dispatch-terminalapp.json"
 RESTORE_LOG="$RUN_DIR/restore-terminalapp.txt"
 BUNDLE="$EVIDENCE_DIR/sshpic-terminalapp-codex-e2e-$STAMP.tar.gz"
 BIN="${SSHPIC_E2E_BIN:-}"
@@ -69,6 +70,18 @@ run_doctor() {
   fi
 }
 
+run_dispatch_probe() {
+  if [[ -n "${BIN:-}" && -x "$BIN" ]]; then
+    "$BIN" terminalapp-dispatch \
+      --output=json \
+      --session-id terminalapp-e2e-probe \
+      --session-command-line codex \
+      --term-program "${TERM_PROGRAM:-}" > "$DISPATCH_LOG" 2>&1 || true
+  else
+    echo 'sshpic binary unavailable; terminalapp-dispatch not run' > "$DISPATCH_LOG"
+  fi
+}
+
 run_restore() {
   [[ "$RESTORE_DONE" == "0" ]] || return 0
   RESTORE_DONE=1
@@ -101,14 +114,17 @@ write_evidence() {
 - sshpic binary: ${BIN:-unresolved}
 - System log: $SYSTEM_LOG
 - Doctor log: $DOCTOR_LOG
+- Dispatch probe log: $DISPATCH_LOG
 - Restore log: $RESTORE_LOG
 - Restore exit code: $RESTORE_RC
 
 ## Conservative support gate
 
-This script is a safe preflight/evidence harness. It does not install a
-Terminal.app paste hook and does not create a support claim by itself.
-Terminal.app remains TBD until a real macOS Terminal.app run proves all of. Skipped bundles are not accepted as Terminal.app proof, and AppleScript \`do script\` is not enough because it can run commands instead of proving safe focused paste insertion:
+This script is a safe preflight/evidence harness. It does not create a
+support claim by itself. Terminal.app remains TBD until a real macOS
+Terminal.app run proves all required behavior. Skipped bundles are not accepted
+as Terminal.app proof, and AppleScript \`do script\` is not enough because it can
+run commands instead of proving safe focused paste insertion:
 Support claim sentinel: NOT_A_SUPPORT_PASS.
 
 - first-press Cmd+V text paste inserts the original text exactly once;
@@ -149,6 +165,7 @@ trap restore_terminalapp_state EXIT
 if [[ "$(uname -s)" != "Darwin" ]]; then
   capture_system
   run_doctor
+  run_dispatch_probe
   write_evidence "NOT_RUN_WRONG_PLATFORM" "must run on macOS Terminal.app; non-macOS cannot prove Terminal.app paste behavior; Linux/tmux is not accepted as Terminal.app proof"
   exit 78
 fi
@@ -156,12 +173,14 @@ fi
 if ! BIN="$(resolve_bin)"; then
   capture_system
   run_doctor
+  run_dispatch_probe
   write_evidence "SAFE_FAIL_TERMINALAPP_PROBE_UNAVAILABLE" "sshpic binary unavailable; set SSHPIC_E2E_BIN or install Go"
   exit 1
 fi
 
 capture_system
 run_doctor
+run_dispatch_probe
 
 if [[ "${TERM_PROGRAM:-}" != "Apple_Terminal" ]]; then
   write_evidence "SAFE_FAIL_TERMINALAPP_PROBE_UNAVAILABLE" "TERM_PROGRAM is not Apple_Terminal; run from Terminal.app for valid evidence"

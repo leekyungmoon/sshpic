@@ -2,6 +2,7 @@
 package terminalapp
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,8 +19,8 @@ type Check struct {
 
 func DoctorChecks() []Check {
 	checks := []Check{
-		{Name: "support_status", Status: "warn", Detail: "macOS Terminal.app direct-paste support is TBD; read-only probe installs no hook"},
-		{Name: "restore_owner", Status: "ok", Detail: "restore terminalapp is a no-op until an sshpic-owned Terminal.app helper exists"},
+		{Name: "support_status", Status: "warn", Detail: "macOS Terminal.app direct-paste support is TBD until real Terminal.app E2E passes; install terminalapp is available for testing"},
+		{Name: "restore_owner", Status: "ok", Detail: "restore terminalapp removes only sshpic-owned LaunchAgent/helper artifacts"},
 	}
 	if runtime.GOOS != "darwin" {
 		checks = append(checks, Check{Name: "platform", Status: "warn", Detail: runtime.GOOS + " cannot prove Terminal.app paste behavior"})
@@ -39,16 +40,23 @@ func DoctorChecks() []Check {
 	} else {
 		checks = append(checks, Check{Name: "focused_terminal_hint", Status: "warn", Detail: "TERM_PROGRAM=" + termProgram + "; not Terminal.app"})
 	}
-	checks = append(checks, toolCheck("osascript", false), toolCheck("pbpaste", false), toolCheck("pbcopy", false), toolCheck("pngpaste", false))
+	checks = append(checks, toolCheck("osascript", true), toolCheck("launchctl", true), toolCheck("swiftc", false), toolCheck("pbpaste", false), toolCheck("pbcopy", false), toolCheck("pngpaste", false))
+	paths, err := pathsForCurrentUser()
+	if err != nil {
+		checks = append(checks, Check{Name: "terminalapp_helper", Status: "warn", Detail: err.Error()})
+	} else {
+		checks = append(checks, helperCheck(paths.Helper))
+		checks = append(checks, launchAgentCheck(paths.Plist))
+	}
 	checks = append(checks,
-		Check{Name: "native_paste_delegation", Status: "warn", Detail: "no verified non-executing Terminal.app path injector/native Paste delegator is installed"},
-		Check{Name: "permissions", Status: "warn", Detail: "Accessibility/Input Monitoring requirements must be surfaced during future install preflight, not first paste"},
+		Check{Name: "native_paste_delegation", Status: "warn", Detail: "Terminal.app helper passes non-image Cmd+V through natively; support claim still requires real E2E evidence"},
+		Check{Name: "permissions", Status: "warn", Detail: "install terminalapp preflights Accessibility/event-tap permission before enabling the LaunchAgent"},
 	)
 	return checks
 }
 
-func Restore(home string) Check {
-	return Check{Name: "restore_terminalapp", Status: "ok", Detail: "no sshpic-owned Terminal.app helper/hook exists in this version; nothing changed; support status: TBD until real Terminal.app E2E evidence passes"}
+func RestoreCheck(home string) Check {
+	return Check{Name: "restore_terminalapp", Status: "ok", Detail: "restore terminalapp removes sshpic-owned LaunchAgent/helper artifacts only; native Terminal.app Cmd+V remains owned by macOS"}
 }
 
 func terminalAppPath() string {
@@ -73,4 +81,28 @@ func toolCheck(tool string, fatal bool) Check {
 		status = "error"
 	}
 	return Check{Name: "tool:" + tool, Status: status, Detail: "not found in PATH", Fatal: fatal}
+}
+
+func helperCheck(path string) Check {
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		status := "ok"
+		detail := path
+		if runtime.GOOS == "darwin" {
+			cmd := exec.CommandContext(context.Background(), path, "--preflight")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				status = "warn"
+				detail = "installed but permission preflight is not ready: " + strings.TrimSpace(string(out))
+			}
+		}
+		return Check{Name: "terminalapp_helper", Status: status, Detail: detail}
+	}
+	return Check{Name: "terminalapp_helper", Status: "warn", Detail: "not installed; run sshpic install terminalapp from Terminal.app when ready to test"}
+}
+
+func launchAgentCheck(path string) Check {
+	if _, err := os.Stat(path); err == nil {
+		return Check{Name: "terminalapp_launch_agent", Status: "ok", Detail: path}
+	}
+	return Check{Name: "terminalapp_launch_agent", Status: "warn", Detail: "not installed"}
 }

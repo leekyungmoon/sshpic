@@ -107,6 +107,38 @@ func TestITerm2DispatchInsertsLocalCodexImagePath(t *testing.T) {
 	}
 }
 
+func TestTerminalAppDispatchWithoutFocusEvidenceSafeFailsJSON(t *testing.T) {
+	t.Setenv("SSHPIC_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"terminalapp-dispatch", "--output=json", "--session-command-line", "codex"}, BuildInfo{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, `"action":"safe_fail"`) || !strings.Contains(out, `"kind":"invalid_session"`) {
+		t.Fatalf("stdout=%s", out)
+	}
+}
+
+func TestLoadConfigIgnoresTerminalAppEvidenceFlags(t *testing.T) {
+	t.Setenv("SSHPIC_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	pa, err := parseArgs([]string{
+		"terminalapp-dispatch",
+		"--output=json",
+		"--session-id", "tty",
+		"--session-tty", "/dev/ttys001",
+		"--session-command-line", "codex",
+		"--term-program", "Apple_Terminal",
+		"--foreground-bundle-id", "com.apple.Terminal",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadConfig(pa); err != nil {
+		t.Fatalf("Terminal.app evidence flags must not be treated as config keys: %v", err)
+	}
+}
+
 func TestITerm2DispatchDelegatesLocalShellImageToNativePasteWithoutReading(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.RemoteHost = "configured-host"
@@ -189,14 +221,14 @@ func TestDoctorTerminalAppSafeFailProbe(t *testing.T) {
 	for _, want := range []string{
 		"config:",
 		"Terminal.app direct-paste support is TBD",
-		"read-only probe installs no hook",
+		"restore terminalapp",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("doctor terminalapp output missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "supported") || strings.Contains(out, "installed") {
-		t.Fatalf("doctor terminalapp must not make support/install claims:\n%s", out)
+	if strings.Contains(out, "direct-paste support: supported") || strings.Contains(out, "support_status - supported") {
+		t.Fatalf("doctor terminalapp must not make support claims before E2E:\n%s", out)
 	}
 }
 
@@ -224,11 +256,12 @@ func TestDoctorUbuntuTerminalSafeFailProbe(t *testing.T) {
 }
 
 func TestRestoreTerminalTargetsAreSafeNoops(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	for _, tc := range []struct {
 		target string
 		want   string
 	}{
-		{target: "terminalapp", want: "no sshpic Terminal.app hook is implemented; nothing to restore"},
+		{target: "terminalapp", want: "native Terminal.app Cmd+V remains owned by macOS"},
 		{target: "ubuntu-terminal", want: "no sshpic Ubuntu terminal hook is implemented; nothing to restore"},
 	} {
 		t.Run(tc.target, func(t *testing.T) {
@@ -237,7 +270,7 @@ func TestRestoreTerminalTargetsAreSafeNoops(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
 			}
-			if !strings.Contains(stdout.String(), tc.want) || !strings.Contains(stdout.String(), "support status: TBD") {
+			if !strings.Contains(stdout.String(), tc.want) {
 				t.Fatalf("restore %s output missing safe no-op evidence:\n%s", tc.target, stdout.String())
 			}
 		})

@@ -69,3 +69,33 @@ func TestTerminalTargetE2EScriptsAreConservativeAndSyntaxValid(t *testing.T) {
 		})
 	}
 }
+
+func TestTerminalAppRuntimeDoesNotUseAppleScriptDoScript(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	paths := []string{
+		filepath.Join(repoRoot, "internal", "app", "commands.go"),
+	}
+	terminalAppFiles, err := filepath.Glob(filepath.Join(repoRoot, "internal", "terminal", "terminalapp", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(terminalAppFiles) == 0 {
+		t.Fatal("expected Terminal.app runtime files")
+	}
+	for _, path := range terminalAppFiles {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		paths = append(paths, path)
+	}
+
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(strings.ToLower(string(data)), "do script") {
+			t.Fatalf("%s must not use AppleScript do script in Terminal.app runtime paths", path)
+		}
+	}
+}

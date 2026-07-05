@@ -19,6 +19,7 @@ import (
 	"github.com/leekyungmoon/sshpic/internal/provider"
 	"github.com/leekyungmoon/sshpic/internal/terminal/dispatch"
 	"github.com/leekyungmoon/sshpic/internal/terminal/iterm2"
+	"github.com/leekyungmoon/sshpic/internal/terminal/terminalapp"
 	"github.com/leekyungmoon/sshpic/internal/upload"
 )
 
@@ -71,6 +72,8 @@ func Run(args []string, build BuildInfo, stdout, stderr io.Writer) int {
 		return runITerm2Paste(ctx, pa, stdout, stderr)
 	case "iterm2-dispatch":
 		return runITerm2Dispatch(ctx, pa, stdout, stderr)
+	case "terminalapp-dispatch":
+		return runTerminalAppDispatch(ctx, pa, stdout, stderr)
 	case "clip", "shot", "full", "file":
 		return runUploadCommand(ctx, cmd, pa, stdout, stderr)
 	case "clean":
@@ -115,10 +118,23 @@ func runSnippet(pa parsedArgs, stdout, stderr io.Writer) int {
 }
 
 func runInstall(pa parsedArgs, stdout, stderr io.Writer) int {
-	if len(pa.Positionals) < 2 || pa.Positionals[1] != "iterm2" {
-		fmt.Fprintln(stderr, "usage: sshpic install iterm2")
+	if len(pa.Positionals) < 2 {
+		fmt.Fprintln(stderr, "usage: sshpic install [iterm2|terminalapp]")
 		return 2
 	}
+	target := strings.ToLower(strings.TrimSpace(pa.Positionals[1]))
+	switch target {
+	case "iterm2":
+		return runInstallITerm2(pa, stdout, stderr)
+	case "terminalapp", "terminal.app":
+		return runInstallTerminalApp(pa, stdout, stderr)
+	default:
+		fmt.Fprintln(stderr, "usage: sshpic install [iterm2|terminalapp]")
+		return 2
+	}
+}
+
+func runInstallITerm2(pa parsedArgs, stdout, stderr io.Writer) int {
 	cfg, path, err := loadConfig(pa)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -152,6 +168,43 @@ func runInstall(pa parsedArgs, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fprintNoExtraBlank(stdout, iterm2.InstallSummary(result))
+	if migrated {
+		fprintNoExtraBlank(stdout, "config migrated: legacy /tmp remote_dir -> "+cfg.RemoteDir)
+	}
+	return 0
+}
+
+func runInstallTerminalApp(pa parsedArgs, stdout, stderr io.Writer) int {
+	cfg, path, err := loadConfig(pa)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		fmt.Fprintf(stderr, "cannot determine sshpic executable path: %v\n", err)
+		return 1
+	}
+	exe, _ = filepath.Abs(exe)
+	var migrated bool
+	if _, explicit := pa.Values["remote_dir"]; !explicit && os.Getenv("SSHPIC_REMOTE_DIR") == "" {
+		var migrateErr error
+		cfg, migrated, migrateErr = config.MigrateLegacyDefaults(path, cfg)
+		if migrateErr != nil {
+			fmt.Fprintln(stderr, migrateErr)
+			return 1
+		}
+	}
+	result, err := terminalapp.Install(context.Background(), terminalapp.InstallOptions{
+		BinaryPath: exe,
+		Force:      pa.Bools["force"],
+		Prompt:     true,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fprintNoExtraBlank(stdout, terminalapp.InstallSummary(result))
 	if migrated {
 		fprintNoExtraBlank(stdout, "config migrated: legacy /tmp remote_dir -> "+cfg.RemoteDir)
 	}
@@ -195,8 +248,7 @@ func runRestore(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) in
 	case "iterm2":
 		return runRestoreITerm2(ctx, stdout, stderr)
 	case "terminalapp", "terminal.app":
-		fprintNoExtraBlank(stdout, terminalAppRestoreNoop())
-		return 0
+		return runRestoreTerminalApp(ctx, stdout, stderr)
 	case "ubuntu-terminal", "ubuntu":
 		fprintNoExtraBlank(stdout, ubuntuTerminalRestoreNoop())
 		return 0
@@ -217,7 +269,21 @@ func runRestoreITerm2(ctx context.Context, stdout, stderr io.Writer) int {
 }
 
 func terminalAppRestoreNoop() string {
-	return "restore terminalapp checked\nno sshpic-owned Terminal.app hook exists\nno sshpic Terminal.app hook is implemented; nothing to restore\nsupport status: TBD until target-specific E2E evidence passes"
+	result, err := terminalapp.Restore(context.Background())
+	if err != nil {
+		return "restore terminalapp failed: " + err.Error()
+	}
+	return terminalapp.RestoreSummary(result)
+}
+
+func runRestoreTerminalApp(ctx context.Context, stdout, stderr io.Writer) int {
+	result, err := terminalapp.Restore(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fprintNoExtraBlank(stdout, terminalapp.RestoreSummary(result))
+	return 0
 }
 
 func ubuntuTerminalRestoreNoop() string {
@@ -312,6 +378,36 @@ func runITerm2Dispatch(ctx context.Context, pa parsedArgs, stdout, stderr io.Wri
 		return 0
 	default:
 		appendIntegrationLog("unknown dispatch output mode: " + output)
+		return 2
+	}
+}
+
+func runTerminalAppDispatch(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int {
+	cfg, _, err := loadConfig(pa)
+	if err != nil {
+		appendIntegrationLog("terminalapp dispatch config load failed: " + err.Error())
+		return 1
+	}
+	result := terminalapp.BuildDispatch(ctx, cfg, sourceFromConfig(cfg), terminalapp.SessionContext{
+		SessionID:          pa.Values["session_id"],
+		TTY:                pa.Values["session_tty"],
+		CommandLine:        pa.Values["session_command_line"],
+		JobPID:             pa.Values["session_job_pid"],
+		TermProgram:        pa.Values["term_program"],
+		ForegroundBundleID: pa.Values["foreground_bundle_id"],
+	}, materializeLocalClipboardImage, appendIntegrationLog)
+	if err := writeDispatchFiles(pa, result); err != nil {
+		appendIntegrationLog("terminalapp dispatch file write failed: " + err.Error())
+		return 1
+	}
+	switch output := firstNonEmpty(pa.Values["output"], "none"); output {
+	case "none", "":
+		return 0
+	case "json":
+		_ = json.NewEncoder(stdout).Encode(result)
+		return 0
+	default:
+		appendIntegrationLog("unknown terminalapp dispatch output mode: " + output)
 		return 2
 	}
 }
@@ -571,7 +667,7 @@ func loadConfig(pa parsedArgs) (config.Config, string, error) {
 
 func nonConfigValueFlag(key string) bool {
 	switch key {
-	case "config", "output", "session_id", "session_tty", "session_command_line", "session_job_pid", "action_file", "payload_file":
+	case "config", "output", "session_id", "session_tty", "session_command_line", "session_job_pid", "term_program", "foreground_bundle_id", "action_file", "payload_file":
 		return true
 	default:
 		return false
@@ -590,7 +686,7 @@ func sourceFromConfig(cfg config.Config) provider.MacOSProvider {
 func parseArgs(args []string) (parsedArgs, error) {
 	pa := parsedArgs{Values: map[string]string{}, Bools: map[string]bool{}}
 	boolFlags := map[string]bool{"help": true, "debug": true, "json": true, "dry-run": true, "yes": true, "force": true, "no-copy": true, "insert-newline": true, "no-verify": true, "no-open": true}
-	valueFlags := map[string]bool{"config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true, "action-file": true, "payload-file": true}
+	valueFlags := map[string]bool{"config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true, "term-program": true, "foreground-bundle-id": true, "action-file": true, "payload-file": true}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
@@ -641,6 +737,7 @@ Usage:
   sshpic doctor [iterm2|terminalapp|ubuntu-terminal]
   sshpic snippet iterm2
   sshpic install iterm2 [--remote-host <host>] [--no-open]
+  sshpic install terminalapp
   sshpic restore [all|iterm2|terminalapp|ubuntu-terminal]
 
 Global flags:
