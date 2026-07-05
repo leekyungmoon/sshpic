@@ -1,18 +1,19 @@
 name: Platform support request
-description: Request or report verification for a terminal/platform
+description: Request or report verification for a terminal/platform; this does not imply support already exists
 labels: [platform]
 body:
   - type: input
     id: platform
     attributes:
       label: Platform and terminal
-      placeholder: macOS Terminal.app, Linux Kitty, Windows WSL, etc.
+      description: Include the exact terminal and, on Linux, the display server when known.
+      placeholder: macOS Terminal.app, Ubuntu GNOME Terminal on X11, Ubuntu GNOME Terminal on Wayland, Windows WSL, etc.
     validations:
       required: true
   - type: textarea
     id: evidence
     attributes:
       label: Evidence or desired workflow
-      description: Include commands and behavior. Do not include sensitive screenshots.
+      description: Include commands, paste behavior, restore behavior, and any evidence bundle path. Do not include sensitive screenshots.
     validations:
       required: true

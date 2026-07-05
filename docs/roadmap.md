@@ -12,7 +12,8 @@
 ## Later
 
 - Harden local tmux SSH target detection after real tester evidence.
-- Verified Terminal.app, Warp, Ghostty, WezTerm, and Kitty integrations.
-- Linux screenshot and clipboard providers.
+- Terminal.app and Ubuntu GNOME Terminal capability probes, restore hooks, and target-specific Codex E2E scripts before any direct-paste support claim.
+- Planned/experimental Terminal.app, Warp, Ghostty, WezTerm, and Kitty integrations after native paste safety is proven per target.
+- Linux screenshot and clipboard providers as provider work only, not a direct-paste support claim.
 - Windows/WSL provider.
 - Optional richer JSON diagnostics for scripted workflows.

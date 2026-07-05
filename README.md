@@ -1,6 +1,6 @@
 # sshpic
 
-🖼️ Paste local screenshots into remote SSH coding-agent terminals with normal `Cmd+V`.
+🖼️ Paste local screenshots into remote SSH coding-agent terminals from macOS + iTerm2 with normal `Cmd+V`.
 
 ![8-second sshpic demo: copy image, press Cmd+V in iTerm2, remote path appears](docs/assets/sshpic-hero.gif)
 
@@ -79,9 +79,11 @@ Codex CLI, Claude Code, or another terminal agent must separately know how to us
 |---|---|
 | macOS + iTerm2 with Python RPC runtime ready/provisioned | v0.1 target |
 | macOS + iTerm2 when runtime provisioning fails | Safe fail; default Cmd+V hook disabled |
-| Ubuntu + terminal | TBD |
+| Ubuntu GNOME Terminal (X11 / Wayland) | TBD; evidence harness only, no support claim |
 | Windows / WSL | TBD |
-| macOS Terminal.app | TBD |
+| macOS Terminal.app | TBD; evidence harness only, no support claim |
+
+TBD means no direct-paste support claim yet. Terminal.app and Ubuntu rows require target-specific restore proof and real E2E evidence before public support language changes. The read-only `sshpic doctor terminalapp` and `sshpic doctor ubuntu-terminal` probes are safe-fail diagnostics, not support evidence by themselves. Binary availability or clipboard-provider work alone is not direct-paste support.
 
 ## 🔒 Security note
 

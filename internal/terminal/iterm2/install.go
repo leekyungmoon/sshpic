@@ -69,6 +69,18 @@ type InstallResult struct {
 	Warnings                  []string
 }
 
+type RestoreOptions struct {
+	HomeDir string
+}
+
+type RestoreResult struct {
+	HomeDir                   string
+	CmdVRestored              bool
+	ScriptRemoved             string
+	LegacyDynamicProfilePaths []string
+	Warnings                  []string
+}
+
 type PythonRuntimeStatus struct {
 	Ready        bool
 	Path         string
@@ -193,6 +205,30 @@ func Install(ctx context.Context, cfg config.Config, cfgPath string, opts Instal
 				result.Warnings = append(result.Warnings, warning)
 			}
 		}
+	}
+	return result, nil
+}
+
+func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
+	home, err := installHome(opts.HomeDir)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	result := RestoreResult{HomeDir: home}
+	if restored, err := RemoveSSHpicCmdV(ctx, home); err != nil {
+		result.Warnings = append(result.Warnings, "could not restore iTerm2 Cmd+V paste mapping: "+err.Error())
+	} else {
+		result.CmdVRestored = restored
+	}
+	if removed, err := RemovePythonRPCScript(home); err != nil {
+		result.Warnings = append(result.Warnings, "could not remove iTerm2 sshpic paste helper: "+err.Error())
+	} else {
+		result.ScriptRemoved = removed
+	}
+	if disabled, err := DisableLegacyDynamicProfiles(home); err != nil {
+		result.Warnings = append(result.Warnings, "could not disable legacy iTerm2 DynamicProfiles: "+err.Error())
+	} else {
+		result.LegacyDynamicProfilePaths = disabled
 	}
 	return result, nil
 }
@@ -737,7 +773,7 @@ async def main(connection):
                 _log("sshpic paste skipped: no focused iTerm2 session")
                 return
             decision = await _dispatch(session_id, tty, command_line, job_pid)
-            if decision.get("action") == "insert" and decision.get("payload"):
+            if decision.get("action") in ("insert_local_image_path", "insert_remote_image_path", "insert") and decision.get("payload"):
                 _log("sshpic action: insert image payload via session.async_send_text")
                 await session.async_send_text(decision.get("payload"), suppress_broadcast=True)
                 return
@@ -991,6 +1027,27 @@ func InstallSummary(result InstallResult) string {
 	return b.String()
 }
 
+func RestoreSummary(result RestoreResult) string {
+	var b strings.Builder
+	b.WriteString("sshpic iTerm2 restore checked\n")
+	if result.CmdVRestored {
+		b.WriteString("global Cmd+V key: restored to native Paste\n")
+	}
+	if result.ScriptRemoved != "" {
+		b.WriteString("iTerm2 paste helper removed: " + result.ScriptRemoved + "\n")
+	}
+	if len(result.LegacyDynamicProfilePaths) > 0 {
+		b.WriteString(fmt.Sprintf("legacy DynamicProfiles disabled: %d\n", len(result.LegacyDynamicProfilePaths)))
+	}
+	if !result.CmdVRestored && result.ScriptRemoved == "" && len(result.LegacyDynamicProfilePaths) == 0 {
+		b.WriteString("no sshpic iTerm2 integration state found\n")
+	}
+	for _, warning := range result.Warnings {
+		b.WriteString("warning: " + warning + "\n")
+	}
+	return b.String()
+}
+
 func SnippetFor(cfg config.Config) Snippet {
 	shortcut := cfg.Paste.Shortcut
 	if shortcut == "" {
@@ -1144,7 +1201,7 @@ func SafeCoprocessCommand(binary string) string {
 		quotedBinary + ` iterm2-dispatch --action-file "$action_file" --payload-file "$payload_file" --session-tty '\(tty)' --session-job-pid '\(jobPid)' >/dev/null 2>> "$log_path" || true`,
 		`action=$(cat "$action_file" 2>/dev/null || printf native_paste)`,
 		`case "$action" in`,
-		`  insert)`,
+		`  insert|insert_local_image_path|insert_remote_image_path)`,
 		`    printf '%s sshpic action: insert image payload via iTerm2 AppleScript delegation_method=apple-write-text\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log_path"`,
 		`    if stderr_file=$(mktemp "${TMPDIR:-/tmp/}sshpic-osascript.XXXXXX"); then stderr_tmp=1; else stderr_file=/dev/null; stderr_tmp=0; fi`,
 		`    if /usr/bin/osascript <<OSA 2> "$stderr_file"; then osa_rc=0; else osa_rc=$?; fi`,

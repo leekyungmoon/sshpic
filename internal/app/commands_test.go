@@ -1,15 +1,18 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/leekyungmoon/sshpic/internal/config"
 	"github.com/leekyungmoon/sshpic/internal/provider"
+	"github.com/leekyungmoon/sshpic/internal/terminal/dispatch"
 	"github.com/leekyungmoon/sshpic/internal/terminal/iterm2"
 )
 
@@ -53,7 +56,7 @@ func TestITerm2DispatchDelegatesTextToNativePasteWithoutReadingText(t *testing.T
 	cfg := config.Defaults()
 	src := &dispatchFakeSource{imgErr: provider.ErrNoImage, text: "must-not-be-read"}
 	result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{"session_command_line": "ssh codex-host"}}, src)
-	if result.Action != "native_paste" || result.Kind != "non_image" {
+	if result.Action != dispatch.ActionNativePaste || result.Kind != "non_image" {
 		t.Fatalf("result=%+v, want native_paste/non_image", result)
 	}
 	if src.textReads != 0 {
@@ -65,7 +68,7 @@ func TestITerm2DispatchDelegatesImageReadErrorsToNativePaste(t *testing.T) {
 	cfg := config.Defaults()
 	src := &dispatchFakeSource{imgErr: errors.New("pngpaste crashed")}
 	result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{"session_command_line": "ssh codex-host"}}, src)
-	if result.Action != "native_paste" || result.Kind != "unknown" {
+	if result.Action != dispatch.ActionNativePaste || result.Kind != "unknown" {
 		t.Fatalf("result=%+v, want native_paste/unknown", result)
 	}
 	if src.textReads != 0 {
@@ -85,7 +88,7 @@ func TestITerm2DispatchInsertsLocalCodexImagePath(t *testing.T) {
 	src := &dispatchFakeSource{img: provider.LocalImage{Path: imgPath, Format: "png"}}
 	result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{"session_command_line": "codex"}}, src)
 	wantPayload := filepath.Join(home, ".sshpic", "images", "clipboard.png")
-	if result.Action != "insert" || result.Kind != "local_image" || result.Payload != wantPayload {
+	if result.Action != dispatch.ActionInsertLocalImagePath || result.Kind != "local_image" || result.Payload != wantPayload {
 		t.Fatalf("result=%+v, want insert/local_image payload %q", result, wantPayload)
 	}
 	got, err := os.ReadFile(wantPayload)
@@ -111,8 +114,8 @@ func TestITerm2DispatchDelegatesLocalShellImageToNativePasteWithoutReading(t *te
 		t.Run(commandLine, func(t *testing.T) {
 			src := &dispatchFakeSource{img: provider.LocalImage{Path: "/tmp/would-upload.png", Format: "png"}}
 			result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{"session_command_line": commandLine}}, src)
-			if result.Action != "native_paste" || result.Kind != "no_session_ssh" {
-				t.Fatalf("result=%+v, want native_paste/no_session_ssh", result)
+			if result.Action != dispatch.ActionNativePaste || result.Kind != "no_focused_target" {
+				t.Fatalf("result=%+v, want native_paste/no_focused_target", result)
 			}
 			if src.imgReads != 0 || src.textReads != 0 {
 				t.Fatalf("local non-SSH dispatch must delegate without reading clipboard, imageReads=%d textReads=%d", src.imgReads, src.textReads)
@@ -128,7 +131,7 @@ func TestWriteDispatchFilesRecordsNativePasteWithoutPayload(t *testing.T) {
 	err := writeDispatchFiles(parsedArgs{Values: map[string]string{
 		"action_file":  actionPath,
 		"payload_file": payloadPath,
-	}}, iterm2DispatchResult{Action: "native_paste", Kind: "non_image", Payload: "SHOULD_NOT_LEAK"})
+	}}, iterm2DispatchResult{Action: dispatch.ActionNativePaste, Kind: "non_image", Payload: "SHOULD_NOT_LEAK"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +143,7 @@ func TestWriteDispatchFilesRecordsNativePasteWithoutPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(action) != "native_paste" {
+	if string(action) != dispatch.ActionNativePaste.String() {
 		t.Fatalf("action=%q", string(action))
 	}
 	if len(payload) != 0 {
@@ -155,7 +158,7 @@ func TestWriteDispatchFilesRecordsInsertPayload(t *testing.T) {
 	err := writeDispatchFiles(parsedArgs{Values: map[string]string{
 		"action_file":  actionPath,
 		"payload_file": payloadPath,
-	}}, iterm2DispatchResult{Action: "insert", Kind: "image", Payload: "/home/alice/.sshpic/images/clipboard.png"})
+	}}, iterm2DispatchResult{Action: dispatch.ActionInsertRemoteImagePath, Kind: "image", Payload: "/home/alice/.sshpic/images/clipboard.png"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,11 +170,111 @@ func TestWriteDispatchFilesRecordsInsertPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(action) != "insert" {
+	if string(action) != dispatch.ActionInsertRemoteImagePath.String() {
 		t.Fatalf("action=%q", string(action))
 	}
 	if string(payload) != "/home/alice/.sshpic/images/clipboard.png" {
 		t.Fatalf("payload=%q", string(payload))
+	}
+}
+
+func TestDoctorTerminalAppSafeFailProbe(t *testing.T) {
+	t.Setenv("SSHPIC_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"doctor", "terminalapp"}, BuildInfo{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"config:",
+		"Terminal.app direct-paste support is TBD",
+		"read-only probe installs no hook",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor terminalapp output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "supported") || strings.Contains(out, "installed") {
+		t.Fatalf("doctor terminalapp must not make support/install claims:\n%s", out)
+	}
+}
+
+func TestDoctorUbuntuTerminalSafeFailProbe(t *testing.T) {
+	t.Setenv("SSHPIC_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	t.Setenv("XDG_SESSION_TYPE", "wayland")
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"doctor", "ubuntu-terminal"}, BuildInfo{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"config:",
+		"Ubuntu GNOME Terminal direct-paste support is TBD",
+		"read-only probe installs no hook",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor ubuntu-terminal output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "direct-paste support: supported") || strings.Contains(out, "hook installed") {
+		t.Fatalf("doctor ubuntu-terminal must not make support/install claims:\n%s", out)
+	}
+}
+
+func TestRestoreTerminalTargetsAreSafeNoops(t *testing.T) {
+	for _, tc := range []struct {
+		target string
+		want   string
+	}{
+		{target: "terminalapp", want: "no sshpic Terminal.app hook is implemented; nothing to restore"},
+		{target: "ubuntu-terminal", want: "no sshpic Ubuntu terminal hook is implemented; nothing to restore"},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run([]string{"restore", tc.target}, BuildInfo{}, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+			}
+			if !strings.Contains(stdout.String(), tc.want) || !strings.Contains(stdout.String(), "support status: TBD") {
+				t.Fatalf("restore %s output missing safe no-op evidence:\n%s", tc.target, stdout.String())
+			}
+		})
+	}
+}
+
+func TestRestoreITerm2RemovesOwnedState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SSHPIC_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	scriptA := filepath.Join(home, ".config", "iterm2", "AppSupport", "Scripts", "AutoLaunch", "sshpic_smart_paste.py")
+	scriptB := filepath.Join(home, "Library", "Application Support", "iTerm2", "Scripts", "AutoLaunch", "sshpic_smart_paste.py")
+	profile := filepath.Join(home, "Library", "Application Support", "iTerm2", "DynamicProfiles", "sshpic.json")
+	for _, path := range []string{scriptA, scriptB, profile} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("sshpic"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"restore", "iterm2"}, BuildInfo{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	for _, path := range []string{scriptA, scriptB, profile} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("restore should remove/disable %s, stat err=%v output=%s", path, err, stdout.String())
+		}
+	}
+	out := stdout.String()
+	for _, want := range []string{"sshpic iTerm2 restore checked", "iTerm2 paste helper removed:", "legacy DynamicProfiles disabled: 1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("restore output missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -203,4 +306,81 @@ func (f *dispatchFakeSource) ReadClipboardText(context.Context) (string, error) 
 
 func (f *dispatchFakeSource) CopyTextToClipboard(context.Context, string) error {
 	return nil
+}
+
+func TestRunDoctorTerminalappProbeOnly(t *testing.T) {
+	t.Setenv("SSHPIC_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	var stdout, stderr strings.Builder
+	code := Run([]string{"doctor", "terminalapp"}, BuildInfo{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "support_status") || !strings.Contains(stdout.String(), "TBD") {
+		t.Fatalf("stdout=%s", stdout.String())
+	}
+}
+
+func TestRunRestoreTerminalappNoop(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var stdout, stderr strings.Builder
+	code := Run([]string{"restore", "terminalapp"}, BuildInfo{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "restore terminalapp") || !strings.Contains(stdout.String(), "no sshpic-owned Terminal.app") {
+		t.Fatalf("stdout=%s", stdout.String())
+	}
+}
+
+func TestITerm2ShortcutDispatchDoesNotUseConfiguredHostFallback(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.RemoteHost = "stale-config-host"
+	src := &dispatchFakeSource{img: provider.LocalImage{Path: "/tmp/would-upload.png", Format: "png"}, text: "must-not-read"}
+	result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{"session_id": "focused-session", "session_command_line": "zsh"}}, src)
+	if result.Action != dispatch.ActionNativePaste || result.Kind != "no_focused_target" {
+		t.Fatalf("result=%+v, want native_paste/no_focused_target", result)
+	}
+	if result.Payload != "" {
+		t.Fatalf("native paste fallback must not emit payload: %+v", result)
+	}
+	if src.imgReads != 0 || src.textReads != 0 {
+		t.Fatalf("configured host fallback must not read clipboard, imageReads=%d textReads=%d", src.imgReads, src.textReads)
+	}
+}
+
+func TestWriteDispatchFilesUsesStableSharedActionNames(t *testing.T) {
+	dir := t.TempDir()
+	for _, action := range []dispatch.Action{
+		dispatch.ActionInsertLocalImagePath,
+		dispatch.ActionInsertRemoteImagePath,
+		dispatch.ActionNativePaste,
+		dispatch.ActionSafeFail,
+		dispatch.ActionError,
+	} {
+		t.Run(action.String(), func(t *testing.T) {
+			actionPath := filepath.Join(dir, action.String()+"-action")
+			payloadPath := filepath.Join(dir, action.String()+"-payload")
+			if err := writeDispatchFiles(parsedArgs{Values: map[string]string{"action_file": actionPath, "payload_file": payloadPath}}, iterm2DispatchResult{Action: action, Payload: "payload"}); err != nil {
+				t.Fatal(err)
+			}
+			gotAction, err := os.ReadFile(actionPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(gotAction) != action.String() {
+				t.Fatalf("action file=%q want %q", string(gotAction), action.String())
+			}
+			gotPayload, err := os.ReadFile(payloadPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if action.IsInsert() {
+				if string(gotPayload) != "payload" {
+					t.Fatalf("insert payload=%q", string(gotPayload))
+				}
+			} else if len(gotPayload) != 0 {
+				t.Fatalf("non-insert action %s must not emit payload, got %q", action, string(gotPayload))
+			}
+		})
+	}
 }

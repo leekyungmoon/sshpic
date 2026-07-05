@@ -55,11 +55,32 @@ Cmd+V
 
 If you are inside local tmux or another wrapper that hides the local `ssh` process, include the exact local process shape in the bug report.
 
+## Terminal.app or Ubuntu terminal support says TBD
+
+That is intentional. Current builds include read-only capability probes and restore foundations for future Terminal.app and Ubuntu GNOME Terminal adapters, but they do not install hooks or claim direct-paste support. Use:
+
+```sh
+sshpic doctor terminalapp
+sshpic doctor ubuntu-terminal
+sshpic restore terminalapp
+sshpic restore ubuntu-terminal
+```
+
+The target-specific evidence scripts create safe-fail bundles until real adapters can prove first-press native text paste, image path insertion, and restore behavior on real target desktops.
+
 ## iTerm2 shows an old Dynamic Profile or Coprocess popup
 
 That is the legacy installer path and should not be used by current `main`.
 
 Run the latest installer once. It disables active sshpic-related iTerm2 DynamicProfiles when present, removes stale helper state where possible, migrates the old default `/tmp/sshpic/${USER}` config to `/home/${USER}/.sshpic/images`, attempts to provision the iTerm2 Python runtime, and then installs the current Cmd+V path only when the Python RPC runtime is ready. If provisioning fails, install fails safely instead of installing a no-Python Cmd+V hook.
+
+To remove only sshpic-owned iTerm2 state without reinstalling, run:
+
+```sh
+sshpic restore iterm2
+```
+
+Terminal.app and Ubuntu restore targets currently report safe no-ops because no sshpic hook/helper is implemented for those terminals yet.
 
 ## `sshpic paste --output=payload` prints nothing
 
@@ -100,6 +121,8 @@ This is expected for dangerous or broad paths. `sshpic clean` only accepts absol
 For the real release-blocking flow, use the macOS+iTerm2 Codex E2E script below. It follows the actual user path: `./install.sh`, iTerm2, `ssh <host>`, remote `codex`, local image `Cmd+V`, remote path insertion, and text passthrough.
 
 The older `scripts/verify-iterm2-e2e.sh` helper is only a local install/smoke evidence helper. It does not replace the real Codex E2E.
+
+These iTerm2 scripts prove only the current macOS+iTerm2 path. They do not prove macOS Terminal.app, Ubuntu GNOME Terminal on X11, or Ubuntu GNOME Terminal on Wayland support.
 
 ## How do I prove real SSH upload behavior?
 

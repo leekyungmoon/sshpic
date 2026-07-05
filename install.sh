@@ -54,8 +54,17 @@ if [ ! -x "$bin" ] && command -v sshpic >/dev/null 2>&1; then
   bin="$(command -v sshpic)"
 fi
 
-if [ "$(uname -s)" = "Darwin" ]; then
-  "$bin" install iterm2
-else
-  echo "installed sshpic: $bin"
-fi
+case "$(uname -s)" in
+  Darwin)
+    "$bin" install iterm2
+    echo "macOS Terminal.app direct-paste integration remains TBD; run: $bin doctor terminalapp" >&2
+    ;;
+  Linux)
+    echo "installed sshpic: $bin"
+    echo "Ubuntu terminal direct-paste integration is not enabled; run: $bin doctor ubuntu-terminal" >&2
+    ;;
+  *)
+    echo "installed sshpic: $bin"
+    echo "direct-paste integration is only verified for macOS+iTerm2 in this release" >&2
+    ;;
+esac

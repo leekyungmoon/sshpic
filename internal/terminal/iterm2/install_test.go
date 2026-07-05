@@ -313,7 +313,7 @@ func TestInstallDisablesAllLegacySSHpicDynamicProfiles(t *testing.T) {
 
 func TestPythonRPCScriptCallsQuietPayloadCommand(t *testing.T) {
 	script := PythonRPCScript("/opt/homebrew/bin/sshpic")
-	for _, want := range []string{"@iterm2.RPC", "async_send_text", "iterm2-dispatch", "--output=json", "--session-command-line", "sshpic invocation: path=python", "recursion_guard=enter", "sshpic native paste result: delegation_method=mainmenu", `MainMenu.async_select_menu_item(connection, "Paste")`, "~/.cache/sshpic/sshpic.log", "traceback.format_exc()"} {
+	for _, want := range []string{"@iterm2.RPC", "async_send_text", "iterm2-dispatch", "--output=json", "--session-command-line", "sshpic invocation: path=python", "recursion_guard=enter", "sshpic native paste result: delegation_method=mainmenu", `MainMenu.async_select_menu_item(connection, "Paste")`, "~/.cache/sshpic/sshpic.log", "traceback.format_exc()", "insert_local_image_path", "insert_remote_image_path"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("script missing %q:\n%s", want, script)
 		}

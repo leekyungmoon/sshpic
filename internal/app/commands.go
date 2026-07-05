@@ -17,6 +17,7 @@ import (
 	"github.com/leekyungmoon/sshpic/internal/paste"
 	"github.com/leekyungmoon/sshpic/internal/pathfmt"
 	"github.com/leekyungmoon/sshpic/internal/provider"
+	"github.com/leekyungmoon/sshpic/internal/terminal/dispatch"
 	"github.com/leekyungmoon/sshpic/internal/terminal/iterm2"
 	"github.com/leekyungmoon/sshpic/internal/upload"
 )
@@ -62,6 +63,8 @@ func Run(args []string, build BuildInfo, stdout, stderr io.Writer) int {
 		return runInstall(pa, stdout, stderr)
 	case "doctor":
 		return runDoctor(pa, stdout, stderr)
+	case "restore":
+		return runRestore(ctx, pa, stdout, stderr)
 	case "paste":
 		return runPaste(ctx, pa, stdout, stderr)
 	case "iterm2-paste":
@@ -161,8 +164,12 @@ func runDoctor(pa parsedArgs, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	target := ""
+	if len(pa.Positionals) > 1 {
+		target = pa.Positionals[1]
+	}
+	checks := doctor.RunTarget(cfg, target)
 	fmt.Fprintf(stdout, "config: %s\n", path)
-	checks := doctor.Run(cfg)
 	for _, check := range checks {
 		fmt.Fprintf(stdout, "[%s] %s - %s\n", check.Status, check.Name, check.Detail)
 	}
@@ -170,6 +177,51 @@ func runDoctor(pa parsedArgs, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func runRestore(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int {
+	target := "all"
+	if len(pa.Positionals) > 1 {
+		target = strings.ToLower(strings.TrimSpace(pa.Positionals[1]))
+	}
+	switch target {
+	case "", "all":
+		if code := runRestoreITerm2(ctx, stdout, stderr); code != 0 {
+			return code
+		}
+		fprintNoExtraBlank(stdout, terminalAppRestoreNoop())
+		fprintNoExtraBlank(stdout, ubuntuTerminalRestoreNoop())
+		return 0
+	case "iterm2":
+		return runRestoreITerm2(ctx, stdout, stderr)
+	case "terminalapp", "terminal.app":
+		fprintNoExtraBlank(stdout, terminalAppRestoreNoop())
+		return 0
+	case "ubuntu-terminal", "ubuntu":
+		fprintNoExtraBlank(stdout, ubuntuTerminalRestoreNoop())
+		return 0
+	default:
+		fmt.Fprintln(stderr, "usage: sshpic restore [all|iterm2|terminalapp|ubuntu-terminal]")
+		return 2
+	}
+}
+
+func runRestoreITerm2(ctx context.Context, stdout, stderr io.Writer) int {
+	result, err := iterm2.Restore(ctx, iterm2.RestoreOptions{})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fprintNoExtraBlank(stdout, iterm2.RestoreSummary(result))
+	return 0
+}
+
+func terminalAppRestoreNoop() string {
+	return "restore terminalapp checked\nno sshpic-owned Terminal.app hook exists\nno sshpic Terminal.app hook is implemented; nothing to restore\nsupport status: TBD until target-specific E2E evidence passes"
+}
+
+func ubuntuTerminalRestoreNoop() string {
+	return "restore ubuntu-terminal checked\nno sshpic-owned Ubuntu terminal hook exists\nno sshpic Ubuntu terminal hook is implemented; nothing to restore\nsupport status: TBD until separate GNOME Terminal X11/Wayland E2E evidence passes"
 }
 
 func runPaste(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int {
@@ -239,12 +291,7 @@ func runITerm2Paste(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer
 	return 0
 }
 
-type iterm2DispatchResult struct {
-	Action  string `json:"action"`
-	Kind    string `json:"kind,omitempty"`
-	Payload string `json:"payload,omitempty"`
-	Reason  string `json:"reason,omitempty"`
-}
+type iterm2DispatchResult = dispatch.Result
 
 func runITerm2Dispatch(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int {
 	cfg, _, err := loadConfig(pa)
@@ -274,72 +321,42 @@ func buildITerm2Dispatch(ctx context.Context, cfg config.Config, pa parsedArgs) 
 }
 
 func buildITerm2DispatchWithSource(ctx context.Context, cfg config.Config, pa parsedArgs, src provider.LocalImageSource) iterm2DispatchResult {
-	sess := iterm2.SessionContext{
+	itermSess := iterm2.SessionContext{
 		SessionID:   pa.Values["session_id"],
 		TTY:         pa.Values["session_tty"],
 		CommandLine: pa.Values["session_command_line"],
 		JobPID:      pa.Values["session_job_pid"],
 	}
-	target, ok := iterm2.DetectSessionSSHTarget(ctx, sess)
-	if !ok {
-		if isLocalCodingAgentSession(sess) {
-			return buildLocalAgentImageDispatch(ctx, src)
-		}
-		appendIntegrationLog("dispatch classification: native_paste no_session_ssh")
-		return iterm2DispatchResult{Action: "native_paste", Kind: "no_session_ssh", Reason: "active iTerm2 session is not ssh"}
+	sess := dispatch.SessionContext{
+		Terminal:         "iterm2",
+		SessionID:        itermSess.SessionID,
+		TTY:              itermSess.TTY,
+		CommandLine:      itermSess.CommandLine,
+		JobPID:           itermSess.JobPID,
+		FocusedIdentity:  firstNonEmpty(itermSess.SessionID, itermSess.TTY, itermSess.JobPID, itermSess.CommandLine),
+		TrustLevel:       "focused",
+		RestoreOwner:     "iterm2-python-rpc",
+		ShortcutDispatch: true,
 	}
-	uploader := upload.SSHCat{Args: target.Args}
-	img, err := src.ReadClipboardImage(ctx)
-	if errors.Is(err, provider.ErrNoImage) {
-		appendIntegrationLog("dispatch classification: native_paste no_image")
-		return iterm2DispatchResult{Action: "native_paste", Kind: "non_image", Reason: "no image clipboard"}
-	}
-	if err != nil {
-		appendIntegrationLog("dispatch classification: native_paste image_read_error: " + err.Error())
-		return iterm2DispatchResult{Action: "native_paste", Kind: "unknown", Reason: "image clipboard read failed"}
-	}
-	res, err := paste.UploadClipboardImage(ctx, cfg, img, src, uploader, paste.Options{Now: time.Now(), RemoteUser: target.User})
-	if err != nil {
-		appendIntegrationLog("dispatch image upload failed: " + err.Error())
-		return iterm2DispatchResult{Action: "native_paste", Kind: "image", Reason: "image upload failed"}
-	}
-	appendIntegrationLog("dispatch classification: insert image payload")
-	return iterm2DispatchResult{Action: "insert", Kind: "image", Payload: res.Payload}
-}
-
-func buildLocalAgentImageDispatch(ctx context.Context, src provider.LocalImageSource) iterm2DispatchResult {
-	img, err := src.ReadClipboardImage(ctx)
-	if errors.Is(err, provider.ErrNoImage) {
-		appendIntegrationLog("dispatch classification: native_paste no_image local_agent")
-		return iterm2DispatchResult{Action: "native_paste", Kind: "non_image", Reason: "no image clipboard"}
-	}
-	if err != nil {
-		appendIntegrationLog("dispatch classification: native_paste image_read_error local_agent: " + err.Error())
-		return iterm2DispatchResult{Action: "native_paste", Kind: "unknown", Reason: "image clipboard read failed"}
-	}
-	payload, err := materializeLocalClipboardImage(img)
-	if err != nil {
-		appendIntegrationLog("dispatch local image materialize failed: " + err.Error())
-		return iterm2DispatchResult{Action: "native_paste", Kind: "image", Reason: "local image materialize failed"}
-	}
-	appendIntegrationLog("dispatch classification: insert local image payload")
-	return iterm2DispatchResult{Action: "insert", Kind: "local_image", Payload: payload}
-}
-
-func isLocalCodingAgentSession(sess iterm2.SessionContext) bool {
-	commandLine := strings.TrimSpace(sess.CommandLine)
-	if commandLine == "" {
-		return false
-	}
-	fields := strings.Fields(commandLine)
-	if len(fields) == 0 {
-		return false
-	}
-	switch filepath.Base(strings.Trim(fields[0], `"'`)) {
-	case "codex", "claude", "claude-code":
-		return true
-	}
-	return false
+	return dispatch.Build(ctx, cfg, src, sess, dispatch.Dependencies{
+		DetectSSH: func(ctx context.Context, sess dispatch.SessionContext) (dispatch.SSHTarget, bool) {
+			target, ok := iterm2.DetectSessionSSHTarget(ctx, iterm2.SessionContext{
+				SessionID:   sess.SessionID,
+				TTY:         sess.TTY,
+				CommandLine: sess.CommandLine,
+				JobPID:      sess.JobPID,
+			})
+			if !ok {
+				return dispatch.SSHTarget{}, false
+			}
+			return dispatch.SSHTarget{Host: target.Host, User: target.User, Args: target.Args, Source: target.Source}, true
+		},
+		UploaderForTarget: func(target dispatch.SSHTarget) paste.RemoteUploader {
+			return upload.SSHCat{Args: target.Args}
+		},
+		MaterializeLocalImage: materializeLocalClipboardImage,
+		Log:                   appendIntegrationLog,
+	})
 }
 
 func materializeLocalClipboardImage(img provider.LocalImage) (string, error) {
@@ -401,12 +418,12 @@ func materializeLocalClipboardImage(img provider.LocalImage) (string, error) {
 
 func writeDispatchFiles(pa parsedArgs, result iterm2DispatchResult) error {
 	if path := strings.TrimSpace(pa.Values["action_file"]); path != "" {
-		if err := os.WriteFile(path, []byte(result.Action), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(result.Action.String()), 0o600); err != nil {
 			return err
 		}
 	}
 	if path := strings.TrimSpace(pa.Values["payload_file"]); path != "" {
-		if result.Action == "insert" {
+		if result.IsInsert() {
 			if err := os.WriteFile(path, []byte(result.Payload), 0o600); err != nil {
 				return err
 			}
@@ -619,11 +636,12 @@ Usage:
   sshpic shot
   sshpic full
   sshpic file <path...>
-  sshpic doctor
   sshpic clean [--dry-run|--yes]
   sshpic version
+  sshpic doctor [iterm2|terminalapp|ubuntu-terminal]
   sshpic snippet iterm2
   sshpic install iterm2 [--remote-host <host>] [--no-open]
+  sshpic restore [all|iterm2|terminalapp|ubuntu-terminal]
 
 Global flags:
   --config <path>              config path (default ~/.config/sshpic/config.toml)
