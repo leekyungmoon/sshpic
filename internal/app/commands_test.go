@@ -73,19 +73,51 @@ func TestITerm2DispatchDelegatesImageReadErrorsToNativePaste(t *testing.T) {
 	}
 }
 
-func TestITerm2DispatchDelegatesLocalCodexImageToNativePaste(t *testing.T) {
+func TestITerm2DispatchInsertsLocalCodexImagePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	imgPath := filepath.Join(t.TempDir(), "clip.png")
+	if err := os.WriteFile(imgPath, []byte("png-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.Defaults()
 	cfg.RemoteHost = "configured-host"
-	src := &dispatchFakeSource{img: provider.LocalImage{Path: "/tmp/would-upload.png", Format: "png"}}
+	src := &dispatchFakeSource{img: provider.LocalImage{Path: imgPath, Format: "png"}}
 	result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{"session_command_line": "codex"}}, src)
-	if result.Action != "native_paste" || result.Kind != "no_session_ssh" {
-		t.Fatalf("result=%+v, want native_paste/no_session_ssh", result)
+	wantPayload := filepath.Join(home, ".sshpic", "images", "clipboard.png")
+	if result.Action != "insert" || result.Kind != "local_image" || result.Payload != wantPayload {
+		t.Fatalf("result=%+v, want insert/local_image payload %q", result, wantPayload)
 	}
-	if result.Payload != "" {
-		t.Fatalf("local non-SSH dispatch must not insert remote path payload: %+v", result)
+	got, err := os.ReadFile(wantPayload)
+	if err != nil {
+		t.Fatalf("local clipboard image not materialized: %v", err)
 	}
-	if src.imgReads != 0 || src.textReads != 0 {
-		t.Fatalf("local non-SSH dispatch must delegate without reading clipboard, imageReads=%d textReads=%d", src.imgReads, src.textReads)
+	if string(got) != "png-data" {
+		t.Fatalf("materialized image content=%q", string(got))
+	}
+	info, err := os.Stat(wantPayload)
+	if err != nil {
+		t.Fatalf("materialized image stat failed: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("materialized image mode=%v", info.Mode().Perm())
+	}
+}
+
+func TestITerm2DispatchDelegatesLocalShellImageToNativePasteWithoutReading(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.RemoteHost = "configured-host"
+	for _, commandLine := range []string{"zsh", "vim codex", "cat claude", "grep claude-code README.md"} {
+		t.Run(commandLine, func(t *testing.T) {
+			src := &dispatchFakeSource{img: provider.LocalImage{Path: "/tmp/would-upload.png", Format: "png"}}
+			result := buildITerm2DispatchWithSource(context.Background(), cfg, parsedArgs{Values: map[string]string{"session_command_line": commandLine}}, src)
+			if result.Action != "native_paste" || result.Kind != "no_session_ssh" {
+				t.Fatalf("result=%+v, want native_paste/no_session_ssh", result)
+			}
+			if src.imgReads != 0 || src.textReads != 0 {
+				t.Fatalf("local non-SSH dispatch must delegate without reading clipboard, imageReads=%d textReads=%d", src.imgReads, src.textReads)
+			}
+		})
 	}
 }
 

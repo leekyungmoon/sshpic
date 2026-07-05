@@ -282,6 +282,9 @@ func buildITerm2DispatchWithSource(ctx context.Context, cfg config.Config, pa pa
 	}
 	target, ok := iterm2.DetectSessionSSHTarget(ctx, sess)
 	if !ok {
+		if isLocalCodingAgentSession(sess) {
+			return buildLocalAgentImageDispatch(ctx, src)
+		}
 		appendIntegrationLog("dispatch classification: native_paste no_session_ssh")
 		return iterm2DispatchResult{Action: "native_paste", Kind: "no_session_ssh", Reason: "active iTerm2 session is not ssh"}
 	}
@@ -302,6 +305,98 @@ func buildITerm2DispatchWithSource(ctx context.Context, cfg config.Config, pa pa
 	}
 	appendIntegrationLog("dispatch classification: insert image payload")
 	return iterm2DispatchResult{Action: "insert", Kind: "image", Payload: res.Payload}
+}
+
+func buildLocalAgentImageDispatch(ctx context.Context, src provider.LocalImageSource) iterm2DispatchResult {
+	img, err := src.ReadClipboardImage(ctx)
+	if errors.Is(err, provider.ErrNoImage) {
+		appendIntegrationLog("dispatch classification: native_paste no_image local_agent")
+		return iterm2DispatchResult{Action: "native_paste", Kind: "non_image", Reason: "no image clipboard"}
+	}
+	if err != nil {
+		appendIntegrationLog("dispatch classification: native_paste image_read_error local_agent: " + err.Error())
+		return iterm2DispatchResult{Action: "native_paste", Kind: "unknown", Reason: "image clipboard read failed"}
+	}
+	payload, err := materializeLocalClipboardImage(img)
+	if err != nil {
+		appendIntegrationLog("dispatch local image materialize failed: " + err.Error())
+		return iterm2DispatchResult{Action: "native_paste", Kind: "image", Reason: "local image materialize failed"}
+	}
+	appendIntegrationLog("dispatch classification: insert local image payload")
+	return iterm2DispatchResult{Action: "insert", Kind: "local_image", Payload: payload}
+}
+
+func isLocalCodingAgentSession(sess iterm2.SessionContext) bool {
+	commandLine := strings.TrimSpace(sess.CommandLine)
+	if commandLine == "" {
+		return false
+	}
+	fields := strings.Fields(commandLine)
+	if len(fields) == 0 {
+		return false
+	}
+	switch filepath.Base(strings.Trim(fields[0], `"'`)) {
+	case "codex", "claude", "claude-code":
+		return true
+	}
+	return false
+}
+
+func materializeLocalClipboardImage(img provider.LocalImage) (string, error) {
+	if img.Cleanup != nil {
+		defer img.Cleanup()
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(home) == "" {
+		return "", errors.New("home directory is empty")
+	}
+	if strings.TrimSpace(img.Path) == "" {
+		return "", errors.New("local image path is empty")
+	}
+	in, err := os.Open(img.Path)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	dir := filepath.Join(home, ".sshpic", "images")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	ext := pathfmt.SafeExtension(firstNonEmpty(img.Format, pathfmt.ExtensionFromPath(img.Path), "png"))
+	dest := filepath.Join(dir, "clipboard."+ext)
+	tmp, err := os.CreateTemp(dir, ".clipboard-*."+ext)
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := io.Copy(tmp, in); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmpPath, dest); err != nil {
+		return "", err
+	}
+	removeTmp = false
+	if err := os.Chmod(dest, 0o600); err != nil {
+		return "", err
+	}
+	return dest, nil
 }
 
 func writeDispatchFiles(pa parsedArgs, result iterm2DispatchResult) error {
