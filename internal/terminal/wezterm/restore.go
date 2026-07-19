@@ -16,6 +16,7 @@ type RestoreOptions struct {
 }
 
 type RestoreResult struct {
+	BinaryPath      string
 	ConfigPath      string
 	ModulePath      string
 	ManifestPath    string
@@ -59,6 +60,7 @@ func Restore(_ context.Context, opts RestoreOptions) (RestoreResult, error) {
 	if !samePath(manifest.ConfigPath, configPath) || !samePath(manifest.ModulePath, modulePath) {
 		return result, errors.New("sshpic WezTerm manifest path does not match the requested config; refusing restore")
 	}
+	result.BinaryPath = manifest.BinaryPath
 	result.BackupPath = manifest.BackupPath
 
 	moduleData, err := os.ReadFile(modulePath)

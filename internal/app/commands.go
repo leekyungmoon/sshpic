@@ -68,6 +68,8 @@ func Run(args []string, build BuildInfo, stdout, stderr io.Writer) int {
 		return runDoctor(pa, stdout, stderr)
 	case "restore":
 		return runRestore(ctx, pa, stdout, stderr)
+	case "uninstall":
+		return runUninstall(ctx, pa, stdout, stderr)
 	case "paste":
 		return runPaste(ctx, pa, stdout, stderr)
 	case "iterm2-paste":
@@ -303,6 +305,36 @@ func runRestoreWezTerm(ctx context.Context, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fprintNoExtraBlank(stdout, wezterm.RestoreSummary(result))
+	return 0
+}
+
+func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int {
+	if len(pa.Positionals) < 2 || (pa.Positionals[1] != "wezterm" && pa.Positionals[1] != "windows-wezterm") {
+		fmt.Fprintln(stderr, "internal uninstall helper; run ./uninstall.sh from the source checkout")
+		return 2
+	}
+	if runtime.GOOS != "windows" {
+		fmt.Fprintln(stderr, "Windows WezTerm uninstall is supported only on Windows 10/11")
+		return 1
+	}
+	helper, err := os.Executable()
+	if err != nil || strings.TrimSpace(helper) == "" {
+		fmt.Fprintf(stderr, "cannot determine temporary uninstall helper path: %v\n", err)
+		return 1
+	}
+	result, err := wezterm.Uninstall(ctx, wezterm.UninstallOptions{
+		ConfigPath:     pa.Values["config"],
+		SourceRoot:     pa.Values["source_root"],
+		HelperPath:     helper,
+		ExpectedBinary: pa.Values["binary"],
+		DryRun:         pa.Bools["dry-run"],
+		WezTermPath:    os.Getenv("SSHPIC_WEZTERM_EXE"),
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
 	return 0
 }
 
@@ -749,7 +781,7 @@ func loadConfig(pa parsedArgs) (config.Config, string, error) {
 
 func nonConfigValueFlag(key string) bool {
 	switch key {
-	case "config", "output", "session_id", "session_tty", "session_command_line", "session_job_pid", "term_program", "foreground_bundle_id", "action_file", "payload_file", "process_json", "pane_id", "result_file":
+	case "config", "output", "session_id", "session_tty", "session_command_line", "session_job_pid", "term_program", "foreground_bundle_id", "action_file", "payload_file", "process_json", "pane_id", "result_file", "source_root", "binary":
 		return true
 	default:
 		return false
@@ -771,7 +803,7 @@ func sourceFromConfig(cfg config.Config) provider.LocalImageSource {
 func parseArgs(args []string) (parsedArgs, error) {
 	pa := parsedArgs{Values: map[string]string{}, Bools: map[string]bool{}}
 	boolFlags := map[string]bool{"help": true, "debug": true, "json": true, "dry-run": true, "yes": true, "force": true, "no-copy": true, "insert-newline": true, "no-verify": true, "no-open": true}
-	valueFlags := map[string]bool{"config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true, "term-program": true, "foreground-bundle-id": true, "action-file": true, "payload-file": true, "process-json": true, "pane-id": true, "result-file": true}
+	valueFlags := map[string]bool{"config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true, "term-program": true, "foreground-bundle-id": true, "action-file": true, "payload-file": true, "process-json": true, "pane-id": true, "result-file": true, "source-root": true, "binary": true}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {

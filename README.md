@@ -40,6 +40,19 @@ If your Mac cannot set up the required iTerm2 support, the installer stops befor
 
 On Windows, Git Bash is required only for `./install.sh`. The release-candidate WezTerm pane may run native PowerShell or Git Bash, but the SSH client must be Windows OpenSSH (`ssh.exe`). Windows Terminal and WSL integration remain `TBD`.
 
+### 🧹 Windows uninstall without deleting the clone
+
+Run the companion uninstaller from the existing checkout in **Git Bash**:
+
+```bash
+./uninstall.sh --dry-run
+./uninstall.sh
+```
+
+It builds a separate temporary helper from the checkout, restores only validated manifest-owned WezTerm changes, and then removes exactly the `sshpic.exe` recorded by that same manifest. It never guesses from the current `GOBIN`, never asks a running executable to delete itself, and deliberately keeps the repository checkout, Go, WezTerm, sshpic user config/cache, SSH configuration, and remote images. This means a ChatGPT or Codex project rooted at the cloned `sshpic` directory continues to work, and the same checkout can reinstall later with `./install.sh`.
+
+If Go was removed, `--binary <exact-path>` lets the script copy a binary installed from this uninstall-capable branch as the temporary helper; its path must still match the manifest and the owned WezTerm module. Older binaries without the helper command fail safely and require Go to be reinstalled. If restore succeeds but Windows keeps the executable locked, the error names the one exact file to close and remove manually; the uninstaller never guesses after the manifest is gone. It refuses binaries inside the source checkout by Windows file identity and never performs recursive deletion. Use `--yes` only when a non-interactive uninstall is intentional.
+
 ### 👉 One-liner
 
 ```bash

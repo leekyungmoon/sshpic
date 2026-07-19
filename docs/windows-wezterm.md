@@ -108,6 +108,29 @@ sshpic restore wezterm
 
 Preserve the output of `doctor wezterm` and `restore wezterm` before manually changing a failed installation. The backup may contain personal WezTerm settings; do not attach it to a public issue without reviewing it.
 
+## Uninstall while keeping the project checkout
+
+The clone used as a ChatGPT or Codex project is not the installed runtime. `install.sh` places `sshpic.exe` in Go's `GOBIN` or `GOPATH/bin`, while the repository remains ordinary source code. Keep that checkout in place and run this from **Git Bash**:
+
+```bash
+./uninstall.sh --dry-run
+./uninstall.sh
+```
+
+The uninstaller performs these operations in order:
+
+1. builds a separate temporary helper from this checkout, so the installed Windows executable never self-deletes;
+2. reads the validated install manifest and treats its `binary_path` as the only normal deletion authority;
+3. runs the existing manifest- and SHA-validated restore path and stops with the binary preserved if restore fails;
+4. removes only that exact regular file after restore succeeds, rechecking file identity first; and
+5. verifies both binary removal and source-checkout identity.
+
+It does not remove the checkout, Go, WezTerm, winget packages, user config/cache, SSH configuration, or remote images. It contains no recursive deletion. A second run is a safe no-op. `--yes` skips confirmation. The current `GOBIN` is intentionally ignored for deletion; a custom install remains bound to the path saved at install time.
+
+If Go is no longer available, `--binary <path>` supplies a helper fallback and must match both the manifest path and the binary embedded in the owned WezTerm module. This fallback requires a binary installed from a version that already contains the uninstall helper command; an older binary fails without changing installed state, so reinstall Go and rerun. If restore completes but Windows file locking prevents final executable removal, close the named process and remove only the exact path printed by the error. A later normal run will not guess a deletion target after the manifest is gone.
+
+If `WEZTERM_CONFIG_FILE` was set during installation, provide the same environment value during uninstall so the owned manifest can be found. With no manifest, normal uninstall selects and deletes no binary; the output names the config path that was checked. To delete the source repository itself, first move the ChatGPT/Codex project to another workspace and then delete the clone manually; repository deletion is intentionally outside sshpic uninstall.
+
 ## Release evidence
 
 Run the interactive Windows harness from the repository on a real Windows 10/11 desktop:

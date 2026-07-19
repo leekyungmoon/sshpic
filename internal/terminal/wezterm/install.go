@@ -487,6 +487,16 @@ func readManifest(path string) (installManifest, error) {
 }
 
 func validateManifest(manifest installManifest, manifestPath string) error {
+	if strings.TrimSpace(manifest.BinaryPath) == "" || !filepath.IsAbs(manifest.BinaryPath) {
+		return errors.New("binary_path must be absolute")
+	}
+	if strings.ContainsAny(manifest.BinaryPath, "\r\n") {
+		return errors.New("binary_path contains a line break")
+	}
+	binaryName := strings.ToLower(filepath.Base(manifest.BinaryPath))
+	if binaryName != "sshpic" && binaryName != "sshpic.exe" {
+		return errors.New("binary_path must name sshpic or sshpic.exe")
+	}
 	if strings.TrimSpace(manifest.ConfigPath) == "" || strings.TrimSpace(manifest.ModulePath) == "" {
 		return errors.New("config_path and module_path are required")
 	}
