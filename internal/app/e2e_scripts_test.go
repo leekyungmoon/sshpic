@@ -73,6 +73,80 @@ func TestTerminalTargetE2EScriptsAreConservativeAndSyntaxValid(t *testing.T) {
 	}
 }
 
+func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	installPath := filepath.Join(repoRoot, "install.sh")
+	data, err := os.ReadFile(installPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"detect_host_os()",
+		`host_os="$(detect_host_os "$platform" "$kernel_release")"`,
+		`MINGW*|MSYS*|CYGWIN*`,
+		`Darwin`,
+		`Linux`,
+		`*[Mm]icrosoft*|*WSL*|*wsl*`,
+		`Windows direct-paste installation must run from Git Bash, not WSL`,
+		`--detect-os`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("install.sh missing OS-detection contract %q", want)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		cmd := exec.Command("sh", installPath, "--detect-os")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("install.sh --detect-os failed: %v\n%s", err, out)
+		}
+		got := strings.TrimSpace(string(out))
+		want := runtime.GOOS
+		if want == "darwin" {
+			want = "macos"
+		}
+		linuxMatch := want == "linux" && (got == "linux" || got == "wsl")
+		if got != want && !linuxMatch {
+			t.Fatalf("detected OS=%q want=%q", got, want)
+		}
+
+		start := strings.Index(text, "detect_host_os() {")
+		if start < 0 {
+			t.Fatal("detect_host_os function not found")
+		}
+		functionTail := text[start:]
+		end := strings.Index(functionTail, "\n}\n")
+		if end < 0 {
+			t.Fatal("detect_host_os function end not found")
+		}
+		functionSource := functionTail[:end+2]
+		cases := []struct {
+			platform string
+			release  string
+			want     string
+		}{
+			{platform: "MINGW64_NT-10.0-26100", release: "3.5.4", want: "windows"},
+			{platform: "MSYS_NT-10.0", release: "3.5.4", want: "windows"},
+			{platform: "CYGWIN_NT-10.0", release: "3.5.4", want: "windows"},
+			{platform: "Darwin", release: "24.5.0", want: "macos"},
+			{platform: "Linux", release: "6.8.0-generic", want: "linux"},
+			{platform: "Linux", release: "5.15.153.1-microsoft-standard-WSL2", want: "wsl"},
+			{platform: "FreeBSD", release: "14.2", want: "unsupported"},
+		}
+		for _, tc := range cases {
+			cmd := exec.Command("sh", "-c", functionSource+"\ndetect_host_os \"$1\" \"$2\"", "detect-host-os", tc.platform, tc.release)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("detect_host_os(%q, %q): %v\n%s", tc.platform, tc.release, err, out)
+			}
+			if got := strings.TrimSpace(string(out)); got != tc.want {
+				t.Fatalf("detect_host_os(%q, %q)=%q want=%q", tc.platform, tc.release, got, tc.want)
+			}
+		}
+	}
+}
+
 func TestTerminalAppRuntimeDoesNotUseAppleScriptDoScript(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	paths := []string{

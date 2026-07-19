@@ -34,6 +34,8 @@ Use these same three commands for the supported macOS path and the Windows relea
 - **macOS:** run them in a normal shell. The installer builds `sshpic`, sets up the macOS clipboard helper when Homebrew is available, creates a config file if needed, removes older sshpic iTerm2 settings, and enables the current iTerm2 `Cmd+V` integration.
 - **Windows 10/11 (experimental):** run them in **Git Bash**, not WSL. The installer builds the Windows executable and enables the WezTerm `Ctrl+V` release-candidate integration. If Go or WezTerm is missing and `winget` is available, it uses the normal `winget` package installation path automatically.
 
+`install.sh` normalizes the host as `windows`, `macos`, `linux`, `wsl`, or `unsupported` before installing (`./install.sh --detect-os` prints only the detected value). WSL and unknown platforms stop before dependency installation so they cannot accidentally take the native Windows or macOS path.
+
 If your Mac cannot set up the required iTerm2 support, the installer stops before changing `Cmd+V`. Your normal paste shortcut stays untouched.
 
 On Windows, Git Bash is required only for `./install.sh`. The release-candidate WezTerm pane may run native PowerShell or Git Bash, but the SSH client must be Windows OpenSSH (`ssh.exe`). Windows Terminal and WSL integration remain `TBD`.

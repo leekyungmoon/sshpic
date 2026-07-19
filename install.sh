@@ -2,15 +2,36 @@
 set -eu
 
 repo="github.com/leekyungmoon/sshpic"
-platform="$(uname -s)"
+platform="$(uname -s 2>/dev/null || printf 'unknown')"
+kernel_release="$(uname -r 2>/dev/null || printf 'unknown')"
 go_cmd=""
 wezterm_cmd=""
 
-is_windows_shell() {
-  case "$platform" in
-    MINGW*|MSYS*|CYGWIN*) return 0 ;;
-    *) return 1 ;;
+detect_host_os() {
+  detected_platform="$1"
+  detected_release="$2"
+  case "$detected_platform" in
+    MINGW*|MSYS*|CYGWIN*) printf '%s\n' "windows" ;;
+    Darwin) printf '%s\n' "macos" ;;
+    Linux)
+      case "$detected_release" in
+        *[Mm]icrosoft*|*WSL*|*wsl*) printf '%s\n' "wsl" ;;
+        *) printf '%s\n' "linux" ;;
+      esac
+      ;;
+    *) printf '%s\n' "unsupported" ;;
   esac
+}
+
+host_os="$(detect_host_os "$platform" "$kernel_release")"
+
+if [ "${1:-}" = "--detect-os" ]; then
+  printf '%s\n' "$host_os"
+  exit 0
+fi
+
+is_windows_shell() {
+  [ "$host_os" = "windows" ]
 }
 
 find_go() {
@@ -36,7 +57,7 @@ need_go() {
   if find_go; then
     return 0
   fi
-  if [ "$platform" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+  if [ "$host_os" = "macos" ] && command -v brew >/dev/null 2>&1; then
     brew install go
     find_go && return 0
   fi
@@ -88,7 +109,7 @@ install_wezterm_if_needed() {
 }
 
 install_pngpaste_if_possible() {
-  [ "$platform" = "Darwin" ] || return 0
+  [ "$host_os" = "macos" ] || return 0
   if command -v pngpaste >/dev/null 2>&1; then
     return 0
   fi
@@ -100,7 +121,7 @@ install_pngpaste_if_possible() {
 }
 
 install_python_if_possible() {
-  [ "$platform" = "Darwin" ] || return 0
+  [ "$host_os" = "macos" ] || return 0
   if command -v python3 >/dev/null 2>&1; then
     return 0
   fi
@@ -110,6 +131,21 @@ install_python_if_possible() {
     echo "warning: python3 is needed to auto-provision the iTerm2 Python runtime; install Homebrew or python3" >&2
   fi
 }
+
+case "$host_os" in
+  windows) echo "Detected OS: Windows (Git Bash/MSYS)" ;;
+  macos) echo "Detected OS: macOS" ;;
+  linux) echo "Detected OS: Linux" ;;
+  wsl)
+    echo "Detected OS: WSL" >&2
+    echo "Windows direct-paste installation must run from Git Bash, not WSL; rerun these commands in Git Bash." >&2
+    exit 1
+    ;;
+  *)
+    echo "Unsupported installation OS: $platform ($kernel_release)" >&2
+    exit 1
+    ;;
+esac
 
 need_go
 install_wezterm_if_needed
@@ -138,16 +174,16 @@ if [ ! -x "$bin" ]; then
   exit 1
 fi
 
-case "$platform" in
-  Darwin)
+case "$host_os" in
+  macos)
     "$bin" install iterm2
     echo "macOS Terminal.app direct-paste integration remains TBD; run: $bin doctor terminalapp" >&2
     ;;
-  Linux)
+  linux)
     echo "installed sshpic: $bin"
     echo "Ubuntu GNOME Terminal direct-paste integration remains TBD; run: $bin doctor ubuntu-terminal" >&2
     ;;
-  MINGW*|MSYS*|CYGWIN*)
+  windows)
     wezterm_native="$wezterm_cmd"
     if command -v cygpath >/dev/null 2>&1; then
       wezterm_native="$(cygpath -w "$wezterm_cmd")"
@@ -156,9 +192,5 @@ case "$platform" in
     echo "installed sshpic: $bin"
     echo "Open WezTerm, connect with native ssh.exe, copy an image, and press Ctrl+V."
     echo "Windows Terminal and WSL direct-paste integration remain TBD." >&2
-    ;;
-  *)
-    echo "installed sshpic: $bin"
-    echo "direct-paste integration is only verified for macOS+iTerm2 in this release" >&2
     ;;
 esac
