@@ -22,6 +22,7 @@ import (
 	"github.com/leekyungmoon/sshpic/internal/terminal/iterm2"
 	"github.com/leekyungmoon/sshpic/internal/terminal/terminalapp"
 	"github.com/leekyungmoon/sshpic/internal/terminal/wezterm"
+	localuninstall "github.com/leekyungmoon/sshpic/internal/uninstall"
 	"github.com/leekyungmoon/sshpic/internal/upload"
 )
 
@@ -36,6 +37,8 @@ type parsedArgs struct {
 	Values      map[string]string
 	Bools       map[string]bool
 }
+
+var installWezTermForCommand = wezterm.Install
 
 func Run(args []string, build BuildInfo, stdout, stderr io.Writer) int {
 	pa, err := parseArgs(args)
@@ -64,6 +67,8 @@ func Run(args []string, build BuildInfo, stdout, stderr io.Writer) int {
 		return runSnippet(pa, stdout, stderr)
 	case "install":
 		return runInstall(pa, stdout, stderr)
+	case "internal-invalidate-source-purge-receipt":
+		return runInstallReceiptInvalidation(pa, stdout, stderr)
 	case "doctor":
 		return runDoctor(pa, stdout, stderr)
 	case "restore":
@@ -135,14 +140,14 @@ func runInstall(pa parsedArgs, stdout, stderr io.Writer) int {
 	case "terminalapp", "terminal.app":
 		return runInstallTerminalApp(pa, stdout, stderr)
 	case "wezterm", "windows-wezterm":
-		return runInstallWezTerm(stdout, stderr)
+		return runInstallWezTerm(pa, stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "usage: sshpic install [iterm2|terminalapp|wezterm]")
 		return 2
 	}
 }
 
-func runInstallWezTerm(stdout, stderr io.Writer) int {
+func runInstallWezTerm(pa parsedArgs, stdout, stderr io.Writer) int {
 	if runtime.GOOS != "windows" {
 		fmt.Fprintln(stderr, "WezTerm direct-paste installation is supported on Windows 10/11")
 		return 1
@@ -153,17 +158,89 @@ func runInstallWezTerm(stdout, stderr io.Writer) int {
 		return 1
 	}
 	exe, _ = filepath.Abs(exe)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	result, err := wezterm.Install(ctx, wezterm.InstallOptions{
-		BinaryPath:  exe,
-		WezTermPath: os.Getenv("SSHPIC_WEZTERM_EXE"),
-	})
+	generationToken := strings.TrimSpace(pa.Values["install_generation"])
+	startedHere := generationToken == ""
+	if startedHere {
+		generationToken, err = beginInstallGeneration()
+	} else {
+		err = validateInstallGeneration(generationToken)
+	}
 	if err != nil {
+		fmt.Fprintf(stderr, "cannot begin or validate Windows install generation: %v\n", err)
+		return 1
+	}
+	pendingRecovery, err := pendingSourcePurgeRecovery()
+	if err != nil || pendingRecovery {
+		abortErr := abortInstallGeneration(generationToken)
+		if err == nil {
+			err = errors.New("source purge recovery is pending; finish it before installing")
+		}
+		if abortErr != nil {
+			err = fmt.Errorf("%v; install generation abort failed: %w", err, abortErr)
+		}
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if err := invalidatePendingSourcePurgeReceiptForInstall(generationToken); err != nil {
+		abortErr := abortInstallGeneration(generationToken)
+		if abortErr != nil {
+			err = fmt.Errorf("%v; install generation abort failed: %w", err, abortErr)
+		}
+		fmt.Fprintf(stderr, "cannot invalidate a pending source-purge receipt before Windows install: %v\n", err)
+		return 1
+	}
+	if err := validateInstallGeneration(generationToken); err != nil {
+		fmt.Fprintf(stderr, "Windows install generation was superseded before integration mutation: %v\n", err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	result, err := installWezTermForCommand(ctx, wezterm.InstallOptions{
+		BinaryPath:  exe,
+		WezTermPath: os.Getenv("SSHPIC_WEZTERM_EXE"),
+	})
+	settleErr := settleInstallGeneration(generationToken)
+	if err != nil || settleErr != nil {
+		if err != nil && settleErr != nil {
+			fmt.Fprintf(stderr, "%v; settle Windows install generation: %v\n", err, settleErr)
+		} else if err != nil {
+			fmt.Fprintln(stderr, err)
+		} else {
+			fmt.Fprintf(stderr, "settle Windows install generation: %v\n", settleErr)
+		}
+		return 1
+	}
 	fprintNoExtraBlank(stdout, wezterm.InstallSummary(result))
+	return 0
+}
+
+func runInstallReceiptInvalidation(pa parsedArgs, stdout, stderr io.Writer) int {
+	if runtime.GOOS != "windows" || len(pa.Positionals) != 2 || pa.Positionals[1] != "windows-wezterm" {
+		fmt.Fprintln(stderr, "internal Windows install receipt invalidation helper")
+		return 2
+	}
+	if pa.Values["install_receipt_protocol"] != "2" {
+		fmt.Fprintln(stderr, "unsupported install receipt invalidation protocol")
+		return 2
+	}
+	token, err := beginInstallGeneration()
+	if err != nil {
+		fmt.Fprintf(stderr, "cannot publish Windows install generation: %v\n", err)
+		return 1
+	}
+	pending, pendingErr := pendingSourcePurgeRecovery()
+	if pendingErr != nil || pending {
+		abortErr := abortInstallGeneration(token)
+		if pendingErr == nil {
+			pendingErr = errors.New("source purge recovery is pending; finish it before publishing a new Windows binary")
+		}
+		if abortErr != nil {
+			pendingErr = fmt.Errorf("%v; install generation abort failed: %w", pendingErr, abortErr)
+		}
+		fmt.Fprintln(stderr, pendingErr)
+		return 1
+	}
+	fmt.Fprintln(stdout, token)
 	return 0
 }
 
@@ -313,6 +390,10 @@ func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, "internal uninstall helper; run ./uninstall.sh from the source checkout")
 		return 2
 	}
+	if pa.Values["uninstall_protocol"] != "2" {
+		fmt.Fprintln(stderr, "unsupported internal uninstall protocol; rebuild the helper from the current checkout")
+		return 2
+	}
 	if runtime.GOOS != "windows" {
 		fmt.Fprintln(stderr, "Windows WezTerm uninstall is supported only on Windows 10/11")
 		return 1
@@ -322,19 +403,330 @@ func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) 
 		fmt.Fprintf(stderr, "cannot determine temporary uninstall helper path: %v\n", err)
 		return 1
 	}
-	result, err := wezterm.Uninstall(ctx, wezterm.UninstallOptions{
-		ConfigPath:     pa.Values["config"],
-		SourceRoot:     pa.Values["source_root"],
-		HelperPath:     helper,
-		ExpectedBinary: pa.Values["binary"],
-		DryRun:         pa.Bools["dry-run"],
-		WezTermPath:    os.Getenv("SSHPIC_WEZTERM_EXE"),
-	})
-	if err != nil {
-		fmt.Fprintln(stderr, err)
+	homeDir, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(homeDir) == "" {
+		fmt.Fprintf(stderr, "cannot determine Windows user profile for local state cleanup: %v\n", err)
 		return 1
 	}
+	cacheDir, cacheErr := os.UserCacheDir()
+	if cacheErr != nil || strings.TrimSpace(cacheDir) == "" {
+		cacheDir = filepath.Join(homeDir, ".cache")
+	}
+	purgeSource := pa.Bools["purge-source"]
+	receiptPath := ""
+	var plannedReceipt sourcePurgeReceipt
+	receiptAuthorized := false
+	sourceRecoveryOnly := false
+	defaultUninstallGeneration := ""
+	if purgeSource {
+		expectedReceiptPath := filepath.Join(cacheDir, sourcePurgeReceiptDir, sourcePurgeReceiptFile)
+		receiptPath, err = resolveSourcePurgeReceiptPath(pa.Values["source_purge_receipt"], pa.Values["source_root"], helper)
+		if err != nil {
+			fmt.Fprintf(stderr, "cannot resolve source purge completion receipt: %v\n", err)
+			return 1
+		}
+		if !sameSourcePurgePath(receiptPath, expectedReceiptPath) {
+			fmt.Fprintf(stderr, "source purge completion receipt must use the dedicated local path: %s\n", expectedReceiptPath)
+			return 1
+		}
+		if existing, readErr := readSourcePurgeReceipt(receiptPath); readErr == nil {
+			plannedReceipt = existing
+			if _, sourceErr := os.Lstat(pa.Values["source_root"]); errors.Is(sourceErr, os.ErrNotExist) {
+				if _, err = readAndAuthorizeSourcePurgeRecovery(receiptPath, pa.Values["source_root"]); err != nil {
+					fmt.Fprintf(stderr, "cannot authorize interrupted source purge recovery: %v\n", err)
+					return 1
+				}
+				sourceRecoveryOnly = true
+			} else if sourceErr != nil {
+				fmt.Fprintf(stderr, "cannot inspect source checkout for purge retry: %v\n", sourceErr)
+				return 1
+			} else {
+				fmt.Fprintln(stderr, "source purge retry found a checkout at the original path; preserving it because a replacement cannot be distinguished after interruption")
+				fmt.Fprintln(stderr, "Run checkout-preserving ./uninstall.sh (or reinstall) to revoke the stale purge receipt, then start a new --purge-source operation.")
+				return 1
+			}
+			receiptAuthorized = true
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			fmt.Fprintf(stderr, "cannot validate source purge completion receipt: %v\n", readErr)
+			return 1
+		} else {
+			pendingReceipt, pendingPath, pendingErr := readSourcePurgeReceiptCompletionPending(filepath.Dir(receiptPath))
+			if pendingErr == nil {
+				if _, sourceErr := os.Lstat(pa.Values["source_root"]); !errors.Is(sourceErr, os.ErrNotExist) {
+					fmt.Fprintln(stderr, "source purge completion is pending, but a fresh source path exists; preserving the replacement")
+					return 1
+				}
+				plannedReceipt = pendingReceipt
+				if pa.Bools["dry-run"] {
+					if _, err = readAndAuthorizeSourcePurgeRecovery(pendingPath, pa.Values["source_root"]); err != nil {
+						fmt.Fprintf(stderr, "cannot authorize strict completion-pending source purge recovery: %v\n", err)
+						return 1
+					}
+				} else {
+					if err = restoreSourcePurgeReceiptFromCompletionPending(receiptPath, pendingPath, pendingReceipt); err != nil {
+						fmt.Fprintf(stderr, "cannot restore source purge completion authority: %v\n", err)
+						return 1
+					}
+					if _, err = readAndAuthorizeSourcePurgeRecovery(receiptPath, pa.Values["source_root"]); err != nil {
+						fmt.Fprintf(stderr, "cannot authorize restored source purge recovery: %v\n", err)
+						return 1
+					}
+				}
+				receiptAuthorized = true
+				sourceRecoveryOnly = true
+			} else if !errors.Is(pendingErr, os.ErrNotExist) {
+				fmt.Fprintf(stderr, "cannot validate source purge completion pending state: %v\n", pendingErr)
+				return 1
+			}
+			if receiptAuthorized {
+				// Continue directly to the recovery-only finalization path.
+			} else {
+				if _, sourceErr := os.Lstat(pa.Values["source_root"]); errors.Is(sourceErr, os.ErrNotExist) {
+					cleanupOnly, cleanupErr := sourcePurgeCompletionCleanupOnlyPending()
+					if cleanupErr != nil {
+						fmt.Fprintf(stderr, "cannot validate final uninstall control-state retry: %v\n", cleanupErr)
+						return 1
+					}
+					if cleanupOnly {
+						if pa.Bools["dry-run"] {
+							fmt.Fprintln(stdout, "DRY RUN: final Windows uninstall lock and empty control-state directory would be removed")
+							return 0
+						}
+						if err := removeInstallGenerationLockAndDirectory(); err != nil {
+							fmt.Fprintf(stderr, "final uninstall control-state cleanup did not complete: %v\n", err)
+							return 1
+						}
+						fmt.Fprintln(stdout, "final Windows uninstall control state: removed")
+						return 0
+					}
+				} else if sourceErr != nil {
+					fmt.Fprintf(stderr, "cannot inspect missing-receipt source purge retry: %v\n", sourceErr)
+					return 1
+				}
+				plannedReceipt, err = captureSourcePurgeReceipt(ctx, pa.Values["source_root"])
+				if err != nil {
+					fmt.Fprintln(stderr, err)
+					return 1
+				}
+				if err = validateFreshSourcePurgeBoundPathsAbsent(receiptPath, plannedReceipt); err != nil {
+					fmt.Fprintln(stderr, err)
+					return 1
+				}
+			}
+		}
+	}
+	if !purgeSource {
+		if err := validateDefaultUninstallControlStateReadOnly(); err != nil {
+			fmt.Fprintf(stderr, "default uninstall control-state preflight refused before mutation: %v\n", err)
+			return 1
+		}
+		if !pa.Bools["dry-run"] {
+			if err := prepareDefaultUninstallControlState(); err != nil {
+				fmt.Fprintf(stderr, "default uninstall control-state preflight refused before mutation: %v\n", err)
+				return 1
+			}
+			defaultUninstallGeneration, err = settledInstallGeneration()
+			if err != nil {
+				fmt.Fprintf(stderr, "cannot pin the Windows install generation before uninstall: %v\n", err)
+				return 1
+			}
+		}
+	}
+	configPath, err := config.ResolvePath(config.Overrides{ConfigPath: pa.Values["config"]})
+	if err != nil {
+		fmt.Fprintf(stderr, "cannot resolve sshpic config for local state cleanup: %v\n", err)
+		return 1
+	}
+	var localPlan localuninstall.LocalPlan
+	localPlanReady := false
+	var localResult localuninstall.LocalResult
+	localExecuted := false
+	validateManagedPaths := func(paths wezterm.UninstallManagedPaths) error {
+		protected := []string{
+			paths.ConfigPath,
+			paths.ManifestPath,
+			paths.ModulePath,
+			paths.BackupPath,
+			paths.BinaryPath,
+			paths.JournalPath,
+			paths.QuarantinePath,
+		}
+		if receiptPath != "" {
+			protected = append(protected, receiptPath, plannedReceipt.QuarantinePath, plannedReceipt.QuarantineMarker)
+		}
+		filtered := protected[:0]
+		for _, path := range protected {
+			if strings.TrimSpace(path) != "" {
+				filtered = append(filtered, path)
+			}
+		}
+		plan, planErr := localuninstall.BuildLocalPlan(localuninstall.LocalOptions{
+			HomeDir:        homeDir,
+			CacheDir:       cacheDir,
+			TempDir:        os.TempDir(),
+			ConfigPath:     configPath,
+			SourceRoot:     pa.Values["source_root"],
+			HelperPath:     helper,
+			ProtectedPaths: filtered,
+			DryRun:         pa.Bools["dry-run"],
+		})
+		if planErr != nil {
+			return fmt.Errorf("cannot build safe local uninstall plan: %w", planErr)
+		}
+		localPlan = plan
+		localPlanReady = true
+		return nil
+	}
+	executeLocalPlan := func() error {
+		if !localPlanReady {
+			return errors.New("local uninstall plan was not validated against the managed WezTerm paths")
+		}
+		var executeErr error
+		localResult, executeErr = localuninstall.ExecuteLocalPlan(localPlan)
+		if executeErr == nil {
+			localExecuted = true
+		}
+		return executeErr
+	}
+	writeCompletionReceipt := func() error {
+		if !purgeSource || pa.Bools["dry-run"] {
+			return nil
+		}
+		if receiptAuthorized {
+			return requireSettledInstallGeneration(plannedReceipt.InstallGeneration)
+		}
+		currentReceipt, captureErr := captureSourcePurgeReceipt(ctx, pa.Values["source_root"])
+		if captureErr != nil {
+			return captureErr
+		}
+		if !equalSourcePurgeReceipt(currentReceipt, plannedReceipt) {
+			return errors.New("source Git snapshot changed while uninstall was running; completion receipt was not written")
+		}
+		return ensureSourcePurgeReceipt(receiptPath, currentReceipt)
+	}
+	var result wezterm.UninstallResult
+	if sourceRecoveryOnly {
+		// The immutable receipt is published only after WezTerm, binary, and
+		// local cleanup completed. When the original root is already gone, do
+		// not rebuild a local plan that necessarily requires that root; resume
+		// only the marker-authenticated source finalization phase.
+		localExecuted = true
+	} else {
+		result, err = wezterm.Uninstall(ctx, wezterm.UninstallOptions{
+			HomeDir:              homeDir,
+			ConfigPath:           pa.Values["wezterm_config"],
+			SourceRoot:           pa.Values["source_root"],
+			HelperPath:           helper,
+			ExpectedBinary:       pa.Values["binary"],
+			JournalPath:          filepath.Join(cacheDir, "sshpic-uninstall", "state-v1.json"),
+			ValidateManagedPaths: validateManagedPaths,
+			BeforeBinaryRemoval:  executeLocalPlan,
+			AfterBinaryRemoval:   writeCompletionReceipt,
+			DryRun:               pa.Bools["dry-run"],
+			PurgeSource:          purgeSource,
+			WezTermPath:          os.Getenv("SSHPIC_WEZTERM_EXE"),
+		})
+		if err != nil {
+			if result.IntegrationRestored {
+				fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
+			}
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+	}
+	if purgeSource && result.NothingToDo && !receiptAuthorized {
+		fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
+		fmt.Fprintln(stderr, "source purge refused: no owned WezTerm install manifest or resumable uninstall journal was found; select the installed config with --wezterm-config (or WEZTERM_CONFIG_FILE) so installed state cannot be stranded")
+		return 1
+	}
+	if !localExecuted {
+		if err := executeLocalPlan(); err != nil {
+			fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
+			fmt.Fprintf(stderr, "local sshpic state removal did not complete: %v\n", err)
+			return 1
+		}
+	}
+	var sourceFinalizeResult localuninstall.SourceFinalizeResult
+	if purgeSource && !pa.Bools["dry-run"] {
+		markerData, markerErr := sourcePurgeOwnershipMarkerData(plannedReceipt, receiptPath)
+		if markerErr != nil {
+			fmt.Fprintf(stderr, "cannot construct source quarantine ownership marker: %v\n", markerErr)
+			return 1
+		}
+		sourceFinalizeResult, err = localuninstall.FinalizeSource(localuninstall.SourceFinalizeOptions{
+			SourceRoot:               pa.Values["source_root"],
+			HelperPath:               helper,
+			ReceiptPath:              receiptPath,
+			ReceiptCleanupPath:       sourcePurgeReceiptCompletionPendingPath(receiptPath, plannedReceipt),
+			QuarantinePath:           plannedReceipt.QuarantinePath,
+			MarkerPath:               plannedReceipt.QuarantineMarker,
+			MarkerData:               markerData,
+			HomeDir:                  homeDir,
+			AllowPreexistingRecovery: receiptAuthorized,
+			BeforeQuarantine: func() error {
+				_, authorizeErr := readAndAuthorizeSourcePurgeReceipt(ctx, receiptPath, pa.Values["source_root"])
+				return authorizeErr
+			},
+			ValidateQuarantined: func(quarantinedRoot string) error {
+				_, authorizeErr := readAndAuthorizeSourcePurgeReceiptAtRoot(ctx, receiptPath, pa.Values["source_root"], quarantinedRoot)
+				return authorizeErr
+			},
+			AuthorizeRecovery: func() error {
+				_, authorizeErr := readAndAuthorizeSourcePurgeRecovery(receiptPath, pa.Values["source_root"])
+				return authorizeErr
+			},
+			BeforeCompletion: func() error {
+				_, authorizeErr := readAndAuthorizeSourcePurgeRecovery(receiptPath, pa.Values["source_root"])
+				return authorizeErr
+			},
+			CompleteAuthority: func(cleanup func() error) error {
+				return completeSourcePurgeControlState(plannedReceipt.InstallGeneration, cleanup)
+			},
+		})
+		if err != nil {
+			fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
+			fprintNoExtraBlank(stdout, localuninstall.LocalSummary(localResult))
+			fmt.Fprintf(stderr, "source checkout finalization did not complete: %v\n", err)
+			return 1
+		}
+		for _, path := range []string{
+			pa.Values["source_root"],
+			plannedReceipt.QuarantinePath,
+			plannedReceipt.QuarantineMarker,
+			receiptPath,
+			sourcePurgeReceiptCompletionPendingPath(receiptPath, plannedReceipt),
+		} {
+			if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+				fmt.Fprintf(stderr, "source checkout finalization reported success but a bound path remains: %s\n", path)
+				return 1
+			}
+		}
+		if err := removeInstallGenerationLockAndDirectory(); err != nil {
+			fmt.Fprintf(stderr, "source checkout was removed, but uninstall control-state cleanup did not complete: %v\n", err)
+			return 1
+		}
+	} else if !purgeSource && !pa.Bools["dry-run"] {
+		if err := removeInstallGenerationAfterLocalUninstallExpected(defaultUninstallGeneration); err != nil {
+			fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
+			fprintNoExtraBlank(stdout, localuninstall.LocalSummary(localResult))
+			fmt.Fprintf(stderr, "Windows install generation cleanup did not complete: %v\n", err)
+			return 1
+		}
+		if err := removeInstallGenerationLockAndDirectory(); err != nil {
+			fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
+			fprintNoExtraBlank(stdout, localuninstall.LocalSummary(localResult))
+			fmt.Fprintf(stderr, "Windows uninstall control-state cleanup did not complete: %v\n", err)
+			return 1
+		}
+	}
 	fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
+	fprintNoExtraBlank(stdout, localuninstall.LocalSummary(localResult))
+	if sourceFinalizeResult.SourceRemoved && sourceFinalizeResult.ReceiptRemoved {
+		fmt.Fprintf(stdout, "source checkout: removed with identity-guarded quarantine: %s\n", sourceFinalizeResult.SourceRoot)
+		fmt.Fprintln(stdout, "source purge completion receipt: removed after source deletion succeeded")
+	} else if purgeSource && receiptAuthorized {
+		fmt.Fprintf(stdout, "source purge completion receipt: authorized retry at %s\n", receiptPath)
+	}
 	return 0
 }
 
@@ -802,8 +1194,8 @@ func sourceFromConfig(cfg config.Config) provider.LocalImageSource {
 
 func parseArgs(args []string) (parsedArgs, error) {
 	pa := parsedArgs{Values: map[string]string{}, Bools: map[string]bool{}}
-	boolFlags := map[string]bool{"help": true, "debug": true, "json": true, "dry-run": true, "yes": true, "force": true, "no-copy": true, "insert-newline": true, "no-verify": true, "no-open": true}
-	valueFlags := map[string]bool{"config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true, "term-program": true, "foreground-bundle-id": true, "action-file": true, "payload-file": true, "process-json": true, "pane-id": true, "result-file": true, "source-root": true, "binary": true}
+	boolFlags := map[string]bool{"help": true, "debug": true, "json": true, "dry-run": true, "yes": true, "force": true, "no-copy": true, "insert-newline": true, "no-verify": true, "no-open": true, "purge-source": true}
+	valueFlags := map[string]bool{"config": true, "wezterm-config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true, "term-program": true, "foreground-bundle-id": true, "action-file": true, "payload-file": true, "process-json": true, "pane-id": true, "result-file": true, "source-root": true, "binary": true, "uninstall-protocol": true, "source-purge-receipt": true, "install-receipt-protocol": true, "install-generation": true}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {

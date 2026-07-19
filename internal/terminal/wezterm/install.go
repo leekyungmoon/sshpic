@@ -25,6 +25,7 @@ const (
 )
 
 var returnIdentifierPattern = regexp.MustCompile(`^return\s+([A-Za-z_][A-Za-z0-9_]*)\s*;?\s*$`)
+var executableForOwnership = os.Executable
 
 // InstallOptions selects the binary and WezTerm config to integrate.
 type InstallOptions struct {
@@ -51,19 +52,31 @@ type InstallResult struct {
 }
 
 type installManifest struct {
-	Version               int    `json:"version"`
-	Owner                 string `json:"owner"`
-	BinaryPath            string `json:"binary_path"`
-	WezTermPath           string `json:"wezterm_path"`
-	ConfigPath            string `json:"config_path"`
-	ModulePath            string `json:"module_path"`
-	BackupPath            string `json:"backup_path,omitempty"`
-	ConfigIdentifier      string `json:"config_identifier"`
-	ConfigCreated         bool   `json:"config_created"`
-	OriginalConfigSHA256  string `json:"original_config_sha256,omitempty"`
-	InstalledConfigSHA256 string `json:"installed_config_sha256"`
-	ModuleSHA256          string `json:"module_sha256"`
-	FileSHA256            string `json:"-"`
+	Version                int    `json:"version"`
+	Owner                  string `json:"owner"`
+	BinaryPath             string `json:"binary_path"`
+	BinarySHA256           string `json:"binary_sha256,omitempty"`
+	WezTermPath            string `json:"wezterm_path"`
+	ConfigPath             string `json:"config_path"`
+	ModulePath             string `json:"module_path"`
+	BackupPath             string `json:"backup_path,omitempty"`
+	ConfigIdentifier       string `json:"config_identifier"`
+	ConfigCreated          bool   `json:"config_created"`
+	OriginalConfigSHA256   string `json:"original_config_sha256,omitempty"`
+	InstalledConfigSHA256  string `json:"installed_config_sha256"`
+	ModuleSHA256           string `json:"module_sha256"`
+	FileSHA256             string `json:"-"`
+	FileData               []byte `json:"-"`
+	PendingPath            string `json:"-"`
+	PendingLabel           string `json:"-"`
+	ActiveRollbackPath     string `json:"-"`
+	ActiveRollbackSHA256   string `json:"-"`
+	ActivePublishPath      string `json:"-"`
+	ActivePublishSHA256    string `json:"-"`
+	ActiveReplacePath      string `json:"-"`
+	ActiveReplaceSHA256    string `json:"-"`
+	ActiveReplaceData      []byte `json:"-"`
+	ActiveReplacePublished bool   `json:"-"`
 }
 
 // Install writes one owned Lua module and adds a bounded marker block to a
@@ -93,6 +106,9 @@ func installWithAtomicReplaceOps(ctx context.Context, opts InstallOptions, repla
 		BinaryPath: binaryPath, WezTermPath: weztermPath, ConfigPath: configPath,
 		ModulePath: modulePath, ManifestPath: manifestPath,
 	}
+	if err := reconcileOwnedPartialFiles([]string{configPath, modulePath, manifestPath, backupPath}, true); err != nil {
+		return result, fmt.Errorf("reconcile interrupted WezTerm partial files: %w", err)
+	}
 
 	moduleSource, err := LuaIntegrationSource(LuaOptions{
 		BinaryPath: binaryPath, DispatchCommand: opts.DispatchCommand,
@@ -105,8 +121,9 @@ func installWithAtomicReplaceOps(ctx context.Context, opts InstallOptions, repla
 	if validator == nil {
 		validator = validateWezTermConfig
 	}
+	moduleHash := sha256Hex([]byte(moduleSource))
 
-	if _, err := os.Stat(manifestPath); err == nil {
+	if _, err := readManifest(manifestPath); err == nil {
 		installed, checkErr := verifyExistingInstall(manifestPath, configPath, modulePath, []byte(moduleSource), binaryPath)
 		if checkErr != nil {
 			return result, checkErr
@@ -118,10 +135,21 @@ func installWithAtomicReplaceOps(ctx context.Context, opts InstallOptions, repla
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return result, err
 	}
+	if recovered, recoveryResult, recoveryErr := recoverInterruptedInstall(ctx, result, moduleSource, validator); recoveryErr != nil {
+		return result, recoveryErr
+	} else if recovered {
+		return recoveryResult, nil
+	}
 	if _, err := os.Stat(modulePath); err == nil {
 		return result, fmt.Errorf("refusing to overwrite non-managed WezTerm module: %s", modulePath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return result, err
+	} else if pending, pendingErr := exactOwnedPendingExists(modulePath, "owned", moduleHash); pendingErr != nil {
+		return result, pendingErr
+	} else if pending {
+		if err := removeIfHash(modulePath, moduleHash); err != nil {
+			return result, fmt.Errorf("resume interrupted module cleanup: %w", err)
+		}
 	}
 
 	configData, configErr := os.ReadFile(configPath)
@@ -144,17 +172,23 @@ func installWithAtomicReplaceOps(ctx context.Context, opts InstallOptions, repla
 		result.ConfigPatched = true
 		result.BackupPath = backupPath
 	}
+	installedConfigHash := sha256Hex(installedConfig)
 
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return result, err
 	}
 	if !configCreated {
+		if pending, pendingErr := exactOwnedPendingExists(backupPath, "owned", originalHash); pendingErr != nil {
+			return result, pendingErr
+		} else if pending {
+			if err := removeIfHash(backupPath, originalHash); err != nil {
+				return result, fmt.Errorf("resume interrupted backup cleanup: %w", err)
+			}
+		}
 		if err := writeExclusive(backupPath, configData, 0o600); err != nil {
 			return result, fmt.Errorf("create WezTerm config backup: %w", err)
 		}
 	}
-	moduleHash := sha256Hex([]byte(moduleSource))
-	installedConfigHash := sha256Hex(installedConfig)
 	configPublished := false
 	configRecoveryPath := ""
 	rollback := func() {
@@ -169,6 +203,15 @@ func installWithAtomicReplaceOps(ctx context.Context, opts InstallOptions, repla
 		return result, err
 	}
 	if configCreated {
+		if pending, pendingErr := exactOwnedPendingExists(configPath, "owned", installedConfigHash); pendingErr != nil {
+			rollback()
+			return result, pendingErr
+		} else if pending {
+			if err := removeIfHash(configPath, installedConfigHash); err != nil {
+				rollback()
+				return result, fmt.Errorf("resume interrupted created-config cleanup: %w", err)
+			}
+		}
 		if err := writeExclusive(configPath, installedConfig, 0o600); err != nil {
 			rollback()
 			return result, err
@@ -199,8 +242,15 @@ func installWithAtomicReplaceOps(ctx context.Context, opts InstallOptions, repla
 		}
 	}
 
+	// Hash at the ownership publication boundary, after potentially slow
+	// WezTerm validation, so a fresh manifest does not record stale content.
+	binaryHash, err := sha256File(binaryPath)
+	if err != nil {
+		rollback()
+		return result, fmt.Errorf("hash sshpic binary: %w", err)
+	}
 	manifest := installManifest{
-		Version: 1, Owner: manifestOwner, BinaryPath: binaryPath, WezTermPath: weztermPath,
+		Version: 1, Owner: manifestOwner, BinaryPath: binaryPath, BinarySHA256: binaryHash, WezTermPath: weztermPath,
 		ConfigPath: configPath, ModulePath: modulePath, ConfigIdentifier: configIdentifier,
 		ConfigCreated: configCreated, OriginalConfigSHA256: originalHash,
 		InstalledConfigSHA256: installedConfigHash, ModuleSHA256: moduleHash,
@@ -219,6 +269,190 @@ func installWithAtomicReplaceOps(ctx context.Context, opts InstallOptions, repla
 		return result, err
 	}
 	return result, nil
+}
+
+// recoverInterruptedInstall handles only states that are fully proven by the
+// exact generated module plus the adjacent backup/config pair. It is invoked
+// before treating an existing module as unowned, allowing a retry after a
+// process stopped between config quarantine/publication/cleanup and manifest
+// publication. Ambiguous or changed state is preserved and refused.
+func recoverInterruptedInstall(ctx context.Context, result InstallResult, moduleSource string, validator func(context.Context, string, string, []byte) error) (bool, InstallResult, error) {
+	moduleHash := sha256Hex([]byte(moduleSource))
+	moduleData, err := os.ReadFile(result.ModulePath)
+	if errors.Is(err, os.ErrNotExist) {
+		resumed, resumeErr := resumeOwnedPublishIfPresent(result.ModulePath, []byte(moduleSource), 0o600)
+		if resumeErr != nil {
+			return false, result, resumeErr
+		}
+		if !resumed {
+			return false, result, nil
+		}
+		moduleData, err = os.ReadFile(result.ModulePath)
+	}
+	if err != nil {
+		return false, result, err
+	}
+	if sha256Hex(moduleData) != moduleHash {
+		return false, result, fmt.Errorf("refusing to overwrite non-managed WezTerm module: %s", result.ModulePath)
+	}
+	if _, err := resumeOwnedPublishIfPresent(result.ModulePath, moduleData, 0o600); err != nil {
+		return false, result, err
+	}
+
+	backupData, backupErr := os.ReadFile(result.ConfigPath + backupSuffix)
+	if errors.Is(backupErr, os.ErrNotExist) {
+		configData, configErr := os.ReadFile(result.ConfigPath)
+		if errors.Is(configErr, os.ErrNotExist) {
+			expected := []byte(newOwnedConfig(result.ModulePath, "config"))
+			resumed, resumeErr := resumeOwnedPublishIfPresent(result.ConfigPath, expected, 0o600)
+			if resumeErr != nil {
+				return false, result, resumeErr
+			}
+			if !resumed {
+				// The prior run stopped after publishing only the exact module. Remove
+				// that orphan through the retryable owned-file path, then start fresh.
+				if err := removeIfHash(result.ModulePath, moduleHash); err != nil {
+					return false, result, err
+				}
+				return false, result, nil
+			}
+			configData = expected
+			configErr = nil
+		}
+		if configErr != nil {
+			return false, result, configErr
+		}
+		if _, err := resumeOwnedPublishIfPresent(result.ConfigPath, configData, 0o600); err != nil {
+			return false, result, err
+		}
+		expected := []byte(newOwnedConfig(result.ModulePath, "config"))
+		if sha256Hex(configData) != sha256Hex(expected) {
+			resumed, resumeErr := resumeOwnedPublishIfPresent(result.ConfigPath+backupSuffix, configData, 0o600)
+			if resumeErr != nil {
+				return false, result, resumeErr
+			}
+			if !resumed {
+				return false, result, fmt.Errorf("exact sshpic module exists without its backup or created config; refusing recovery: %s", result.ModulePath)
+			}
+			backupData = configData
+			backupErr = nil
+		} else {
+			if err := validator(ctx, result.WezTermPath, result.ConfigPath, configData); err != nil {
+				return false, result, err
+			}
+			result.ConfigCreated = true
+			if err := publishRecoveredInstallManifest(result, "config", true, "", sha256Hex(expected), moduleHash); err != nil {
+				return false, result, err
+			}
+			return true, result, nil
+		}
+	}
+	if backupErr != nil {
+		return false, result, backupErr
+	}
+	if _, err := resumeOwnedPublishIfPresent(result.ConfigPath+backupSuffix, backupData, 0o600); err != nil {
+		return false, result, err
+	}
+	originalHash := sha256Hex(backupData)
+	installedConfig, identifier, patchErr := patchSimpleConfig(backupData, result.ModulePath)
+	if patchErr != nil {
+		return false, result, fmt.Errorf("cannot validate interrupted WezTerm install backup: %w", patchErr)
+	}
+	installedHash := sha256Hex(installedConfig)
+	if err := reconcileLegacyWezTermTemps(result.ConfigPath, map[string]bool{
+		installedHash: true,
+		originalHash:  true,
+	}, true); err != nil {
+		return false, result, err
+	}
+	configData, configErr := os.ReadFile(result.ConfigPath)
+	configMissing := errors.Is(configErr, os.ErrNotExist)
+	if configErr != nil && !configMissing {
+		return false, result, configErr
+	}
+	if !configMissing {
+		if _, err := resumeOwnedPublishIfPresent(result.ConfigPath, configData, 0o600); err != nil {
+			return false, result, err
+		}
+	}
+	if configMissing {
+		if _, err := replaceIfHashWithOps(result.ConfigPath, originalHash, installedConfig, 0o600, defaultAtomicReplaceOps()); err != nil {
+			return false, result, fmt.Errorf("resume interrupted WezTerm config publication: %w", err)
+		}
+		configData = installedConfig
+	} else {
+		configHash := sha256Hex(configData)
+		switch configHash {
+		case originalHash:
+			if _, err := replaceIfHashWithOps(result.ConfigPath, originalHash, installedConfig, 0o600, defaultAtomicReplaceOps()); err != nil {
+				return false, result, fmt.Errorf("resume interrupted WezTerm config publication: %w", err)
+			}
+			configData = installedConfig
+		case installedHash:
+			if _, err := replaceIfHashWithOps(result.ConfigPath, originalHash, installedConfig, 0o600, defaultAtomicReplaceOps()); err != nil {
+				return false, result, fmt.Errorf("finish interrupted WezTerm config publication: %w", err)
+			}
+		default:
+			if _, ok := removeExactConfigBlock(configData, result.ModulePath, identifier); !ok {
+				return false, result, fmt.Errorf("interrupted WezTerm install config is ambiguous or changed inside the sshpic marker; refusing recovery: %s", result.ConfigPath)
+			}
+			// If the original rollback copy remains after a user edited the
+			// published config, use the exact active bytes as the idempotent target
+			// so only that proven rollback sibling is cleaned.
+			if exists, pendingErr := exactOwnedPendingExists(result.ConfigPath, "rollback", originalHash); pendingErr != nil {
+				return false, result, pendingErr
+			} else if exists {
+				if _, err := replaceIfHashWithOps(result.ConfigPath, originalHash, configData, 0o600, defaultAtomicReplaceOps()); err != nil {
+					return false, result, err
+				}
+			}
+		}
+	}
+	if err := validator(ctx, result.WezTermPath, result.ConfigPath, configData); err != nil {
+		return false, result, err
+	}
+	result.ConfigPatched = true
+	result.BackupPath = result.ConfigPath + backupSuffix
+	if err := publishRecoveredInstallManifest(result, identifier, false, originalHash, installedHash, moduleHash); err != nil {
+		return false, result, err
+	}
+	return true, result, nil
+}
+
+func resumeOwnedPublishIfPresent(path string, data []byte, mode os.FileMode) (bool, error) {
+	_, exists, err := exactOwnedPublishPending(path, sha256Hex(data))
+	if err != nil || !exists {
+		return false, err
+	}
+	if err := writeExclusive(path, data, mode); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func publishRecoveredInstallManifest(result InstallResult, identifier string, configCreated bool, originalHash, installedHash, moduleHash string) error {
+	binaryHash, err := sha256File(result.BinaryPath)
+	if err != nil {
+		return fmt.Errorf("hash sshpic binary: %w", err)
+	}
+	manifest := installManifest{
+		Version: 1, Owner: manifestOwner, BinaryPath: result.BinaryPath, BinarySHA256: binaryHash, WezTermPath: result.WezTermPath,
+		ConfigPath: result.ConfigPath, ModulePath: result.ModulePath, ConfigIdentifier: identifier,
+		ConfigCreated: configCreated, OriginalConfigSHA256: originalHash,
+		InstalledConfigSHA256: installedHash, ModuleSHA256: moduleHash,
+	}
+	if !configCreated {
+		manifest.BackupPath = result.ConfigPath + backupSuffix
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := writeExclusive(result.ManifestPath, data, 0o600); err != nil {
+		return fmt.Errorf("publish recovered sshpic install manifest: %w", err)
+	}
+	return nil
 }
 
 func ResolveConfigPath(home, explicit string) (string, error) {
@@ -322,24 +556,12 @@ func windowsWezTermExecutableCandidates(getenv func(string) string) []string {
 }
 
 func validateWezTermConfig(ctx context.Context, weztermPath, configPath string, data []byte) error {
-	validation, err := os.CreateTemp(filepath.Dir(configPath), ".sshpic-wezterm-validate-*.lua")
+	validation, err := prepareOwnedContentStage(configPath, "replace", data, 0o600)
 	if err != nil {
-		return fmt.Errorf("create WezTerm validation config: %w", err)
+		return fmt.Errorf("prepare WezTerm validation config: %w", err)
 	}
-	validationPath := validation.Name()
-	defer os.Remove(validationPath)
-	if err := validation.Chmod(0o600); err != nil {
-		_ = validation.Close()
-		return err
-	}
-	if _, err := validation.Write(data); err != nil {
-		_ = validation.Close()
-		return err
-	}
-	if err := validation.Close(); err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, weztermPath, "--config-file", validationPath, "show-keys")
+	defer func() { _ = removePreparedOwnedContentStage(configPath, "replace", validation.Hash) }()
+	cmd := exec.CommandContext(ctx, weztermPath, "--config-file", validation.Path, "show-keys")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		detail := strings.TrimSpace(string(out))
@@ -455,14 +677,264 @@ func verifyExistingInstall(manifestPath, configPath, modulePath string, desiredM
 	if manifest.BinaryPath != binaryPath || sha256Hex(desiredModule) != manifest.ModuleSHA256 {
 		return false, errors.New("sshpic binary or integration options changed; run `sshpic restore wezterm` before reinstalling")
 	}
+	if manifest.PendingLabel == "publish" {
+		if err := writeExclusive(manifestPath, manifest.FileData, 0o600); err != nil {
+			return false, fmt.Errorf("resume sshpic manifest exclusive publication: %w", err)
+		}
+		manifest.PendingLabel = ""
+		manifest.PendingPath = ""
+	}
+	binaryHash, err := sha256File(binaryPath)
+	if err != nil {
+		return false, fmt.Errorf("managed sshpic binary is missing or unreadable: %w", err)
+	}
+	if manifest.BinarySHA256 != binaryHash {
+		// install.sh upgrades the executable before invoking `install wezterm`.
+		// Once the exact config, module, options and binary path are all proven
+		// to be the existing owned integration, adopt the replacement only when
+		// it is also this running Windows process.
+		if err := verifyRunningBinaryForOwnership(binaryPath); err != nil {
+			return false, err
+		}
+		if err := cleanupActiveManifestPublish(manifestPath, manifest); err != nil {
+			return false, fmt.Errorf("finish interrupted sshpic manifest publication: %w", err)
+		}
+		if err := cleanupActiveManifestRollback(manifestPath, manifest); err != nil {
+			return false, fmt.Errorf("finish interrupted sshpic manifest refresh: %w", err)
+		}
+		manifest.BinarySHA256 = binaryHash
+		manifestData, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return false, err
+		}
+		manifestData = append(manifestData, '\n')
+		if manifest.ActiveReplaceSHA256 != "" &&
+			(manifest.ActiveReplacePublished || manifest.ActiveReplaceSHA256 != sha256Hex(manifestData)) {
+			if err := cleanupActiveManifestReplace(manifestPath, manifest); err != nil {
+				return false, fmt.Errorf("clean stale manifest replacement stage: %w", err)
+			}
+		}
+		if err := replaceIfHash(manifestPath, manifest.FileSHA256, manifestData, 0o600); err != nil {
+			return false, fmt.Errorf("refresh sshpic binary ownership hash: %w", err)
+		}
+	} else {
+		if err := cleanupActiveManifestReplace(manifestPath, manifest); err != nil {
+			return false, fmt.Errorf("finish interrupted sshpic manifest replacement: %w", err)
+		}
+		if err := cleanupActiveManifestPublish(manifestPath, manifest); err != nil {
+			return false, fmt.Errorf("finish interrupted sshpic manifest publication: %w", err)
+		}
+		if err := cleanupActiveManifestRollback(manifestPath, manifest); err != nil {
+			return false, fmt.Errorf("finish interrupted sshpic manifest refresh: %w", err)
+		}
+		if manifest.PendingLabel == "rollback" {
+			if err := replaceIfHash(manifestPath, manifest.FileSHA256, manifest.FileData, 0o600); err != nil {
+				return false, fmt.Errorf("resume sshpic manifest publication: %w", err)
+			}
+		}
+	}
 	return true, nil
+}
+
+func verifyRunningBinaryForOwnership(binaryPath string) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	runningPath, err := executableForOwnership()
+	if err != nil {
+		return fmt.Errorf("determine running sshpic executable for ownership refresh: %w", err)
+	}
+	runningInfo, err := os.Stat(runningPath)
+	if err != nil {
+		return fmt.Errorf("inspect running sshpic executable for ownership refresh: %w", err)
+	}
+	selectedInfo, err := os.Stat(binaryPath)
+	if err != nil {
+		return fmt.Errorf("inspect selected sshpic executable for ownership refresh: %w", err)
+	}
+	if !os.SameFile(runningInfo, selectedInfo) {
+		return errors.New("refusing to refresh binary ownership: the selected sshpic binary is not the running executable")
+	}
+	return nil
 }
 
 func readManifest(path string) (installManifest, error) {
 	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return readPendingManifest(path)
+	}
 	if err != nil {
 		return installManifest{}, err
 	}
+	manifest, err := parseManifest(data, path)
+	if err != nil {
+		return installManifest{}, err
+	}
+	return bindActiveManifestPending(manifest, path)
+}
+
+func bindActiveManifestPending(active installManifest, path string) (installManifest, error) {
+	owned, err := findOwnedPendingFiles(path, "owned")
+	if err != nil {
+		return installManifest{}, err
+	}
+	for _, candidate := range owned {
+		pending, parseErr := parseManifest(candidate.Data, path)
+		if parseErr == nil && pending.FileSHA256 == candidate.Hash {
+			return installManifest{}, fmt.Errorf("active sshpic manifest conflicts with a valid owned-removal pending manifest at %s", candidate.Path)
+		}
+	}
+	published, err := findOwnedPendingFiles(path, "publish")
+	if err != nil {
+		return installManifest{}, err
+	}
+	if len(published) > 1 {
+		return installManifest{}, fmt.Errorf("multiple valid publish manifests exist beside active manifest %s", path)
+	}
+	if len(published) == 1 {
+		candidate := published[0]
+		staged, parseErr := parseManifest(candidate.Data, path)
+		if parseErr != nil || staged.FileSHA256 != candidate.Hash {
+			return installManifest{}, fmt.Errorf("valid content-addressed manifest publish stage has invalid manifest contents: %s", candidate.Path)
+		}
+		if candidate.Hash != active.FileSHA256 || !sameManifestOwnershipExceptBinaryHash(active, staged) || active.BinarySHA256 != staged.BinarySHA256 {
+			return installManifest{}, fmt.Errorf("active sshpic manifest does not match its publish stage at %s; preserving both", candidate.Path)
+		}
+		finalInfo, _, finalMissing, finalErr := pinRegularFileHash(path)
+		stageInfo, _, stageMissing, stageErr := pinRegularFileHash(candidate.Path)
+		if finalErr != nil || stageErr != nil || finalMissing || stageMissing || !os.SameFile(finalInfo, stageInfo) {
+			return installManifest{}, fmt.Errorf("active sshpic manifest publish stage is not its exact hardlink: %s", candidate.Path)
+		}
+		active.ActivePublishPath = candidate.Path
+		active.ActivePublishSHA256 = candidate.Hash
+	}
+	replacements, err := findOwnedPendingFiles(path, "replace")
+	if err != nil {
+		return installManifest{}, err
+	}
+	if len(replacements) > 1 {
+		return installManifest{}, fmt.Errorf("multiple valid replacement manifests exist beside active manifest %s", path)
+	}
+	if len(replacements) == 1 {
+		candidate := replacements[0]
+		staged, parseErr := parseManifest(candidate.Data, path)
+		if parseErr != nil || staged.FileSHA256 != candidate.Hash || !sameManifestOwnershipExceptBinaryHash(active, staged) {
+			return installManifest{}, fmt.Errorf("active sshpic manifest does not match replacement stage at %s; preserving both", candidate.Path)
+		}
+		active.ActiveReplacePath = candidate.Path
+		active.ActiveReplaceSHA256 = candidate.Hash
+		active.ActiveReplaceData = candidate.Data
+		if candidate.Hash == active.FileSHA256 {
+			finalInfo, _, finalMissing, finalErr := pinRegularFileHash(path)
+			stageInfo, _, stageMissing, stageErr := pinRegularFileHash(candidate.Path)
+			if finalErr != nil || stageErr != nil || finalMissing || stageMissing || !os.SameFile(finalInfo, stageInfo) {
+				return installManifest{}, fmt.Errorf("active manifest replacement stage is not its exact hardlink: %s", candidate.Path)
+			}
+			active.ActiveReplacePublished = true
+		}
+	}
+
+	rollbacks, err := findOwnedPendingFiles(path, "rollback")
+	if err != nil {
+		return installManifest{}, err
+	}
+	for _, candidate := range rollbacks {
+		previous, parseErr := parseManifest(candidate.Data, path)
+		if parseErr != nil || previous.FileSHA256 != candidate.Hash {
+			continue
+		}
+		if active.ActiveRollbackSHA256 != "" {
+			return installManifest{}, fmt.Errorf("multiple valid rollback manifests exist beside active manifest %s", path)
+		}
+		if !sameManifestOwnershipExceptBinaryHash(active, previous) {
+			return installManifest{}, fmt.Errorf("active sshpic manifest does not match rollback ownership at %s; preserving both", candidate.Path)
+		}
+		active.ActiveRollbackPath = candidate.Path
+		active.ActiveRollbackSHA256 = candidate.Hash
+	}
+	if active.ActivePublishSHA256 != "" && (active.ActiveReplaceSHA256 != "" || active.ActiveRollbackSHA256 != "") {
+		return installManifest{}, fmt.Errorf("active manifest has ambiguous publish and replacement authority: %s", path)
+	}
+	return active, nil
+}
+
+func sameManifestOwnershipExceptBinaryHash(active, previous installManifest) bool {
+	return active.Version == previous.Version && active.Owner == previous.Owner &&
+		samePath(active.BinaryPath, previous.BinaryPath) &&
+		samePath(active.WezTermPath, previous.WezTermPath) &&
+		samePath(active.ConfigPath, previous.ConfigPath) &&
+		samePath(active.ModulePath, previous.ModulePath) &&
+		sameOptionalPath(active.BackupPath, previous.BackupPath) &&
+		active.ConfigIdentifier == previous.ConfigIdentifier &&
+		active.ConfigCreated == previous.ConfigCreated &&
+		active.OriginalConfigSHA256 == previous.OriginalConfigSHA256 &&
+		active.InstalledConfigSHA256 == previous.InstalledConfigSHA256 &&
+		active.ModuleSHA256 == previous.ModuleSHA256
+}
+
+func cleanupActiveManifestRollback(path string, manifest installManifest) error {
+	if manifest.ActiveRollbackSHA256 == "" {
+		return nil
+	}
+	expectedPath, err := ownedQuarantinePath(path, "rollback", manifest.ActiveRollbackSHA256)
+	if err != nil {
+		return err
+	}
+	if !samePath(expectedPath, manifest.ActiveRollbackPath) {
+		return errors.New("active manifest rollback path is not its content-addressed sibling")
+	}
+	if err := replaceIfHash(path, manifest.ActiveRollbackSHA256, manifest.FileData, 0o600); err != nil {
+		return err
+	}
+	return nil
+}
+
+func cleanupActiveManifestPublish(path string, manifest installManifest) error {
+	if manifest.ActivePublishSHA256 == "" {
+		return nil
+	}
+	expectedPath, err := ownedQuarantinePath(path, "publish", manifest.ActivePublishSHA256)
+	if err != nil {
+		return err
+	}
+	if !samePath(expectedPath, manifest.ActivePublishPath) {
+		return errors.New("active manifest publish path is not its content-addressed sibling")
+	}
+	cleaned, err := cleanupCompletedOwnedPublish(path, manifest.ActivePublishSHA256)
+	if err != nil {
+		return err
+	}
+	if !cleaned {
+		return errors.New("active manifest publish stage disappeared before cleanup")
+	}
+	return nil
+}
+
+func cleanupActiveManifestReplace(path string, manifest installManifest) error {
+	if manifest.ActiveReplaceSHA256 == "" {
+		return nil
+	}
+	expectedPath, err := ownedQuarantinePath(path, "replace", manifest.ActiveReplaceSHA256)
+	if err != nil {
+		return err
+	}
+	if !samePath(expectedPath, manifest.ActiveReplacePath) {
+		return errors.New("active manifest replacement path is not its content-addressed sibling")
+	}
+	if manifest.ActiveReplacePublished {
+		cleaned, err := cleanupCompletedOwnedContent(path, "replace", manifest.ActiveReplaceSHA256)
+		if err != nil {
+			return err
+		}
+		if !cleaned {
+			return errors.New("active manifest replacement stage disappeared before cleanup")
+		}
+		return nil
+	}
+	return removePreparedOwnedContentStage(path, "replace", manifest.ActiveReplaceSHA256)
+}
+
+func parseManifest(data []byte, path string) (installManifest, error) {
 	var manifest installManifest
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
@@ -483,7 +955,35 @@ func readManifest(path string) (installManifest, error) {
 		return installManifest{}, fmt.Errorf("invalid sshpic WezTerm manifest invariants: %w", err)
 	}
 	manifest.FileSHA256 = sha256Hex(data)
+	manifest.FileData = append([]byte(nil), data...)
 	return manifest, nil
+}
+
+func readPendingManifest(path string) (installManifest, error) {
+	var found *installManifest
+	for _, label := range []string{"owned", "rollback", "publish"} {
+		pending, err := findOwnedPendingFiles(path, label)
+		if err != nil {
+			return installManifest{}, err
+		}
+		for _, candidate := range pending {
+			manifest, parseErr := parseManifest(candidate.Data, path)
+			if parseErr != nil || manifest.FileSHA256 != candidate.Hash {
+				continue
+			}
+			if found != nil {
+				return installManifest{}, fmt.Errorf("multiple valid pending sshpic manifests exist for %s", path)
+			}
+			manifest.PendingPath = candidate.Path
+			manifest.PendingLabel = label
+			copy := manifest
+			found = &copy
+		}
+	}
+	if found == nil {
+		return installManifest{}, os.ErrNotExist
+	}
+	return *found, nil
 }
 
 func validateManifest(manifest installManifest, manifestPath string) error {
@@ -515,6 +1015,12 @@ func validateManifest(manifest installManifest, manifestPath string) error {
 	if !validSHA256(manifest.InstalledConfigSHA256) || !validSHA256(manifest.ModuleSHA256) {
 		return errors.New("installed config and module hashes must be SHA-256")
 	}
+	// v1 manifests created before binary ownership hashes were introduced do
+	// not contain this field. Keep them readable so restore and uninstall can
+	// migrate safely, but require every present value to be a full SHA-256.
+	if manifest.BinarySHA256 != "" && !validSHA256(manifest.BinarySHA256) {
+		return errors.New("binary hash must be SHA-256")
+	}
 	if manifest.ConfigCreated {
 		if manifest.BackupPath != "" || manifest.OriginalConfigSHA256 != "" {
 			return errors.New("created config must not name a backup or original hash")
@@ -538,29 +1044,117 @@ func validSHA256(value string) bool {
 	return err == nil && len(decoded) == sha256.Size
 }
 
+type exclusiveWriteOps struct {
+	open   func(string, os.FileMode) (*os.File, error)
+	write  func(*os.File, []byte) (int, error)
+	sync   func(*os.File) error
+	close  func(*os.File) error
+	link   func(string, string) error
+	remove func(string) error
+}
+
+func defaultExclusiveWriteOps() exclusiveWriteOps {
+	return exclusiveWriteOps{
+		open: func(path string, mode os.FileMode) (*os.File, error) {
+			return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		},
+		write:  func(file *os.File, data []byte) (int, error) { return file.Write(data) },
+		sync:   func(file *os.File) error { return file.Sync() },
+		close:  func(file *os.File) error { return file.Close() },
+		link:   os.Link,
+		remove: os.Remove,
+	}
+}
+
 func writeExclusive(path string, data []byte, mode os.FileMode) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	return writeExclusiveWithOps(path, data, mode, defaultExclusiveWriteOps())
+}
+
+func writeExclusiveWithOps(path string, data []byte, mode os.FileMode, ops exclusiveWriteOps) error {
+	if ops.open == nil || ops.write == nil || ops.sync == nil || ops.close == nil || ops.link == nil || ops.remove == nil {
+		return errors.New("incomplete exclusive-write operations")
+	}
+	if err := reconcileOwnedPartialFiles([]string{path}, true); err != nil {
+		return err
+	}
+	wantHash := sha256Hex(data)
+	pending, pendingExists, err := exactOwnedPublishPending(path, wantHash)
 	if err != nil {
 		return err
 	}
-	name := file.Name()
-	ok := false
+	if pendingExists {
+		if cleaned, cleanupErr := cleanupCompletedOwnedPublish(path, wantHash); cleanupErr == nil && cleaned {
+			return nil
+		} else if cleanupErr != nil {
+			if _, statErr := os.Lstat(path); statErr == nil {
+				return cleanupErr
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				return statErr
+			}
+		}
+	} else if _, err := os.Lstat(path); err == nil {
+		return os.ErrExist
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	stageCreated := false
+	if !pendingExists {
+		pending, err = prepareOwnedContentStageWithOps(path, "publish", data, mode, ops)
+		if err != nil {
+			return err
+		}
+		stageCreated = true
+	}
+	success := false
 	defer func() {
-		_ = file.Close()
-		if !ok {
-			_ = os.Remove(name)
+		// Normal failures clean only a complete deterministic stage created by
+		// this call. A hard process exit skips this defer; retry/uninstall owns
+		// both the strict partial grammar and the verified content stage.
+		if stageCreated && !success {
+			if _, hash, missing, err := pinRegularFileHash(pending.Path); err == nil && !missing && hash == wantHash {
+				_ = ops.remove(pending.Path)
+			}
 		}
 	}()
-	if _, err := file.Write(data); err != nil {
+	_, stageHash, stageMissing, err := pinRegularFileHash(pending.Path)
+	if err != nil || stageMissing || stageHash != wantHash {
+		if err == nil {
+			err = errors.New("owned publish stage is incomplete or changed")
+		}
 		return err
 	}
-	if err := file.Sync(); err != nil {
+
+	// The final authoritative path appears only after the same-directory temp
+	// is complete and fsynced. A hard link is an atomic, exclusive no-replace
+	// publication on both Windows and Unix; a concurrently-created destination
+	// is never overwritten.
+	if err := ops.link(pending.Path, path); err != nil {
 		return err
 	}
-	if err := file.Close(); err != nil {
+	finalInfo, publishedHash, missing, err := pinRegularFileHash(path)
+	if err != nil {
+		return fmt.Errorf("verify exclusively published file: %w", err)
+	}
+	if missing || publishedHash != sha256Hex(data) {
+		return fmt.Errorf("exclusively published file is missing or changed: %s", path)
+	}
+	pendingInfo, pendingHash, pendingMissing, err := pinRegularFileHash(pending.Path)
+	if err != nil || pendingMissing || pendingHash != wantHash || !os.SameFile(finalInfo, pendingInfo) {
+		if err == nil {
+			err = errors.New("owned publish stage is not the published file's exact hardlink")
+		}
 		return err
 	}
-	ok = true
+	if err := ops.remove(pending.Path); err != nil {
+		return fmt.Errorf("remove completed owned publish stage: %w", err)
+	}
+	if _, err := os.Lstat(pending.Path); !errors.Is(err, os.ErrNotExist) {
+		if err == nil {
+			return fmt.Errorf("owned publish stage remains after cleanup: %s", pending.Path)
+		}
+		return err
+	}
+	success = true
 	return nil
 }
 
@@ -572,10 +1166,28 @@ type atomicReplaceResult struct {
 type atomicReplaceOps struct {
 	rename func(string, string) error
 	remove func(string) error
+	link   func(string, string) error
+	lstat  func(string) (os.FileInfo, error)
 }
 
 func defaultAtomicReplaceOps() atomicReplaceOps {
-	return atomicReplaceOps{rename: os.Rename, remove: os.Remove}
+	return atomicReplaceOps{rename: os.Rename, remove: os.Remove, link: os.Link, lstat: os.Lstat}
+}
+
+func normalizeAtomicReplaceOps(ops atomicReplaceOps) atomicReplaceOps {
+	if ops.rename == nil {
+		ops.rename = os.Rename
+	}
+	if ops.remove == nil {
+		ops.remove = os.Remove
+	}
+	if ops.link == nil {
+		ops.link = os.Link
+	}
+	if ops.lstat == nil {
+		ops.lstat = os.Lstat
+	}
+	return ops
 }
 
 func writeAtomicReplace(path string, data []byte, mode os.FileMode) error {
@@ -585,88 +1197,41 @@ func writeAtomicReplace(path string, data []byte, mode os.FileMode) error {
 
 func writeAtomicReplaceWithOps(path string, data []byte, mode os.FileMode, ops atomicReplaceOps) (atomicReplaceResult, error) {
 	var result atomicReplaceResult
+	ops = normalizeAtomicReplaceOps(ops)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return result, err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".sshpic-replace-*.tmp")
+	stage, err := prepareOwnedContentStage(path, "replace", data, mode)
 	if err != nil {
 		return result, err
 	}
-	tempPath := temp.Name()
-	defer os.Remove(tempPath)
-	if err := temp.Chmod(mode); err != nil {
-		_ = temp.Close()
-		return result, err
-	}
-	if _, err := temp.Write(data); err != nil {
-		_ = temp.Close()
-		return result, err
-	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return result, err
-	}
-	if err := temp.Close(); err != nil {
-		return result, err
-	}
-	if err := ops.rename(tempPath, path); err == nil {
-		result.Published = true
-		return result, nil
-	}
-
-	// Windows does not replace an existing destination with os.Rename. Move
-	// the exact target aside, publish the complete temp file, then remove the
-	// displaced copy. Any publish failure restores the original path.
-	displaced, err := uniqueSibling(path + ".sshpic-rollback")
-	if err != nil {
-		return result, err
-	}
-	if err := ops.rename(path, displaced); err != nil {
-		return result, err
-	}
-	result.RecoveryPath = displaced
-	if err := ops.rename(tempPath, path); err != nil {
-		if restoreErr := ops.rename(displaced, path); restoreErr != nil {
-			return result, fmt.Errorf("publish config: %v; restore original config from %s: %w", err, displaced, restoreErr)
-		}
-		result.RecoveryPath = ""
-		return result, err
+	// A same-directory hard link publishes the fully synced file only when the
+	// destination is still empty. Unlike Rename on Unix, it never overwrites a
+	// path that appeared after ownership validation.
+	if err := ops.link(stage.Path, path); err != nil {
+		return result, fmt.Errorf("publish replacement exclusively: %w", err)
 	}
 	result.Published = true
-	if err := ops.remove(displaced); err != nil {
-		return result, fmt.Errorf("new config published but rollback copy was preserved at %s because it could not be removed: %w", displaced, err)
+	finalInfo, publishedHash, missing, err := pinRegularFileHash(path)
+	if err != nil || missing || publishedHash != sha256Hex(data) {
+		if err == nil {
+			err = errors.New("published replacement identity or content is not the prepared file")
+		}
+		return result, err
 	}
-	result.RecoveryPath = ""
+	stageInfo, stageHash, stageMissing, err := pinRegularFileHash(stage.Path)
+	if err != nil || stageMissing || stageHash != stage.Hash || !os.SameFile(finalInfo, stageInfo) {
+		if err == nil {
+			err = errors.New("replacement stage is not the published file's exact hardlink")
+		}
+		return result, err
+	}
+	if cleaned, err := cleanupCompletedOwnedContent(path, "replace", stage.Hash); err != nil {
+		return result, err
+	} else if !cleaned {
+		return result, errors.New("replacement stage disappeared before cleanup")
+	}
 	return result, nil
-}
-
-func uniqueSibling(base string) (string, error) {
-	for i := 0; i < 1000; i++ {
-		candidate := base
-		if i > 0 {
-			candidate = fmt.Sprintf("%s-%d", base, i)
-		}
-		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
-			return candidate, nil
-		} else if err != nil {
-			return "", err
-		}
-	}
-	return "", errors.New("could not allocate rollback path")
-}
-
-func removeIfHash(path, want string) error {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if sha256Hex(data) != want {
-		return fmt.Errorf("refusing to remove changed file: %s", path)
-	}
-	return os.Remove(path)
 }
 
 func replaceIfHash(path, currentHash string, replacement []byte, mode os.FileMode) error {
@@ -676,14 +1241,109 @@ func replaceIfHash(path, currentHash string, replacement []byte, mode os.FileMod
 
 func replaceIfHashWithOps(path, currentHash string, replacement []byte, mode os.FileMode, ops atomicReplaceOps) (atomicReplaceResult, error) {
 	var result atomicReplaceResult
-	data, err := os.ReadFile(path)
+	ops = normalizeAtomicReplaceOps(ops)
+	replacementHash := sha256Hex(replacement)
+	recoveryPath, err := ownedQuarantinePath(path, "rollback", currentHash)
 	if err != nil {
 		return result, err
 	}
-	if sha256Hex(data) != currentHash {
+	expectedInfo, hash, missing, err := pinRegularFileHash(path)
+	if err != nil {
+		return result, err
+	}
+	if missing {
+		// Resume a process that stopped immediately after quarantining the
+		// original. Only the content-addressed sibling for currentHash is valid.
+		recoveryInfo, recoveryHash, recoveryMissing, recoveryErr := pinRegularFileHash(recoveryPath)
+		if recoveryErr != nil {
+			return result, recoveryErr
+		}
+		if recoveryMissing || recoveryHash != currentHash {
+			return result, fmt.Errorf("cannot replace missing owned file without its exact rollback copy: %s", path)
+		}
+		expectedInfo = recoveryInfo
+		result.RecoveryPath = recoveryPath
+		return publishAndCleanupReplacement(path, currentHash, replacement, mode, expectedInfo, recoveryPath, result, ops)
+	}
+	if hash == replacementHash {
+		// Publication is idempotent. If the rollback copy remains, finish only
+		// its exact hash-verified cleanup; otherwise the prior operation already
+		// reached the same final state.
+		_, recoveryHash, recoveryMissing, recoveryErr := pinRegularFileHash(recoveryPath)
+		if recoveryErr != nil {
+			return result, recoveryErr
+		}
+		result.Published = true
+		if _, stageExists, stageErr := exactOwnedContentPending(path, "replace", replacementHash); stageErr != nil {
+			return result, stageErr
+		} else if stageExists {
+			if cleaned, cleanupErr := cleanupCompletedOwnedContent(path, "replace", replacementHash); cleanupErr != nil {
+				return result, cleanupErr
+			} else if !cleaned {
+				return result, errors.New("replacement stage disappeared before cleanup")
+			}
+		}
+		if recoveryMissing {
+			return result, nil
+		}
+		if recoveryHash != currentHash {
+			return result, fmt.Errorf("published replacement has an invalid rollback copy: %s", recoveryPath)
+		}
+		result.RecoveryPath = recoveryPath
+		if err := ops.remove(recoveryPath); err != nil {
+			return result, fmt.Errorf("new config published but rollback copy was preserved at %s because it could not be removed: %w", recoveryPath, err)
+		}
+		result.RecoveryPath = ""
+		return result, nil
+	}
+	if hash != currentHash {
 		return result, fmt.Errorf("refusing to replace changed file: %s", path)
 	}
-	return writeAtomicReplaceWithOps(path, replacement, mode, ops)
+	if _, err := ops.lstat(recoveryPath); err == nil {
+		return result, fmt.Errorf("rollback copy is already occupied while the original still exists: %s", recoveryPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return result, err
+	}
+	if err := ops.rename(path, recoveryPath); err != nil {
+		return result, fmt.Errorf("quarantine owned file before replacement: %w", err)
+	}
+	result.RecoveryPath = recoveryPath
+	ownedOps := ownedFileOps{lstat: ops.lstat, rename: ops.rename, remove: ops.remove}
+	if err := verifyOwnedQuarantine(recoveryPath, expectedInfo, currentHash); err != nil {
+		if restoreErr := restoreOwnedQuarantine(recoveryPath, path, ownedOps); restoreErr != nil {
+			return result, fmt.Errorf("%v; rollback failed and recovery file remains at %s: %w", err, recoveryPath, restoreErr)
+		}
+		result.RecoveryPath = ""
+		return result, fmt.Errorf("%w; replacement was restored and nothing was published", err)
+	}
+	return publishAndCleanupReplacement(path, currentHash, replacement, mode, expectedInfo, recoveryPath, result, ops)
+}
+
+func publishAndCleanupReplacement(path, currentHash string, replacement []byte, mode os.FileMode, expectedInfo os.FileInfo, recoveryPath string, result atomicReplaceResult, ops atomicReplaceOps) (atomicReplaceResult, error) {
+	ownedOps := ownedFileOps{lstat: ops.lstat, rename: ops.rename, remove: ops.remove}
+	publishResult, err := writeAtomicReplaceWithOps(path, replacement, mode, ops)
+	result.Published = publishResult.Published
+	if err != nil {
+		if restoreErr := restoreOwnedQuarantine(recoveryPath, path, ownedOps); restoreErr != nil {
+			return result, fmt.Errorf("publish replacement: %v; restore original file from %s: %w", err, recoveryPath, restoreErr)
+		}
+		result.RecoveryPath = ""
+		return result, err
+	}
+	if err := verifyOwnedQuarantine(recoveryPath, expectedInfo, currentHash); err != nil {
+		return result, fmt.Errorf("published replacement but rollback copy changed; preserved at %s: %w", recoveryPath, err)
+	}
+	if err := ops.remove(recoveryPath); err != nil {
+		return result, fmt.Errorf("new config published but rollback copy was preserved at %s because it could not be removed: %w", recoveryPath, err)
+	}
+	if _, err := ops.lstat(recoveryPath); !errors.Is(err, os.ErrNotExist) {
+		if err == nil {
+			return result, fmt.Errorf("rollback copy still exists after removal: %s", recoveryPath)
+		}
+		return result, err
+	}
+	result.RecoveryPath = ""
+	return result, nil
 }
 
 func rollbackInstallFiles(
@@ -780,6 +1440,19 @@ func regularFile(path string) bool {
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func sha256File(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func samePath(left, right string) bool {

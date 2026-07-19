@@ -90,10 +90,18 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		`*[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]*|*[Ww][Ss][Ll]*`,
 		`Windows direct-paste installation must run from Git Bash, not WSL`,
 		`--detect-os`,
+		`internal-invalidate-source-purge-receipt windows-wezterm`,
+		`--install-receipt-protocol 2`,
+		`Windows source installation requires a cloned sshpic checkout`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("install.sh missing OS-detection contract %q", want)
 		}
+	}
+	invalidateIndex := strings.Index(text, "internal-invalidate-source-purge-receipt windows-wezterm")
+	publishIndex := strings.Index(text, `"$go_cmd" install ./cmd/sshpic`)
+	if invalidateIndex < 0 || publishIndex < 0 || invalidateIndex >= publishIndex {
+		t.Fatal("Windows receipt authority must be invalidated from current source before go install publishes the binary")
 	}
 	if runtime.GOOS != "windows" {
 		cmd := exec.Command("sh", installPath, "--detect-os")

@@ -153,8 +153,25 @@ install_pngpaste_if_possible
 install_python_if_possible
 
 if [ -f ./cmd/sshpic/main.go ] && [ -f ./go.mod ]; then
+  if is_windows_shell; then
+    # Publish an in-progress generation with a helper compiled from this exact
+    # checkout before go install can publish a new binary. The installed binary
+    # must present the same token before it can mutate the WezTerm integration.
+    install_generation="$("$go_cmd" run ./cmd/sshpic \
+      internal-invalidate-source-purge-receipt windows-wezterm \
+      --install-receipt-protocol 2)"
+    if [ -z "$install_generation" ]; then
+      echo "Windows install generation helper returned an empty token" >&2
+      exit 1
+    fi
+  fi
   "$go_cmd" install ./cmd/sshpic
 else
+  if is_windows_shell; then
+    echo "Windows source installation requires a cloned sshpic checkout so pending purge authority can be invalidated before binary publication." >&2
+    echo "Run: git clone https://github.com/leekyungmoon/sshpic.git && cd sshpic && ./install.sh" >&2
+    exit 1
+  fi
   "$go_cmd" install "$repo/cmd/sshpic@latest"
 fi
 
@@ -188,7 +205,7 @@ case "$host_os" in
     if command -v cygpath >/dev/null 2>&1; then
       wezterm_native="$(cygpath -w "$wezterm_cmd")"
     fi
-    SSHPIC_WEZTERM_EXE="$wezterm_native" "$bin" install wezterm
+    SSHPIC_WEZTERM_EXE="$wezterm_native" "$bin" install wezterm --install-generation "$install_generation"
     echo "installed sshpic: $bin"
     echo "Open WezTerm, connect with native ssh.exe, copy an image, and press Ctrl+V."
     echo "Windows Terminal and WSL direct-paste integration remain TBD." >&2

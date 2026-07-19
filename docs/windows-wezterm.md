@@ -108,9 +108,9 @@ sshpic restore wezterm
 
 Preserve the output of `doctor wezterm` and `restore wezterm` before manually changing a failed installation. The backup may contain personal WezTerm settings; do not attach it to a public issue without reviewing it.
 
-## Uninstall while keeping the project checkout
+## Strong uninstall and optional checkout purge
 
-The clone used as a ChatGPT or Codex project is not the installed runtime. `install.sh` places `sshpic.exe` in Go's `GOBIN` or `GOPATH/bin`, while the repository remains ordinary source code. Keep that checkout in place and run this from **Git Bash**:
+The clone used as a ChatGPT or Codex project is separate from the installed runtime. `install.sh` places `sshpic.exe` in Go's `GOBIN` or `GOPATH/bin`, while the repository remains ordinary source code. Run this from **Git Bash**:
 
 ```bash
 ./uninstall.sh --dry-run
@@ -120,16 +120,29 @@ The clone used as a ChatGPT or Codex project is not the installed runtime. `inst
 The uninstaller performs these operations in order:
 
 1. builds a separate temporary helper from this checkout, so the installed Windows executable never self-deletes;
-2. reads the validated install manifest and treats its `binary_path` as the only normal deletion authority;
-3. runs the existing manifest- and SHA-validated restore path and stops with the binary preserved if restore fails;
-4. removes only that exact regular file after restore succeeds, rechecking file identity first; and
-5. verifies both binary removal and source-checkout identity.
+2. builds and prints a read-only, exact deletion plan before asking for confirmation;
+3. reads the validated install manifest and treats its `binary_path` plus recorded SHA-256 as the executable deletion authority;
+4. records a narrow uninstall transaction and restores the manifest-owned WezTerm integration;
+5. removes and verifies sshpic's local config, cache/log directory, local materialized images, and direct temp files with known sshpic crash prefixes, without following symlinks or junctions;
+6. only after local cleanup succeeds, removes the exact regular executable after rechecking identity and content; and
+7. verifies that the source checkout still has the same identity.
 
-It does not remove the checkout, Go, WezTerm, winget packages, user config/cache, SSH configuration, or remote images. It contains no recursive deletion. A second run is a safe no-op. `--yes` skips confirmation. The current `GOBIN` is intentionally ignored for deletion; a custom install remains bound to the path saved at install time.
+The default therefore removes sshpic's local installed/runtime state but keeps the checkout. A second run is a safe no-op. `--yes` skips only the prompt, not validation or preflight. The current `GOBIN` is intentionally ignored for deletion; a custom install remains bound to the path saved at install time. `--config <path>` selects one exact custom sshpic config file, and `--wezterm-config <path>` selects the WezTerm config whose adjacent ownership manifest should be restored.
 
-If Go is no longer available, `--binary <path>` supplies a helper fallback and must match both the manifest path and the binary embedded in the owned WezTerm module. This fallback requires a binary installed from a version that already contains the uninstall helper command; an older binary fails without changing installed state, so reinstall Go and rerun. If restore completes but Windows file locking prevents final executable removal, close the named process and remove only the exact path printed by the error. A later normal run will not guess a deletion target after the manifest is gone.
+For the default checkout-preserving uninstall, if Go is no longer available, `--binary <path>` supplies a helper fallback and must match both the manifest path and the binary embedded in the owned WezTerm module. `--purge-source` requires Go instead, because a fresh isolated helper must remain rebuildable after any interrupted final deletion. The script also requires the current strong-uninstall protocol; an older helper fails during read-only preflight without changing installed state, so reinstall Go and rerun. A legacy manifest with no executable SHA-256 cannot prove ownership of a still-present file at its old path; rerun `./install.sh` once to record that hash before uninstalling. If Windows file locking prevents executable removal, close the named process and rerun. The transaction journal retains the previously validated path and SHA-256 so the retry does not guess after integration restore.
 
-If `WEZTERM_CONFIG_FILE` was set during installation, provide the same environment value during uninstall so the owned manifest can be found. With no manifest, normal uninstall selects and deletes no binary; the output names the config path that was checked. To delete the source repository itself, first move the ChatGPT/Codex project to another workspace and then delete the clone manually; repository deletion is intentionally outside sshpic uninstall.
+If `WEZTERM_CONFIG_FILE` was set during installation, provide the same environment value during uninstall (or pass `--wezterm-config`) so the owned manifest can be found. With no manifest or retry journal, normal uninstall selects and deletes no binary; the output names the config path that was checked.
+
+For deletion-equivalent local cleanup including the clone itself, first move any ChatGPT/Codex project rooted there to another workspace, then run:
+
+```bash
+cd ..
+./sshpic/uninstall.sh --purge-source
+```
+
+Source purge must be launched with the shell working directory outside the checkout because Windows locks process working directories. It is the final operation and requires Go plus the selected WezTerm ownership manifest, a resumable uninstall journal, or an immutable completion receipt from an interrupted same-snapshot attempt. It refuses to run unless the checkout is the exact sshpic repository, contains no tracked changes, untracked files, ignored files, stashes/custom refs, linked worktrees, or reflog-only/unreachable commits, and every local branch, tag, and remote-tracking ref exists at the same OID on the non-interactively verified live remote. The current HEAD must exactly match its live upstream head. The receipt binds the exact settled install generation and a deterministic sibling quarantine path. A separately synced ownership marker is created before rename and retained until no-follow tree removal completes, so an isolated helper can resume even after a crash partially deletes Git markers. If the original root is unavailable after failure, the owned helper/driver/nonce runtime and a copy-paste retry command are preserved; later successful uninstall removes abandoned owned runtimes. A new Windows install first publishes a unique in-progress generation. It invalidates a stale receipt only when the bound quarantine and marker are both absent; if recovery state exists, install preserves it and refuses until source recovery completes. Running source purge invalidates any project still rooted in the checkout.
+
+Neither mode removes Go, WezTerm, winget package records, SSH configuration/keys, the current clipboard value, or remote images. Go and WezTerm are shared dependencies and this release has no ownership receipt that proves they are unused elsewhere. Remote cleanup is host-specific network deletion, and sshpic has no complete ledger of every host/path used; review and remove those files separately rather than allowing uninstall to guess.
 
 ## Release evidence
 

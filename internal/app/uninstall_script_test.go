@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/leekyungmoon/sshpic/internal/terminal/wezterm"
+	localuninstall "github.com/leekyungmoon/sshpic/internal/uninstall"
 )
 
 const uninstallHelperEnv = "SSHPIC_TEST_UNINSTALL_HELPER"
@@ -37,6 +39,9 @@ func runUninstallTestHelper() {
 		fmt.Fprintln(os.Stdout, platform)
 		os.Exit(0)
 	case "go":
+		if os.Getenv("SSHPIC_TEST_GO_UNAVAILABLE") == "1" {
+			os.Exit(1)
+		}
 		if len(os.Args) == 2 && os.Args[1] == "version" {
 			fmt.Fprintln(os.Stdout, "go version go1.22.12 windows/amd64")
 			os.Exit(0)
@@ -50,13 +55,112 @@ func runUninstallTestHelper() {
 		}
 		os.Exit(0)
 	case "sshpic-uninstall-helper":
+		if os.Getenv("SSHPIC_TEST_USE_REAL_UNINSTALL_RUN") == "1" {
+			os.Exit(Run(os.Args[1:], BuildInfo{}, os.Stdout, os.Stderr))
+		}
 		if logPath := os.Getenv("SSHPIC_TEST_UNINSTALL_LOG"); logPath != "" {
 			_ = os.WriteFile(logPath, []byte(strings.Join(os.Args[1:], "\n")+"\n"), 0o600)
+		}
+		if os.Getenv("SSHPIC_TEST_LEGACY_UNINSTALL_HELPER") == "1" && containsArg(os.Args[1:], "--uninstall-protocol") {
+			fmt.Fprintln(os.Stderr, "unknown flag --uninstall-protocol")
+			os.Exit(2)
 		}
 		code, _ := strconv.Atoi(os.Getenv("SSHPIC_TEST_UNINSTALL_EXIT"))
 		if code == 0 && !containsArg(os.Args[1:], "--dry-run") {
 			if path := os.Getenv("SSHPIC_TEST_DELETE_PATH"); path != "" {
 				_ = os.Remove(path)
+			}
+			if containsArg(os.Args[1:], "--purge-source") {
+				receiptPath := argValue(os.Args[1:], "--source-purge-receipt")
+				sourceRoot := argValue(os.Args[1:], "--source-root")
+				helperPath, _ := os.Executable()
+				resolved, err := resolveSourcePurgeReceiptPath(receiptPath, sourceRoot, helperPath)
+				var receipt sourcePurgeReceipt
+				receiptPreexisting := false
+				if err == nil {
+					if existing, readErr := readSourcePurgeReceipt(resolved); readErr == nil {
+						receiptPreexisting = true
+						receipt = existing
+						if _, sourceErr := os.Lstat(sourceRoot); sourceErr == nil {
+							err = errors.New("source purge retry found a checkout at the original path; preserving it because a replacement cannot be distinguished after interruption")
+						} else if !errors.Is(sourceErr, os.ErrNotExist) {
+							err = sourceErr
+						} else {
+							_, err = readAndAuthorizeSourcePurgeRecovery(resolved, sourceRoot)
+						}
+					} else if errors.Is(readErr, os.ErrNotExist) {
+						receipt, err = captureSourcePurgeReceipt(context.Background(), sourceRoot)
+						if err == nil {
+							err = ensureSourcePurgeReceipt(resolved, receipt)
+						}
+					} else {
+						err = readErr
+					}
+				}
+				if err == nil {
+					homeDir, homeErr := os.UserHomeDir()
+					if homeErr != nil {
+						err = homeErr
+					} else {
+						markerData, markerErr := sourcePurgeOwnershipMarkerData(receipt, resolved)
+						if markerErr != nil {
+							err = markerErr
+						} else {
+							if os.Getenv("SSHPIC_TEST_SOURCE_LEAVE_PENDING") == "1" {
+								if writeErr := os.WriteFile(receipt.QuarantineMarker, markerData, 0o600); writeErr != nil {
+									err = writeErr
+								} else if renameErr := os.Rename(sourceRoot, receipt.QuarantinePath); renameErr != nil {
+									err = renameErr
+								} else {
+									err = fmt.Errorf("injected crash after source quarantine rename")
+								}
+							} else {
+								_, err = localuninstall.FinalizeSource(localuninstall.SourceFinalizeOptions{
+									SourceRoot:               sourceRoot,
+									HelperPath:               helperPath,
+									ReceiptPath:              resolved,
+									QuarantinePath:           receipt.QuarantinePath,
+									MarkerPath:               receipt.QuarantineMarker,
+									MarkerData:               markerData,
+									HomeDir:                  homeDir,
+									AllowPreexistingRecovery: receiptPreexisting,
+									BeforeQuarantine: func() error {
+										_, authorizeErr := readAndAuthorizeSourcePurgeReceipt(context.Background(), resolved, sourceRoot)
+										return authorizeErr
+									},
+									ValidateQuarantined: func(quarantinedRoot string) error {
+										if os.Getenv("SSHPIC_TEST_SOURCE_FINALIZE_FAIL") == "1" {
+											return fmt.Errorf("injected final source validation failure")
+										}
+										_, authorizeErr := readAndAuthorizeSourcePurgeReceiptAtRoot(context.Background(), resolved, sourceRoot, quarantinedRoot)
+										return authorizeErr
+									},
+									AuthorizeRecovery: func() error {
+										_, authorizeErr := readAndAuthorizeSourcePurgeRecovery(resolved, sourceRoot)
+										return authorizeErr
+									},
+									BeforeCompletion: func() error {
+										if os.Getenv("SSHPIC_TEST_SOURCE_COMPLETION_FAIL") == "1" {
+											return fmt.Errorf("injected source completion failure")
+										}
+										_, authorizeErr := readAndAuthorizeSourcePurgeRecovery(resolved, sourceRoot)
+										return authorizeErr
+									},
+									CompleteAuthority: func(cleanup func() error) error {
+										return completeSourcePurgeControlState(receipt.InstallGeneration, cleanup)
+									},
+								})
+								if err == nil {
+									err = removeInstallGenerationLockAndDirectory()
+								}
+							}
+						}
+					}
+				}
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
 			}
 		}
 		os.Exit(code)
@@ -72,6 +176,15 @@ func containsArg(args []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func argValue(args []string, flag string) string {
+	for index, arg := range args {
+		if arg == flag && index+1 < len(args) {
+			return args[index+1]
+		}
+	}
+	return ""
 }
 
 func copyExecutable(destination string) error {
@@ -174,6 +287,22 @@ func TestWindowsUninstallScriptDryRunDoesNotDelete(t *testing.T) {
 	}
 }
 
+func TestWindowsUninstallScriptRejectsLegacyHelperBeforeChangingState(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	binPath := filepath.Join(t.TempDir(), "sshpic.exe")
+	copyCurrentTestBinary(t, binPath)
+	result := runWindowsUninstallScript(t, repoRoot, []string{"--yes", "--binary", binPath}, map[string]string{
+		"SSHPIC_TEST_LEGACY_UNINSTALL_HELPER": "1",
+		"SSHPIC_TEST_DELETE_PATH":             binPath,
+	})
+	if result.err == nil || !strings.Contains(result.output, "unknown flag --uninstall-protocol") || !strings.Contains(result.output, "during preflight") {
+		t.Fatalf("legacy helper result: %v\n%s", result.err, result.output)
+	}
+	if _, err := os.Stat(binPath); err != nil {
+		t.Fatalf("legacy helper changed installed binary: %v", err)
+	}
+}
+
 func TestWindowsUninstallScriptAbsoluteInvocationBuildsFromCheckout(t *testing.T) {
 	repoRoot, err := filepath.Abs(filepath.Clean(filepath.Join("..", "..")))
 	if err != nil {
@@ -207,7 +336,7 @@ func TestWindowsUninstallScriptRejectsNonWindowsBeforeBuildingHelper(t *testing.
 	}
 }
 
-func TestWindowsUninstallScriptHasConservativeDeletionContract(t *testing.T) {
+func TestWindowsUninstallScriptHasOwnedDeletionContract(t *testing.T) {
 	path := filepath.Clean(filepath.Join("..", "..", "uninstall.sh"))
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -216,9 +345,10 @@ func TestWindowsUninstallScriptHasConservativeDeletionContract(t *testing.T) {
 	text := string(data)
 	for _, want := range []string{
 		`go_cmd" build -o`,
-		`uninstall wezterm --source-root`,
-		`keep the source checkout`,
-		`Go, WezTerm, sshpic user config/cache, SSH configuration, and remote images will not be removed`,
+		`uninstall wezterm --uninstall-protocol 2 --source-root`,
+		`remove only artifacts validated as sshpic-owned by the helper`,
+		`Go, WezTerm, SSH configuration, remote images, and the source checkout will not be removed`,
+		`Validating the complete uninstall plan before confirmation`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("uninstall.sh missing safety contract %q", want)
@@ -556,6 +686,13 @@ func runWindowsUninstallScriptInvocation(t *testing.T, workingDir, scriptPath st
 	for key, value := range extraEnv {
 		overrides[key] = value
 	}
+	if _, ok := overrides["LOCALAPPDATA"]; !ok {
+		localAppData := filepath.Join(fakeBin, "isolated local app data")
+		if err := os.MkdirAll(localAppData, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		overrides["LOCALAPPDATA"] = localAppData
+	}
 	cmd.Env = overrideEnvironment(os.Environ(), overrides)
 	var output bytes.Buffer
 	cmd.Stdout = &output
@@ -577,10 +714,27 @@ func runRealWindowsUninstallScript(t *testing.T, repoRoot string, args []string,
 func runRealWindowsUninstallScriptWithPath(t *testing.T, repoRoot string, args []string, extraEnv map[string]string, pathValue string) uninstallScriptResult {
 	t.Helper()
 	bash := testBashPath(t)
+	stateRoot := t.TempDir()
+	homeDir := filepath.Join(stateRoot, "home")
+	cacheDir := filepath.Join(stateRoot, "local app data")
+	tempDir := filepath.Join(stateRoot, "temp")
+	for _, dir := range []string{homeDir, cacheDir, tempDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cmd := exec.Command(bash, append([]string{"./uninstall.sh"}, args...)...)
 	cmd.Dir = repoRoot
 	overrides := map[string]string{
-		"PATH": pathValue,
+		"PATH":            pathValue,
+		"HOME":            homeDir,
+		"USERPROFILE":     homeDir,
+		"LOCALAPPDATA":    cacheDir,
+		"TEMP":            tempDir,
+		"TMP":             tempDir,
+		"TMPDIR":          filepath.ToSlash(tempDir),
+		"XDG_CONFIG_HOME": filepath.Join(homeDir, ".config"),
+		"SSHPIC_CONFIG":   filepath.Join(homeDir, ".config", "sshpic", "config.toml"),
 	}
 	for key, value := range extraEnv {
 		overrides[key] = value

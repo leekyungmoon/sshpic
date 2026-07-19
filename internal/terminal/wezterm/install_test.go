@@ -294,12 +294,8 @@ func TestInstallPreservesAllRecoveryArtifactsWhenPublishAndRestoreFail(t *testin
 			renameCall++
 			switch renameCall {
 			case 1:
-				return errors.New("destination exists")
-			case 2:
 				return os.Rename(oldPath, newPath)
-			case 3:
-				return errors.New("simulated publish failure")
-			case 4:
+			case 2:
 				return errors.New("simulated restore failure")
 			default:
 				t.Fatalf("unexpected rename %d: %s -> %s", renameCall, oldPath, newPath)
@@ -307,6 +303,9 @@ func TestInstallPreservesAllRecoveryArtifactsWhenPublishAndRestoreFail(t *testin
 			}
 		},
 		remove: os.Remove,
+		link: func(string, string) error {
+			return errors.New("simulated publish failure")
+		},
 	}
 
 	result, err := installWithAtomicReplaceOps(context.Background(), InstallOptions{
@@ -316,8 +315,8 @@ func TestInstallPreservesAllRecoveryArtifactsWhenPublishAndRestoreFail(t *testin
 	if err == nil || !strings.Contains(err.Error(), "simulated publish failure") || !strings.Contains(err.Error(), "simulated restore failure") {
 		t.Fatalf("err=%v", err)
 	}
-	if renameCall != 4 {
-		t.Fatalf("rename calls=%d want=4", renameCall)
+	if renameCall != 2 {
+		t.Fatalf("rename calls=%d want=2", renameCall)
 	}
 	if _, statErr := os.Stat(configPath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("uncertain config path should remain untouched after failed restore: %v", statErr)
