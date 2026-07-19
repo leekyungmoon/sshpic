@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -15,6 +16,14 @@ import (
 	"github.com/leekyungmoon/sshpic/internal/terminal/dispatch"
 	"github.com/leekyungmoon/sshpic/internal/terminal/iterm2"
 )
+
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
+}
 
 func TestITerm2UploaderPrefersForegroundSSHOverConfiguredHost(t *testing.T) {
 	cfg := config.Defaults()
@@ -78,7 +87,7 @@ func TestITerm2DispatchDelegatesImageReadErrorsToNativePaste(t *testing.T) {
 
 func TestITerm2DispatchInsertsLocalCodexImagePath(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	imgPath := filepath.Join(t.TempDir(), "clip.png")
 	if err := os.WriteFile(imgPath, []byte("png-data"), 0o600); err != nil {
 		t.Fatal(err)
@@ -102,7 +111,7 @@ func TestITerm2DispatchInsertsLocalCodexImagePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("materialized image stat failed: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("materialized image mode=%v", info.Mode().Perm())
 	}
 }
@@ -136,6 +145,57 @@ func TestLoadConfigIgnoresTerminalAppEvidenceFlags(t *testing.T) {
 	}
 	if _, _, err := loadConfig(pa); err != nil {
 		t.Fatalf("Terminal.app evidence flags must not be treated as config keys: %v", err)
+	}
+}
+
+func TestWezTermDispatchPublishesNativePasteResult(t *testing.T) {
+	t.Setenv("SSHPIC_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	resultPath := filepath.Join(t.TempDir(), "wezterm-result.json")
+	processJSON := `{"executable":"pwsh.exe","argv":["pwsh.exe"],"pid":42}`
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{
+		"wezterm-dispatch",
+		"--process-json", processJSON,
+		"--pane-id", "7",
+		"--result-file", resultPath,
+	}, BuildInfo{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"action":"native_paste"`) || !strings.Contains(string(data), `"kind":"no_focused_target"`) {
+		t.Fatalf("result=%s", data)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("result-file mode wrote stdout=%q", stdout.String())
+	}
+}
+
+func TestLoadConfigIgnoresWezTermEvidenceFlags(t *testing.T) {
+	t.Setenv("SSHPIC_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	pa, err := parseArgs([]string{
+		"wezterm-dispatch",
+		"--process-json", `{"executable":"ssh.exe","argv":["ssh.exe","host"]}`,
+		"--pane-id", "9",
+		"--result-file", filepath.Join(t.TempDir(), "result.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadConfig(pa); err != nil {
+		t.Fatalf("WezTerm evidence flags must not be treated as config keys: %v", err)
+	}
+}
+
+func TestSourceFromConfigUsesWindowsProviderOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows provider selection")
+	}
+	if _, ok := sourceFromConfig(config.Defaults()).(provider.WindowsProvider); !ok {
+		t.Fatalf("sourceFromConfig returned %T", sourceFromConfig(config.Defaults()))
 	}
 }
 
@@ -256,7 +316,7 @@ func TestDoctorUbuntuTerminalSafeFailProbe(t *testing.T) {
 }
 
 func TestRestoreTerminalTargetsAreSafeNoops(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	for _, tc := range []struct {
 		target string
 		want   string
@@ -279,7 +339,7 @@ func TestRestoreTerminalTargetsAreSafeNoops(t *testing.T) {
 
 func TestRestoreITerm2RemovesOwnedState(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("SSHPIC_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	scriptA := filepath.Join(home, ".config", "iterm2", "AppSupport", "Scripts", "AutoLaunch", "sshpic_smart_paste.py")
 	scriptB := filepath.Join(home, "Library", "Application Support", "iTerm2", "Scripts", "AutoLaunch", "sshpic_smart_paste.py")
@@ -354,7 +414,7 @@ func TestRunDoctorTerminalappProbeOnly(t *testing.T) {
 }
 
 func TestRunRestoreTerminalappNoop(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	var stdout, stderr strings.Builder
 	code := Run([]string{"restore", "terminalapp"}, BuildInfo{}, &stdout, &stderr)
 	if code != 0 {

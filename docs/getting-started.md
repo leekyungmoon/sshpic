@@ -1,12 +1,8 @@
 # Getting started
 
-## Install
+## Install from a clone
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh | bash
-```
-
-Or from a clone:
+Use the same commands on macOS and Windows:
 
 ```sh
 git clone https://github.com/leekyungmoon/sshpic.git
@@ -14,7 +10,49 @@ cd sshpic
 ./install.sh
 ```
 
+On Windows 10/11, run these commands in **Git Bash**. Do not run the installer in WSL. When Go or WezTerm is missing, the installer can use `winget` to install the official packages before continuing. If `winget` is unavailable or a newly installed executable is not visible to the current shell, install the named dependency, open a new Git Bash window, and rerun `./install.sh`.
+
+On macOS, the existing iTerm2 installation path is unchanged.
+
+## Install with the one-liner
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh | bash
+```
+
 ## Use
+
+### Windows + WezTerm (experimental)
+
+Open WezTerm with a native PowerShell or Git Bash pane:
+
+```text
+ssh.exe my-host
+codex
+copy image locally
+Ctrl+V
+```
+
+`ssh` is also accepted when it resolves to native Windows `ssh.exe`. This is an experimental candidate rather than a public support claim; `wsl ssh`, SSH inside a WSL shell, PuTTY/Plink, and Windows Terminal are outside even that candidate boundary.
+
+Set up key/agent authentication and accept the target host key before testing image paste. sshpic uses short `BatchMode=yes` SSH calls for remote-home lookup, upload, and verification, so it cannot answer an additional password prompt.
+
+The installer runs the equivalent of:
+
+```text
+sshpic install wezterm
+```
+
+Use these lifecycle commands when diagnosing or rolling back the integration:
+
+```text
+sshpic doctor wezterm
+sshpic restore wezterm
+```
+
+See [Windows + WezTerm](windows-wezterm.md) for configuration backup behavior, troubleshooting, and the real E2E harness.
+
+### macOS + iTerm2
 
 Keep using your normal iTerm2 SSH session:
 
@@ -25,15 +63,15 @@ copy image locally
 Cmd+V
 ```
 
-After a successful install, `sshpic` uploads the local image over SSH and inserts the remote path into the active Codex terminal input.
+After a successful install, `sshpic` uploads the local image over SSH and inserts the remote path into the focused Codex terminal input.
 
-Current direct-paste setup is iTerm2-specific. macOS Terminal.app and Ubuntu terminal support remain `TBD` until their own probes, restore paths, and real E2E evidence pass.
+Current direct-paste setup is terminal-specific: macOS+iTerm2 is supported, while Windows+WezTerm/native `ssh.exe` is an experimental release candidate pending a retained real interactive E2E PASS bundle. Windows Terminal, WSL, macOS Terminal.app, and Ubuntu terminal support remain `TBD` until their own adapters, restore paths, and real E2E evidence pass.
 
 ## What sshpic does not do
 
 `sshpic` does not guarantee that a terminal agent will treat the path as a native image attachment. It only uploads the file to the remote host and inserts the path.
 
-`sshpic` also does not treat a Linux/Windows binary, clipboard provider, or generic doctor check as proof of direct-paste support. See [platform support](platform-support.md) and [terminal support gates](terminal-support-gates.md).
+`sshpic` also does not treat a binary, clipboard provider, or generic doctor check as proof of direct-paste support on a terminal not listed as supported. See [platform support](platform-support.md) and [terminal support gates](terminal-support-gates.md).
 
 ## Read-only roadmap probes
 
@@ -51,6 +89,9 @@ sshpic doctor ubuntu-terminal
 ```sh
 # Run on macOS in iTerm2. The installer should auto-provision the Python RPC runtime or fail safely with no Cmd+V hook residue.
 scripts/verify-iterm2-e2e.sh
+
+# Run on Windows 10/11 with WezTerm and native ssh.exe. It restores sshpic-owned WezTerm changes by default.
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-windows-wezterm-codex-e2e.ps1
 
 # Run only with a real SSH host and disposable sshpic-specific dir.
 SSHPIC_INTEGRATION_HOST=codex141 \

@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -48,7 +49,7 @@ func TestTerminalTargetE2EScriptsAreConservativeAndSyntaxValid(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if info.Mode().Perm()&0o111 == 0 {
+			if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 				t.Fatalf("%s must be executable, mode=%v", tc.path, info.Mode().Perm())
 			}
 			data, err := os.ReadFile(tc.path)
@@ -61,10 +62,12 @@ func TestTerminalTargetE2EScriptsAreConservativeAndSyntaxValid(t *testing.T) {
 					t.Fatalf("%s missing %q", tc.path, want)
 				}
 			}
-			cmd := exec.Command("bash", "-n", tc.path)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("bash -n %s failed: %v\n%s", tc.path, err, string(out))
+			if runtime.GOOS != "windows" {
+				cmd := exec.Command("bash", "-n", tc.path)
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("bash -n %s failed: %v\n%s", tc.path, err, string(out))
+				}
 			}
 		})
 	}

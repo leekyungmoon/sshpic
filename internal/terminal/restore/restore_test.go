@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"testing"
 )
 
@@ -50,6 +52,12 @@ func TestRunTerminalappAndUbuntuAreNoopFoundations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS == "windows" {
+		if len(results) != 1 || results[0].Target != "wezterm" {
+			t.Fatalf("windows results=%+v", results)
+		}
+		return
+	}
 	if len(results) != 3 {
 		t.Fatalf("results=%+v", results)
 	}
@@ -58,5 +66,17 @@ func TestRunTerminalappAndUbuntuAreNoopFoundations(t *testing.T) {
 	}
 	if results[2].Target != "ubuntu-terminal" || results[2].Status != "no-op" {
 		t.Fatalf("ubuntu result=%+v", results[2])
+	}
+}
+
+func TestAllTargetsForGOOS(t *testing.T) {
+	if got := allTargetsForGOOS("windows"); !slices.Equal(got, []string{"wezterm"}) {
+		t.Fatalf("windows targets=%v", got)
+	}
+	wantMacTargets := []string{"iterm2", "terminalapp", "ubuntu-terminal"}
+	for _, goos := range []string{"darwin", "linux"} {
+		if got := allTargetsForGOOS(goos); !slices.Equal(got, wantMacTargets) {
+			t.Fatalf("%s targets=%v", goos, got)
+		}
 	}
 }

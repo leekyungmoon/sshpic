@@ -1,5 +1,58 @@
 # Troubleshooting
 
+## Windows `Ctrl+V` does not insert an image path
+
+First confirm that the session is inside WezTerm on an interactive Windows 10/11 desktop and inspect the target-specific checks:
+
+```powershell
+sshpic doctor wezterm
+Get-Command ssh.exe
+ssh.exe -V
+wezterm.exe --version
+```
+
+Use current WezTerm and Windows OpenSSH releases. `doctor wezterm` checks executable and capability probes but does not yet reject every old version; some Windows 10 inbox OpenSSH builds lack safety options used by the upload invocation, and old WezTerm builds lack required Lua APIs.
+
+The focused WezTerm pane must have native Windows `ssh.exe` as its foreground process. A pane running `wsl ssh`, PuTTY/Plink, Windows Terminal, a global SSH process in another pane, or a wrapper that hides the foreground `ssh.exe` is outside the experimental candidate boundary. sshpic deliberately does not fall back to an unrelated process or `remote_host` for shortcut-driven upload.
+
+The foreground session can be interactive, but sshpic's short home/upload/verify connections use `BatchMode=yes`. If `Ctrl+V` reports an authentication failure, first run a separate non-interactive check and resolve keys, `ssh-agent`, host-key acceptance, or jump-host configuration:
+
+```powershell
+ssh.exe -o BatchMode=yes my-host true
+```
+
+If the installer just added Go or WezTerm through `winget`, open a new Git Bash and rerun `./install.sh`. Then fully restart or reload WezTerm as directed by the install output.
+
+## Windows clipboard checks fail
+
+The Windows provider runs `powershell.exe` (or `pwsh.exe` when Windows PowerShell is unavailable) in non-interactive STA mode and uses `System.Windows.Forms.Clipboard`. It requires a normal signed-in interactive desktop session. Headless CI, services, session-isolated processes, and non-Windows PowerShell hosts cannot prove clipboard support.
+
+Copy an actual bitmap/image to the clipboard before pressing `Ctrl+V`; copying a filename or URL is text, so WezTerm native Paste handles it. `sshpic shot` and `sshpic full` screen capture are not currently implemented on Windows—the experimental Windows flow starts with an image already on the clipboard.
+
+Temporary clipboard contention is retried. A persistent `clipboard busy` or `System.Windows.Forms` error is a provider failure, not “no image”; include the exact `sshpic doctor wezterm` output in the report.
+
+## Windows text paste is changed, duplicated, or uploaded
+
+This is release-blocking. With text on the clipboard, `Ctrl+V` must call WezTerm's native clipboard Paste exactly once. Text must not pass through an sshpic payload, upload command, shell command, or synthetic keystroke path.
+
+Run the Windows E2E harness and retain its evidence bundle:
+
+```powershell
+.\scripts\verify-windows-wezterm-codex-e2e.ps1
+```
+
+If you need to roll back immediately:
+
+```powershell
+sshpic restore wezterm
+```
+
+The restore command should remove only sshpic-owned WezTerm state and recover the installer's saved configuration. If restore reports a mismatch or missing backup, do not delete WezTerm configuration by hand; preserve the doctor/restore output and the configuration files for a bug report.
+
+## Windows Terminal or WSL does not work
+
+That is expected today. The Windows release candidate is limited to WezTerm on Windows 10/11, a native PowerShell or Git Bash pane, and Windows OpenSSH (`ssh.exe`); it remains experimental pending retained real interactive E2E PASS evidence. Windows Terminal and WSL are separate `TBD` targets.
+
 ## iTerm2 Python runtime is missing
 
 `sshpic` does not need the iTerm2 Python runtime to read the clipboard, upload over SSH, or produce the remote path. Python is only needed for the current safe iTerm2 `Cmd+V` wiring.

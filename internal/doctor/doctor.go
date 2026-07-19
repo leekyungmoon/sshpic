@@ -2,14 +2,17 @@
 package doctor
 
 import (
+	"context"
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/leekyungmoon/sshpic/internal/config"
 	"github.com/leekyungmoon/sshpic/internal/terminal/iterm2"
 	"github.com/leekyungmoon/sshpic/internal/terminal/terminalapp"
 	"github.com/leekyungmoon/sshpic/internal/terminal/ubuntu"
+	"github.com/leekyungmoon/sshpic/internal/terminal/wezterm"
 )
 
 type Check struct {
@@ -20,6 +23,9 @@ type Check struct {
 }
 
 func Run(cfg config.Config) []Check {
+	if runtime.GOOS == "windows" {
+		return RunWezTerm()
+	}
 	checks := []Check{}
 	if runtime.GOOS == "darwin" {
 		checks = append(checks, Check{Name: "platform", Status: "ok", Detail: "macOS + iTerm2 direct-paste target"})
@@ -56,9 +62,17 @@ func RunTarget(cfg config.Config, target string) []Check {
 		return RunTerminalApp()
 	case "ubuntu-terminal":
 		return RunUbuntuTerminal()
+	case "wezterm":
+		return RunWezTerm()
 	default:
 		return []Check{{Name: "target", Status: "error", Detail: "unknown doctor target " + target, Fatal: true}}
 	}
+}
+
+func RunWezTerm() []Check {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return convertWezTermChecks(wezterm.DoctorChecks(ctx, wezterm.DoctorOptions{}))
 }
 
 func RunTerminalApp() []Check {
@@ -77,6 +91,8 @@ func normalizeTarget(target string) string {
 		return "terminalapp"
 	case "ubuntu", "gnome-terminal", "ubuntu-gnome-terminal":
 		return "ubuntu-terminal"
+	case "windows-wezterm", "windows":
+		return "wezterm"
 	default:
 		return target
 	}
@@ -114,6 +130,14 @@ func convertTerminalAppChecks(in []terminalapp.Check) []Check {
 }
 
 func convertUbuntuChecks(in []ubuntu.Check) []Check {
+	checks := make([]Check, 0, len(in))
+	for _, c := range in {
+		checks = append(checks, Check(c))
+	}
+	return checks
+}
+
+func convertWezTermChecks(in []wezterm.Check) []Check {
 	checks := make([]Check, 0, len(in))
 	for _, c := range in {
 		checks = append(checks, Check(c))

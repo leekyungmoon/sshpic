@@ -25,7 +25,7 @@ Required P0 UX:
 
 1. User captures/copies an image locally.
 2. User focuses an SSH/Codex/Claude terminal session.
-3. User presses Cmd+V in the configured iTerm2 profile.
+3. User presses Cmd+V in the configured iTerm2 profile, or Ctrl+V in the experimental Windows WezTerm release candidate.
 4. `sshpic` uploads the image to the remote host.
 5. The remote image path is inserted into the active terminal input.
 6. The user did not type an upload/debug command.
@@ -38,7 +38,7 @@ Required P0 UX:
 - No SSH config mutation by default.
 - Dotfiles-friendly and reproducible.
 - Secure by default: `umask 077`, remote file mode `0600`, no secret logging.
-- macOS + iTerm2 first, but architecture must allow Linux and Windows providers later.
+- Keep the proven macOS + iTerm2 path stable while adding terminals through isolated, target-specific adapters.
 
 ## Primary v0.1 support scope
 
@@ -48,9 +48,10 @@ Required P0 UX:
 | macOS Terminal.app | Experimental / roadmap | No support claim until verified |
 | macOS Warp | Experimental / roadmap | No support claim until verified |
 | macOS Ghostty | Experimental / roadmap | No support claim until verified |
-| WezTerm / Kitty | Experimental / roadmap | Snippets only after verified |
+| Windows 10/11 + WezTerm + Windows-local `ssh.exe` | Experimental implementation; no public support claim until retained target E2E PASS evidence is reviewed | Focused-pane Ctrl+V image-path insertion |
+| WezTerm on other platforms / Kitty | Experimental / roadmap | No support claim until verified |
 | Linux / Ubuntu | Roadmap | Provider architecture only; no support claim |
-| Windows / WSL | Roadmap | Provider architecture only; no support claim |
+| Windows Terminal / WSL / PuTTY | Roadmap | No support claim |
 
 ## Core architecture decision
 
@@ -334,7 +335,7 @@ sshpic/
 | README overclaims Codex/Claude behavior | Say “path insertion into terminal sessions”; do not imply guaranteed native image attachment unless verified. |
 | Screenshot secrets leak to shared remote tmp | Use `0600`, `/home/$USER/.sshpic/images`, security warning, and `clean`; no cloud. |
 | Shell injection through remote path | Dedicated shellquote package with tests. |
-| Cross-platform promise too broad | Mark Linux/Windows and non-iTerm2 terminals as roadmap/experimental until verified. |
+| Cross-platform promise too broad | Limit Windows claims to Windows 10/11 + WezTerm + a focused Windows-local `ssh.exe`; keep Windows Terminal, WSL, PuTTY, Linux, and other terminals TBD until verified. |
 
 ## ADR
 
@@ -364,7 +365,7 @@ Terminal keybinding direct paste is the smallest architecture that satisfies “
 - Default shortcut is Cmd+V smart paste.
 - Text passthrough must preserve normal paste behavior exactly once.
 - Cross-terminal support becomes a roadmap of snippets/providers.
-- README release language must be strict: only macOS+iTerm2 is supported in v0.1; Codex/Claude support means path insertion into a terminal session, not guaranteed native image attachment.
+- README release language must be strict: the supported direct-paste claim is limited to macOS+iTerm2; the documented Windows 10/11+WezTerm+Windows-local `ssh.exe` surface remains experimental until its retained real E2E PASS evidence is reviewed. Codex/Claude integration means path insertion into a terminal session, not a guaranteed native image attachment.
 
 ## Recommended execution path
 
@@ -397,7 +398,7 @@ Suggested lanes:
 - GoReleaser dry-run succeeds.
 - `sshpic clip --debug` equivalent proves local/remote SHA match.
 - iTerm2 direct-paste E2E is documented with evidence.
-- README claim audit passes: no unverified Codex/Claude/Linux/Windows claims.
+- README claim audit passes: no unverified Codex/Claude/Linux, Windows Terminal, WSL, PuTTY, or out-of-scope Windows claims.
 - `sshpic clean --dry-run` safety is proven.
 
 ## Ralplan consensus status

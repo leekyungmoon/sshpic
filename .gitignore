@@ -5,4 +5,6 @@ coverage.out
 .DS_Store
 
 /sshpic
+/sshpic.exe
 /.sshpic-e2e/
+/.sshpic-windows-e2e/

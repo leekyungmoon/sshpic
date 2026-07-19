@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/leekyungmoon/sshpic/internal/terminal/dispatch"
 	"github.com/leekyungmoon/sshpic/internal/terminal/iterm2"
 	"github.com/leekyungmoon/sshpic/internal/terminal/terminalapp"
+	"github.com/leekyungmoon/sshpic/internal/terminal/wezterm"
 	"github.com/leekyungmoon/sshpic/internal/upload"
 )
 
@@ -74,6 +76,8 @@ func Run(args []string, build BuildInfo, stdout, stderr io.Writer) int {
 		return runITerm2Dispatch(ctx, pa, stdout, stderr)
 	case "terminalapp-dispatch":
 		return runTerminalAppDispatch(ctx, pa, stdout, stderr)
+	case "wezterm-dispatch":
+		return runWezTermDispatch(ctx, pa, stdout, stderr)
 	case "clip", "shot", "full", "file":
 		return runUploadCommand(ctx, cmd, pa, stdout, stderr)
 	case "clean":
@@ -119,7 +123,7 @@ func runSnippet(pa parsedArgs, stdout, stderr io.Writer) int {
 
 func runInstall(pa parsedArgs, stdout, stderr io.Writer) int {
 	if len(pa.Positionals) < 2 {
-		fmt.Fprintln(stderr, "usage: sshpic install [iterm2|terminalapp]")
+		fmt.Fprintln(stderr, "usage: sshpic install [iterm2|terminalapp|wezterm]")
 		return 2
 	}
 	target := strings.ToLower(strings.TrimSpace(pa.Positionals[1]))
@@ -128,10 +132,37 @@ func runInstall(pa parsedArgs, stdout, stderr io.Writer) int {
 		return runInstallITerm2(pa, stdout, stderr)
 	case "terminalapp", "terminal.app":
 		return runInstallTerminalApp(pa, stdout, stderr)
+	case "wezterm", "windows-wezterm":
+		return runInstallWezTerm(stdout, stderr)
 	default:
-		fmt.Fprintln(stderr, "usage: sshpic install [iterm2|terminalapp]")
+		fmt.Fprintln(stderr, "usage: sshpic install [iterm2|terminalapp|wezterm]")
 		return 2
 	}
+}
+
+func runInstallWezTerm(stdout, stderr io.Writer) int {
+	if runtime.GOOS != "windows" {
+		fmt.Fprintln(stderr, "WezTerm direct-paste installation is supported on Windows 10/11")
+		return 1
+	}
+	exe, err := os.Executable()
+	if err != nil || strings.TrimSpace(exe) == "" {
+		fmt.Fprintf(stderr, "cannot determine sshpic executable path: %v\n", err)
+		return 1
+	}
+	exe, _ = filepath.Abs(exe)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	result, err := wezterm.Install(ctx, wezterm.InstallOptions{
+		BinaryPath:  exe,
+		WezTermPath: os.Getenv("SSHPIC_WEZTERM_EXE"),
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fprintNoExtraBlank(stdout, wezterm.InstallSummary(result))
+	return 0
 }
 
 func runInstallITerm2(pa parsedArgs, stdout, stderr io.Writer) int {
@@ -239,6 +270,9 @@ func runRestore(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) in
 	}
 	switch target {
 	case "", "all":
+		if runtime.GOOS == "windows" {
+			return runRestoreWezTerm(ctx, stdout, stderr)
+		}
 		if code := runRestoreITerm2(ctx, stdout, stderr); code != 0 {
 			return code
 		}
@@ -252,10 +286,24 @@ func runRestore(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) in
 	case "ubuntu-terminal", "ubuntu":
 		fprintNoExtraBlank(stdout, ubuntuTerminalRestoreNoop())
 		return 0
+	case "wezterm", "windows-wezterm":
+		return runRestoreWezTerm(ctx, stdout, stderr)
 	default:
-		fmt.Fprintln(stderr, "usage: sshpic restore [all|iterm2|terminalapp|ubuntu-terminal]")
+		fmt.Fprintln(stderr, "usage: sshpic restore [all|iterm2|terminalapp|ubuntu-terminal|wezterm]")
 		return 2
 	}
+}
+
+func runRestoreWezTerm(ctx context.Context, stdout, stderr io.Writer) int {
+	result, err := wezterm.Restore(ctx, wezterm.RestoreOptions{
+		WezTermPath: os.Getenv("SSHPIC_WEZTERM_EXE"),
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fprintNoExtraBlank(stdout, wezterm.RestoreSummary(result))
+	return 0
 }
 
 func runRestoreITerm2(ctx context.Context, stdout, stderr io.Writer) int {
@@ -410,6 +458,40 @@ func runTerminalAppDispatch(ctx context.Context, pa parsedArgs, stdout, stderr i
 		appendIntegrationLog("unknown terminalapp dispatch output mode: " + output)
 		return 2
 	}
+}
+
+func runWezTermDispatch(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int {
+	result := dispatch.Result{}
+	cfg, _, err := loadConfig(pa)
+	if err != nil {
+		result = dispatch.Result{Action: dispatch.ActionNativePaste, Kind: "config_error", Reason: "sshpic config load failed"}
+		appendIntegrationLog("wezterm dispatch config load failed: " + err.Error())
+	} else {
+		dispatchCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		defer cancel()
+		result = wezterm.BuildDispatchJSON(
+			dispatchCtx,
+			cfg,
+			sourceFromConfig(cfg),
+			pa.Values["pane_id"],
+			[]byte(pa.Values["process_json"]),
+			appendIntegrationLog,
+		)
+	}
+
+	if resultPath := strings.TrimSpace(pa.Values["result_file"]); resultPath != "" {
+		if err := wezterm.WriteDispatchResult(resultPath, result); err != nil {
+			appendIntegrationLog("wezterm dispatch result write failed: " + err.Error())
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
+	if err := json.NewEncoder(stdout).Encode(result); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	return 0
 }
 
 func buildITerm2Dispatch(ctx context.Context, cfg config.Config, pa parsedArgs) iterm2DispatchResult {
@@ -667,14 +749,17 @@ func loadConfig(pa parsedArgs) (config.Config, string, error) {
 
 func nonConfigValueFlag(key string) bool {
 	switch key {
-	case "config", "output", "session_id", "session_tty", "session_command_line", "session_job_pid", "term_program", "foreground_bundle_id", "action_file", "payload_file":
+	case "config", "output", "session_id", "session_tty", "session_command_line", "session_job_pid", "term_program", "foreground_bundle_id", "action_file", "payload_file", "process_json", "pane_id", "result_file":
 		return true
 	default:
 		return false
 	}
 }
 
-func sourceFromConfig(cfg config.Config) provider.MacOSProvider {
+func sourceFromConfig(cfg config.Config) provider.LocalImageSource {
+	if runtime.GOOS == "windows" {
+		return provider.WindowsProvider{}
+	}
 	return provider.MacOSProvider{
 		ClipboardTool:     cfg.MacOS.ClipboardTool,
 		ScreenshotTool:    cfg.MacOS.ScreenshotTool,
@@ -686,7 +771,7 @@ func sourceFromConfig(cfg config.Config) provider.MacOSProvider {
 func parseArgs(args []string) (parsedArgs, error) {
 	pa := parsedArgs{Values: map[string]string{}, Bools: map[string]bool{}}
 	boolFlags := map[string]bool{"help": true, "debug": true, "json": true, "dry-run": true, "yes": true, "force": true, "no-copy": true, "insert-newline": true, "no-verify": true, "no-open": true}
-	valueFlags := map[string]bool{"config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true, "term-program": true, "foreground-bundle-id": true, "action-file": true, "payload-file": true}
+	valueFlags := map[string]bool{"config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true, "term-program": true, "foreground-bundle-id": true, "action-file": true, "payload-file": true, "process-json": true, "pane-id": true, "result-file": true}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
@@ -734,11 +819,12 @@ Usage:
   sshpic file <path...>
   sshpic clean [--dry-run|--yes]
   sshpic version
-  sshpic doctor [iterm2|terminalapp|ubuntu-terminal]
+  sshpic doctor [iterm2|terminalapp|ubuntu-terminal|wezterm]
   sshpic snippet iterm2
   sshpic install iterm2 [--remote-host <host>] [--no-open]
   sshpic install terminalapp
-  sshpic restore [all|iterm2|terminalapp|ubuntu-terminal]
+  sshpic install wezterm
+  sshpic restore [all|iterm2|terminalapp|ubuntu-terminal|wezterm]
 
 Global flags:
   --config <path>              config path (default ~/.config/sshpic/config.toml)

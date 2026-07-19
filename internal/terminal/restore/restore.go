@@ -5,11 +5,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/leekyungmoon/sshpic/internal/terminal/iterm2"
 	"github.com/leekyungmoon/sshpic/internal/terminal/terminalapp"
 	"github.com/leekyungmoon/sshpic/internal/terminal/ubuntu"
+	"github.com/leekyungmoon/sshpic/internal/terminal/wezterm"
 )
 
 type Result struct {
@@ -31,7 +33,7 @@ func Run(ctx context.Context, target string, home string) ([]Result, error) {
 	switch normalizeTarget(target) {
 	case "", "all":
 		var results []Result
-		for _, t := range []string{"iterm2", "terminalapp", "ubuntu-terminal"} {
+		for _, t := range allTargetsForGOOS(runtime.GOOS) {
 			r, err := Run(ctx, t, home)
 			results = append(results, r...)
 			if err != nil {
@@ -58,9 +60,42 @@ func Run(ctx context.Context, target string, home string) ([]Result, error) {
 	case "ubuntu-terminal":
 		check := ubuntu.Restore(home)
 		return []Result{{Target: "ubuntu-terminal", Status: "no-op", Detail: check.Detail}}, nil
+	case "wezterm":
+		restored, err := wezterm.Restore(ctx, wezterm.RestoreOptions{
+			HomeDir:     home,
+			WezTermPath: os.Getenv("SSHPIC_WEZTERM_EXE"),
+		})
+		status := "no-op"
+		if restored.ConfigRestored || restored.ConfigRemoved || restored.ModuleRemoved || restored.ManifestRemoved {
+			status = "restored"
+		}
+		removed := []string{}
+		if restored.ModuleRemoved {
+			removed = append(removed, restored.ModulePath)
+		}
+		if restored.BackupRemoved {
+			removed = append(removed, restored.BackupPath)
+		}
+		if restored.ManifestRemoved {
+			removed = append(removed, restored.ManifestPath)
+		}
+		return []Result{{
+			Target:   "wezterm",
+			Status:   status,
+			Detail:   strings.TrimSpace(wezterm.RestoreSummary(restored)),
+			Removed:  removed,
+			Warnings: restored.Warnings,
+		}}, err
 	default:
 		return nil, fmt.Errorf("unknown restore target %q", target)
 	}
+}
+
+func allTargetsForGOOS(goos string) []string {
+	if goos == "windows" {
+		return []string{"wezterm"}
+	}
+	return []string{"iterm2", "terminalapp", "ubuntu-terminal"}
 }
 
 func runITerm2(ctx context.Context, home string) (Result, error) {
@@ -97,6 +132,8 @@ func normalizeTarget(target string) string {
 		return "terminalapp"
 	case "ubuntu", "gnome-terminal", "ubuntu-gnome-terminal":
 		return "ubuntu-terminal"
+	case "windows-wezterm", "windows":
+		return "wezterm"
 	default:
 		return target
 	}
