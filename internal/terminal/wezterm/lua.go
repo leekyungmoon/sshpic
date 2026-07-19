@@ -62,6 +62,7 @@ local sshpic_binary = %s
 local dispatch_command = %s
 local poll_seconds = %.3f
 local max_polls = %d
+local forbidden_path_bytes = %s
 local in_flight = {}
 local sequence = 0
 local module_nonce = string.gsub(tostring({}), '[^%%w]', '')
@@ -153,6 +154,23 @@ local function notify_failure(win, result)
   end)
 end
 
+local function safe_remote_path(value)
+  if type(value) ~= 'string' or value == '' or string.sub(value, 1, 1) ~= '/' then
+    return false
+  end
+  for index = 1, #value do
+    local byte = string.byte(value, index)
+    if byte < 32 or byte == 127 then
+      return false
+    end
+    local character = string.char(byte)
+    if string.find(forbidden_path_bytes, character, 1, true) then
+      return false
+    end
+  end
+  return true
+end
+
 local function temp_result_path(pane_id)
   sequence = sequence + 1
   local temp = os.getenv('TEMP') or os.getenv('TMP') or '.'
@@ -231,6 +249,12 @@ local function start_dispatch(win, pane, info)
       os.remove(result_path)
       if (result.action == 'insert_local_image_path' or result.action == 'insert_remote_image_path')
           and type(result.payload) == 'string' and result.payload ~= '' then
+        if result.action == 'insert_remote_image_path' and not safe_remote_path(result.payload) then
+          local unsafe = { kind = 'unsafe_remote_path', reason = 'sshpic refused an unsafe remote image path' }
+          notify_failure(win, unsafe)
+          native_paste(win, pane, pane_id, process)
+          return
+        end
         if delayed_target_is_current(win, pane, pane_id, process) then
           pane:send_paste(result.payload)
         else
@@ -274,7 +298,7 @@ function module.apply_to_config(config)
 end
 
 return module
-`, luaOwnerMarker, luaQuote(binary), luaQuote(command), poll.Seconds(), maxPolls)
+`, luaOwnerMarker, luaQuote(binary), luaQuote(command), poll.Seconds(), maxPolls, luaQuote(shortcutForbiddenPathASCII))
 	return source, nil
 }
 

@@ -26,6 +26,7 @@ func TestLuaIntegrationSourceUsesFocusedAsyncNativePasteContract(t *testing.T) {
 		"module_nonce",
 		"original_process_is_current", "same_argv(current.argv, original.argv)",
 		"normalize_executable(current.executable)", "delayed_target_is_current",
+		"forbidden_path_bytes", "safe_remote_path(result.payload)", "unsafe_remote_path",
 		"pane:send_paste(result.payload)", "wezterm.action.PasteFrom 'Clipboard'",
 		"result.reason", "toast_notification", "os.remove(result_path)",
 	} {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/leekyungmoon/sshpic/internal/config"
 	"github.com/leekyungmoon/sshpic/internal/paste"
+	"github.com/leekyungmoon/sshpic/internal/pathfmt"
 	"github.com/leekyungmoon/sshpic/internal/provider"
 	"github.com/leekyungmoon/sshpic/internal/terminal/dispatch"
 	"github.com/leekyungmoon/sshpic/internal/upload"
@@ -108,9 +109,13 @@ func BuildDispatchWithDependencies(ctx context.Context, cfg config.Config, src p
 		return nativeResult("ssh_user_resolution", "focused SSH user is empty or unsafe")
 	}
 
-	// The default is account-home-relative despite being written as
-	// /home/${USER}. Query $HOME so root and non-standard accounts are correct.
-	if cfg.RemoteDir == config.Defaults().RemoteDir {
+	// The default and existing path-format ~/ shorthand are account-home-relative. Query
+	// the remote account rather than expanding them from the Windows process's
+	// local HOME, which may be absent or point at an unrelated Git Bash path.
+	configuredRemoteDir := strings.TrimSpace(cfg.RemoteDir)
+	needsRemoteHome := configuredRemoteDir == config.Defaults().RemoteDir ||
+		configuredRemoteDir == "~" || strings.HasPrefix(configuredRemoteDir, "~/")
+	if needsRemoteHome {
 		resolveHome := deps.ResolveHome
 		if resolveHome == nil {
 			resolveHome = ResolveRemoteHome
@@ -120,8 +125,24 @@ func BuildDispatchWithDependencies(ctx context.Context, cfg config.Config, src p
 			logDispatch(deps.Log, "wezterm remote home resolution failed: "+err.Error())
 			return nativeResult("ssh_home_resolution", "could not resolve focused SSH home: "+err.Error())
 		}
-		cfg.RemoteDir = path.Join(home, ".sshpic", "images")
+		switch {
+		case configuredRemoteDir == config.Defaults().RemoteDir:
+			cfg.RemoteDir = path.Join(home, ".sshpic", "images")
+		case configuredRemoteDir == "~":
+			cfg.RemoteDir = home
+		default:
+			cfg.RemoteDir = path.Join(home, strings.TrimPrefix(configuredRemoteDir, "~/"))
+		}
 	}
+	effectiveRemoteDir := pathfmt.ExpandRemoteDir(cfg.RemoteDir, invocation.User, "")
+	canonicalRemoteDir, err := canonicalizeShortcutPOSIXPath(effectiveRemoteDir)
+	if err != nil {
+		logDispatch(deps.Log, "wezterm unsafe remote directory rejected: "+err.Error())
+		return nativeResult("unsafe_remote_path", "remote image directory is unsafe for terminal insertion")
+	}
+	// Store the validated expansion so paste.UploadClipboardImage cannot apply a
+	// different, process-local HOME expansion later on Windows.
+	cfg.RemoteDir = canonicalRemoteDir
 
 	return buildNeutralDispatch(ctx, cfg, cachedSource, sess, invocation, true, deps)
 }
@@ -139,6 +160,9 @@ func buildNeutralDispatch(ctx context.Context, cfg config.Config, src provider.L
 	// Shortcut dispatch must preserve image clipboard ownership. This assignment
 	// affects only this value copy and does not alter manual command semantics.
 	cfg.CopyToClipboard = false
+	// A shortcut result is inserted into terminal input but must never submit a
+	// shell/Codex line automatically, even if a global config enables it.
+	cfg.Paste.InsertNewline = false
 
 	focusedIdentity := strings.TrimSpace(sess.PaneID)
 	if focusedIdentity != "" {
@@ -167,7 +191,7 @@ func buildNeutralDispatch(ctx context.Context, cfg config.Config, src provider.L
 		}
 	}
 
-	return dispatch.Build(ctx, cfg, src, neutral, dispatch.Dependencies{
+	result := dispatch.Build(ctx, cfg, src, neutral, dispatch.Dependencies{
 		DetectSSH: func(context.Context, dispatch.SessionContext) (dispatch.SSHTarget, bool) {
 			if !focusedSSH {
 				return dispatch.SSHTarget{}, false
@@ -184,6 +208,13 @@ func buildNeutralDispatch(ctx context.Context, cfg config.Config, src provider.L
 		},
 		Log: deps.Log,
 	})
+	if result.Action == dispatch.ActionInsertRemoteImagePath {
+		if err := validateShortcutPOSIXPath(result.Payload); err != nil {
+			logDispatch(deps.Log, "wezterm unsafe remote payload rejected: "+err.Error())
+			return nativeResult("unsafe_remote_path", "remote image path is unsafe for terminal insertion")
+		}
+	}
+	return result
 }
 
 func nativeResult(kind, reason string) dispatch.Result {

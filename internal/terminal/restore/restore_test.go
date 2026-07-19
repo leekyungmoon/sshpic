@@ -48,6 +48,18 @@ func TestRunITerm2RemovesOnlySSHpicArtifacts(t *testing.T) {
 }
 
 func TestRunTerminalappAndUbuntuAreNoopFoundations(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Keep the Windows `all` test inside its temporary home. Restore's
+		// production discovery intentionally honors these values and portable
+		// configs, which a developer machine may point at real user state.
+		for _, name := range []string{
+			"SSHPIC_WEZTERM_EXE", "WEZTERM_CONFIG_FILE", "XDG_CONFIG_HOME",
+			"PATH", "ProgramFiles", "ProgramW6432", "ProgramFiles(x86)",
+			"LOCALAPPDATA", "USERPROFILE",
+		} {
+			t.Setenv(name, "")
+		}
+	}
 	results, err := Run(context.Background(), "all", t.TempDir())
 	if err != nil {
 		t.Fatal(err)

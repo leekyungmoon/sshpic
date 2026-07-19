@@ -79,6 +79,7 @@ func Restore(_ context.Context, opts RestoreOptions) (RestoreResult, error) {
 	if !configMissing {
 		configHash = sha256Hex(configData)
 	}
+	backupExists := false
 
 	if manifest.ConfigCreated {
 		if !configMissing {
@@ -93,6 +94,7 @@ func Restore(_ context.Context, opts RestoreOptions) (RestoreResult, error) {
 	} else {
 		backupData, backupErr := os.ReadFile(manifest.BackupPath)
 		backupMissing := errors.Is(backupErr, os.ErrNotExist)
+		backupExists = !backupMissing
 		if backupErr != nil && !backupMissing {
 			return result, fmt.Errorf("managed WezTerm backup is required for restore: %w", backupErr)
 		}
@@ -143,7 +145,7 @@ func Restore(_ context.Context, opts RestoreOptions) (RestoreResult, error) {
 		}
 		result.ModuleRemoved = true
 	}
-	if manifest.BackupPath != "" {
+	if manifest.BackupPath != "" && backupExists {
 		if err := removeIfHash(manifest.BackupPath, manifest.OriginalConfigSHA256); err != nil {
 			return result, err
 		}

@@ -87,7 +87,7 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		`MINGW*|MSYS*|CYGWIN*`,
 		`Darwin`,
 		`Linux`,
-		`*[Mm]icrosoft*|*WSL*|*wsl*`,
+		`*[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]*|*[Ww][Ss][Ll]*`,
 		`Windows direct-paste installation must run from Git Bash, not WSL`,
 		`--detect-os`,
 	} {
@@ -132,6 +132,7 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 			{platform: "Darwin", release: "24.5.0", want: "macos"},
 			{platform: "Linux", release: "6.8.0-generic", want: "linux"},
 			{platform: "Linux", release: "5.15.153.1-microsoft-standard-WSL2", want: "wsl"},
+			{platform: "Linux", release: "6.1.0-MICROSOFT-standard", want: "wsl"},
 			{platform: "FreeBSD", release: "14.2", want: "unsupported"},
 		}
 		for _, tc := range cases {

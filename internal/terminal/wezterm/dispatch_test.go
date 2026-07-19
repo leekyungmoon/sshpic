@@ -122,6 +122,128 @@ func TestBuildDispatchNeverOverridesExplicitRemoteDir(t *testing.T) {
 	}
 }
 
+func TestBuildDispatchCanonicalizesHarmlessCustomRemoteDirSpellings(t *testing.T) {
+	for _, remoteDir := range []string{
+		"/srv/sshpic/images/",
+		"/srv/./sshpic/images",
+	} {
+		t.Run(remoteDir, func(t *testing.T) {
+			imagePath := filepath.Join(t.TempDir(), "clipboard.png")
+			if err := os.WriteFile(imagePath, []byte("png"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Defaults()
+			cfg.RemoteDir = remoteDir
+			uploader := &recordingUploader{}
+			result := BuildDispatchWithDependencies(context.Background(), cfg, &fakeImageSource{image: provider.LocalImage{Path: imagePath, Format: "png"}}, sshSession("host"), DispatchDependencies{
+				ResolveUser: func(context.Context, SSHInvocation) (string, error) { return "alice", nil },
+				ResolveHome: func(context.Context, SSHInvocation) (string, error) {
+					t.Fatal("absolute custom remote_dir must not query remote home")
+					return "", nil
+				},
+				UploaderForInvocation: func(SSHInvocation) paste.RemoteUploader { return uploader },
+			})
+			want := "/srv/sshpic/images/clipboard.png"
+			if result.Action != dispatch.ActionInsertRemoteImagePath || result.Payload != want {
+				t.Fatalf("result=%+v want payload %q", result, want)
+			}
+			if uploader.uploadPath != want || uploader.verifyPath != want {
+				t.Fatalf("uploader=%+v", uploader)
+			}
+		})
+	}
+}
+
+func TestBuildDispatchExpandsTildeRemoteDirFromRemoteHome(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "clipboard.png")
+	if err := os.WriteFile(imagePath, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.RemoteDir = "~/Pictures/sshpic"
+	uploader := &recordingUploader{}
+	homeCalls := 0
+	result := BuildDispatchWithDependencies(context.Background(), cfg, &fakeImageSource{image: provider.LocalImage{Path: imagePath, Format: "png"}}, sshSession("host"), DispatchDependencies{
+		ResolveUser: func(context.Context, SSHInvocation) (string, error) { return "alice", nil },
+		ResolveHome: func(context.Context, SSHInvocation) (string, error) {
+			homeCalls++
+			return "/srv/accounts/alice", nil
+		},
+		UploaderForInvocation: func(SSHInvocation) paste.RemoteUploader { return uploader },
+	})
+	want := "/srv/accounts/alice/Pictures/sshpic/clipboard.png"
+	if result.Action != dispatch.ActionInsertRemoteImagePath || result.Payload != want {
+		t.Fatalf("result=%+v want payload %q", result, want)
+	}
+	if homeCalls != 1 || uploader.uploadPath != want || uploader.verifyPath != want {
+		t.Fatalf("homeCalls=%d uploader=%+v", homeCalls, uploader)
+	}
+}
+
+func TestBuildDispatchExpandsBareTildeFromRemoteHome(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "clipboard.png")
+	if err := os.WriteFile(imagePath, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.RemoteDir = "~"
+	result := BuildDispatchWithDependencies(context.Background(), cfg, &fakeImageSource{image: provider.LocalImage{Path: imagePath, Format: "png"}}, sshSession("host"), DispatchDependencies{
+		ResolveUser:           func(context.Context, SSHInvocation) (string, error) { return "root", nil },
+		ResolveHome:           func(context.Context, SSHInvocation) (string, error) { return "/root", nil },
+		UploaderForInvocation: func(SSHInvocation) paste.RemoteUploader { return &recordingUploader{} },
+	})
+	if result.Action != dispatch.ActionInsertRemoteImagePath || result.Payload != "/root/clipboard.png" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestBuildDispatchRejectsUnsafeRemoteDirBeforeUpload(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "clipboard.png")
+	if err := os.WriteFile(imagePath, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.RemoteDir = "/srv/sshpic/alice;touch-pwned"
+	uploaderCreated := false
+	result := BuildDispatchWithDependencies(context.Background(), cfg, &fakeImageSource{image: provider.LocalImage{Path: imagePath, Format: "png"}}, sshSession("host"), DispatchDependencies{
+		ResolveUser: func(context.Context, SSHInvocation) (string, error) { return "alice", nil },
+		ResolveHome: func(context.Context, SSHInvocation) (string, error) {
+			t.Fatal("explicit remote_dir must not query remote home")
+			return "", nil
+		},
+		UploaderForInvocation: func(SSHInvocation) paste.RemoteUploader {
+			uploaderCreated = true
+			return &recordingUploader{}
+		},
+	})
+	if result.Action != dispatch.ActionNativePaste || result.Kind != "unsafe_remote_path" || result.Payload != "" {
+		t.Fatalf("result=%+v", result)
+	}
+	if uploaderCreated {
+		t.Fatal("unsafe remote path must fail before constructing an uploader")
+	}
+}
+
+func TestBuildDispatchShortcutNeverAppendsConfiguredNewline(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "clipboard.png")
+	if err := os.WriteFile(imagePath, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.RemoteDir = "/srv/sshpic/alice"
+	cfg.Paste.InsertNewline = true
+	result := BuildDispatchWithDependencies(context.Background(), cfg, &fakeImageSource{image: provider.LocalImage{Path: imagePath, Format: "png"}}, sshSession("host"), DispatchDependencies{
+		ResolveUser:           func(context.Context, SSHInvocation) (string, error) { return "alice", nil },
+		UploaderForInvocation: func(SSHInvocation) paste.RemoteUploader { return &recordingUploader{} },
+	})
+	if result.Action != dispatch.ActionInsertRemoteImagePath || result.Payload != "/srv/sshpic/alice/clipboard.png" {
+		t.Fatalf("result=%+v", result)
+	}
+	if strings.ContainsAny(result.Payload, "\r\n") {
+		t.Fatalf("shortcut payload contains a submit control: %q", result.Payload)
+	}
+}
+
 func TestBuildDispatchResolutionFailureCleansImageExactlyOnce(t *testing.T) {
 	imagePath := filepath.Join(t.TempDir(), "clipboard.png")
 	if err := os.WriteFile(imagePath, []byte("png"), 0o600); err != nil {

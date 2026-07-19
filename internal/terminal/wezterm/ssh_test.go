@@ -222,11 +222,74 @@ func TestRemoteIdentityResolversRejectUnsafeOrFailedResults(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected ssh -G failure")
 	}
-	for _, output := range []string{"relative/home\n", "/safe/../escape\n", "/two\nlines\n", "\n"} {
+	for _, output := range []string{
+		"relative/home\n",
+		"/safe/../escape\n",
+		"/two\nlines\n",
+		"/home/alice smith\n",
+		"/home/alice;touch-pwned\n",
+		"/home/$(touch-pwned)\n",
+		"/home/alice`touch-pwned`\n",
+		"/home/alice|touch-pwned\n",
+		"/home/alice\\escape\n",
+		"\n",
+	} {
 		if _, err := ResolveRemoteHomeWithRunner(context.Background(), inv, func(context.Context, string, []string) ([]byte, error) {
 			return []byte(output), nil
 		}); err == nil {
 			t.Fatalf("unsafe home accepted: %q", output)
 		}
+	}
+}
+
+func TestShortcutPOSIXPathKeepsNormalHomeCompatibility(t *testing.T) {
+	for _, value := range []string{
+		"/",
+		"/root",
+		"/home/alice",
+		"/srv/accounts/alice-ci_1.2",
+		"/home/alice+ci@example.com",
+		"/home/사용자",
+	} {
+		if err := validateShortcutPOSIXPath(value); err != nil {
+			t.Fatalf("normal POSIX path %q rejected: %v", value, err)
+		}
+	}
+}
+
+func TestShortcutPOSIXPathRejectsTerminalSyntax(t *testing.T) {
+	values := []string{
+		"/home/alice\nnext",
+		"/home/alice\targ",
+		"/home/alice space",
+		"/home/alice;command",
+		"/home/alice&&command",
+		"/home/$(command)",
+		"/home/`command`",
+		"/home/alice>output",
+		"/home/alice*",
+		"/home/alice\\escape",
+		"/home/alice#comment",
+	}
+	values = append(values, string([]byte{'/', 'h', 'o', 'm', 'e', '/', 0xff}))
+	for _, value := range values {
+		if err := validateShortcutPOSIXPath(value); err == nil {
+			t.Fatalf("unsafe terminal path accepted: %q", value)
+		}
+	}
+}
+
+func TestCanonicalizeShortcutPOSIXPathNormalizesOnlyHarmlessSyntax(t *testing.T) {
+	for input, want := range map[string]string{
+		"/srv/sshpic/images/":  "/srv/sshpic/images",
+		"/srv/./sshpic/images": "/srv/sshpic/images",
+	} {
+		got, err := canonicalizeShortcutPOSIXPath(input)
+		if err != nil || got != want {
+			t.Fatalf("canonicalize(%q)=%q, %v; want %q", input, got, err, want)
+		}
+	}
+	if got, err := canonicalizeShortcutPOSIXPath("/srv/bad;command/../sshpic"); err == nil {
+		t.Fatalf("dangerous eliminated segment accepted as %q", got)
 	}
 }

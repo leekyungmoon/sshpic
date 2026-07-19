@@ -15,7 +15,7 @@ detect_host_os() {
     Darwin) printf '%s\n' "macos" ;;
     Linux)
       case "$detected_release" in
-        *[Mm]icrosoft*|*WSL*|*wsl*) printf '%s\n' "wsl" ;;
+        *[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]*|*[Ww][Ss][Ll]*) printf '%s\n' "wsl" ;;
         *) printf '%s\n' "linux" ;;
       esac
       ;;

@@ -12,6 +12,7 @@ import (
 	"path"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // LocalProcessInfo is the trusted subset of WezTerm's LocalProcessInfo object.
@@ -61,6 +62,13 @@ var uploadSafetyArgs = []string{
 	"-oControlPersist=no",
 	"-oControlPath=none",
 }
+
+// shortcutForbiddenPathASCII contains characters that can change how an
+// unquoted path is interpreted by an interactive shell. WezTerm inserts image
+// paths directly into terminal input, so shortcut paths deliberately accept a
+// smaller set than POSIX permits for filenames. Ordinary absolute home paths,
+// including Unicode names and common domain-user punctuation, remain valid.
+const shortcutForbiddenPathASCII = " ;&|<>()$`\"'!*?[]{}~#\\^"
 
 // ParseLocalProcessInfoJSON decodes the focused process object forwarded by
 // WezTerm. It deliberately accepts extra LocalProcessInfo fields but requires
@@ -419,13 +427,48 @@ func ResolveRemoteHomeWithRunner(ctx context.Context, invocation SSHInvocation, 
 func parseRemoteHome(output string) (string, error) {
 	value := strings.TrimSuffix(output, "\n")
 	value = strings.TrimSuffix(value, "\r")
-	if value == "" || !strings.HasPrefix(value, "/") || path.Clean(value) != value {
-		return "", errors.New("remote home is not a clean absolute POSIX path")
-	}
-	for _, r := range value {
-		if unicode.IsControl(r) {
-			return "", errors.New("remote home contains a control character")
-		}
+	if err := validateShortcutPOSIXPath(value); err != nil {
+		return "", fmt.Errorf("remote home is unsafe for terminal insertion: %w", err)
 	}
 	return value, nil
+}
+
+// validateShortcutPOSIXPath proves that a path can be inserted as one inert
+// terminal word. Upload commands independently shell-quote their paths; this
+// stricter boundary protects the later pane:send_paste operation.
+func validateShortcutPOSIXPath(value string) error {
+	cleaned, err := canonicalizeShortcutPOSIXPath(value)
+	if err != nil {
+		return err
+	}
+	if cleaned != value {
+		return errors.New("path is not a clean absolute POSIX path")
+	}
+	return nil
+}
+
+// canonicalizeShortcutPOSIXPath accepts harmless path spelling differences
+// used in config (for example, a trailing slash or /./ segment), rejects
+// terminal syntax before normalization, and returns the only value callers may
+// upload or insert.
+func canonicalizeShortcutPOSIXPath(value string) (string, error) {
+	if value == "" || !strings.HasPrefix(value, "/") {
+		return "", errors.New("path is not an absolute POSIX path")
+	}
+	if !utf8.ValidString(value) {
+		return "", errors.New("path is not valid UTF-8")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return "", errors.New("path contains a control or whitespace character")
+		}
+		if r < 128 && strings.ContainsRune(shortcutForbiddenPathASCII, r) {
+			return "", fmt.Errorf("path contains forbidden terminal character U+%04X", r)
+		}
+	}
+	cleaned := path.Clean(value)
+	if cleaned == "." || !strings.HasPrefix(cleaned, "/") {
+		return "", errors.New("path did not normalize to an absolute POSIX path")
+	}
+	return cleaned, nil
 }

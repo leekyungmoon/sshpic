@@ -123,7 +123,7 @@ func TestRestoreRetryFinishesCleanupAfterConfigWasAlreadyRestored(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.ConfigRestored || !restored.ManifestRemoved {
+	if restored.ConfigRestored || restored.ModuleRemoved || restored.BackupRemoved || !restored.ManifestRemoved {
 		t.Fatalf("restored=%+v", restored)
 	}
 	after, err := os.ReadFile(configPath)
