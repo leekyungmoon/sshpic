@@ -4,8 +4,8 @@
 
 - macOS + iTerm2 direct path insertion.
 - iTerm2 direct paste installed by default through Python RPC, with installer-managed runtime provisioning and safe-fail if provisioning is unavailable.
-- Windows 10/11 + WezTerm direct path insertion through native Windows OpenSSH (`ssh.exe`) from focused native PowerShell or Git Bash panes.
-- Windows Git Bash installer support with optional `winget` provisioning for Go and WezTerm, plus `install`, `doctor`, and `restore` coverage for WezTerm.
+- Windows 10/11 + WezTerm image paste through native Windows OpenSSH (`ssh.exe`) from focused native PowerShell or Git Bash panes, rendered by Codex as `[Image #1]`.
+- Windows PowerShell `.\install.ps1` and Git Bash `./install.sh` entry points with optional `winget` provisioning for Go and WezTerm, plus `install`, `doctor`, and `restore` coverage for WezTerm.
 - Foreground SSH target detection at paste time.
 - SSH stdin upload.
 - Payload-only paste primitive.

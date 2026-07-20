@@ -15,19 +15,31 @@ All of the following are required:
 
 Windows Terminal, WSL terminals, SSH launched inside WSL, PuTTY/Plink, headless Windows sessions, Windows services, and wrappers that hide the focused `ssh.exe` process are outside this candidate. They remain `TBD`.
 
+For image-paste runtime, PowerShell is supported only as the shell **inside a WezTerm pane**. Standalone PowerShell is a supported installer shell through `.\install.ps1`, but starting SSH there does not load the WezTerm integration and is unsupported, just like Windows Terminal.
+
 The Windows provider reads an image already present on the clipboard. `sshpic shot` and `sshpic full` screen capture are not implemented on Windows.
 
 The installer and doctor validate executable/config behavior but do not currently enforce semantic minimum versions for WezTerm or OpenSSH. Older inbox OpenSSH builds on Windows 10 and old WezTerm releases may lack required options/APIs; update them before treating a failure as a candidate-path bug. Record both `wezterm.exe --version` and `ssh.exe -V` in test evidence.
 
 ## Install
 
-Open **Git Bash** and run the same three commands used on macOS:
+From PowerShell:
+
+```powershell
+git clone https://github.com/leekyungmoon/sshpic.git
+Set-Location sshpic
+.\install.ps1
+```
+
+Or, from Git Bash:
 
 ```bash
 git clone https://github.com/leekyungmoon/sshpic.git
 cd sshpic
 ./install.sh
 ```
+
+Do **not** invoke `./install.sh` directly from PowerShell. A Windows `.sh` file association may start a separate Git Bash process asynchronously and return the PowerShell prompt before installation finishes; `install.ps1` runs that installer synchronously and reports its real exit status.
 
 The installer:
 
@@ -37,9 +49,9 @@ The installer:
 4. builds `sshpic.exe`;
 5. runs `sshpic install wezterm`.
 
-If a newly installed executable is not visible to the current Git Bash process, open a new Git Bash window and rerun `./install.sh`.
+If a newly installed executable is not visible to the current installer shell, open a new PowerShell or Git Bash window and rerun the matching installer.
 
-Do not run `./install.sh` from WSL for this integration. PowerShell is implemented as a pane shell **inside WezTerm after installation**; the source installer itself is a Bash script and must run in Git Bash.
+Do not run either installer from WSL for this integration. After installation, run SSH from native PowerShell or Git Bash **inside WezTerm**, not from a standalone PowerShell host or Windows Terminal.
 
 ## WezTerm configuration safety
 
@@ -59,20 +71,26 @@ After a successful install, reload the WezTerm configuration or restart WezTerm 
 
 ## Use
 
-In a WezTerm PowerShell or Git Bash pane:
+In a WezTerm PowerShell or Git Bash pane, first prove that the target works without any interactive authentication:
+
+```text
+ssh.exe -o BatchMode=yes -o ConnectTimeout=5 my-host true
+```
+
+Use an SSH `Host` alias such as `my-host` that supplies the intended user, identity, and jump-host settings. A raw IP target is discouraged; use it only if that exact preflight exits successfully without a password or host-key prompt. Then, in the same WezTerm pane:
 
 ```text
 ssh.exe my-host
 codex
 ```
 
-Then copy an image with a normal Windows application, focus the Codex input, and press `Ctrl+V`. The expected inserted text is a remote path such as:
+Copy an image with a normal Windows application, focus the Codex input, and press `Ctrl+V`. A passing Codex result displays exactly one attachment placeholder:
 
 ```text
-/home/alice/.sshpic/images/clipboard.png
+[Image #1]
 ```
 
-The path is inserted without an automatic newline. Codex or another terminal agent still reads the file by path; sshpic does not create a native image attachment.
+Underneath that UI, sshpic materializes the clipboard PNG at a private remote path such as `/home/alice/.sshpic/images/clipboard.png` and pastes that path without an automatic newline. Codex recognizes the existing image and converts the pasted path to `[Image #1]`; sshpic itself does not create Codex's attachment UI. A raw path left visible in the Codex input, any extra command/debug text, or no response is a failed Codex QA result. Other terminal agents may continue to show the path.
 
 For ordinary text, use the same `Ctrl+V`. The managed Lua callback delegates non-image clipboard content to `wezterm.action.PasteFrom("Clipboard")`; sshpic does not read and retype the text.
 
@@ -108,38 +126,32 @@ sshpic restore wezterm
 
 Preserve the output of `doctor wezterm` and `restore wezterm` before manually changing a failed installation. The backup may contain personal WezTerm settings; do not attach it to a public issue without reviewing it.
 
-## Deletion-equivalent uninstall
+## Uninstall
 
-An optional dry-run may start inside the checkout selected for removal. For the real uninstall, move the parent **Git Bash** shell outside that checkout first because Windows keeps that shell's current directory locked:
+From PowerShell inside the cloned checkout, run the one supported Windows uninstall command:
 
-```bash
-./uninstall.sh --dry-run
-cd ..
-./sshpic/uninstall.sh
+```powershell
+.\uninstall.ps1
 ```
 
-`sshpic` in the last command is the clone directory name; use its actual name if you renamed the checkout. This is still one uninstall behavior—the different path only lets Windows release the directory that the uninstaller must remove.
+There are no dry-run, purge, keep-source, binary-selection, or confirmation modes. `uninstall.ps1` synchronously invokes the bundled Git Bash implementation and returns its actual exit code.
 
 The uninstaller performs these operations in order:
 
-1. validates that the exact checkout is safe to remove and that all retained Git data is available from its verified live remote;
-2. builds a separate temporary helper outside the checkout, so neither the installed executable nor the checkout attempts to delete itself;
-3. builds and prints a read-only, exact deletion plan before asking for confirmation;
-4. reads the validated install manifest and treats its `binary_path` plus recorded SHA-256 as the executable deletion authority;
-5. records a narrow uninstall transaction and restores the manifest-owned WezTerm integration;
-6. removes and verifies sshpic's local config, cache/log directory, local materialized images, and direct temp files with known sshpic crash prefixes, without following symlinks or junctions;
-7. removes the exact regular executable after rechecking identity and content; and
-8. removes the exact source checkout selected by the uninstall invocation last through an identity-guarded quarantine and verifies its absence.
+1. builds and read-only probes a separate helper from the current checkout, so the installed executable never tries to delete itself;
+2. reads the owned WezTerm manifest and verifies the recorded binary path and SHA-256 against both the module and current executable;
+3. records a resumable uninstall journal and restores only the manifest-owned WezTerm integration;
+4. removes sshpic config, cache/log directories, materialized local images, legacy control state, strictly named crash-temp files, and stale install/uninstall helper runtimes without following symlinks or junctions;
+5. removes and verifies the exact manifest-owned `sshpic.exe`; and
+6. clears the settled Windows install transaction state and reports success only after the disabling postconditions hold.
 
-This is the only uninstall behavior and there is no checkout-preserving variant. A successful non-dry run removes the local sshpic executable, integration, owned local state, and the checkout, so sshpic can no longer operate from that installation. Reinstallation requires a new clone. `--yes` skips only the prompt, not validation or preflight. The current `GOBIN` is intentionally ignored for deletion; a custom install remains bound to the path saved at install time. `--config <path>` selects one exact custom sshpic config file, and `--wezterm-config <path>` selects the WezTerm config whose adjacent ownership manifest should be restored.
+The cloned source checkout is never deleted or modified. Dirty, untracked, ignored, unpushed, or Codex-project files in it are outside the uninstall target and remain byte-for-byte available. You can reinstall from that same checkout with `.\install.ps1`.
 
-Go is required because every attempt builds a fresh isolated helper that remains capable of completing an interrupted checkout deletion. The script also requires the current strong-uninstall protocol; an older helper fails during read-only preflight without changing installed state. A legacy manifest with no executable SHA-256 cannot prove ownership of a still-present file at its old path; rerun `./install.sh` once to record that hash before uninstalling. If Windows file locking prevents executable removal, close the named process and rerun. The transaction journal retains the previously validated path and SHA-256 so the retry does not guess after integration restore.
+If `WEZTERM_CONFIG_FILE` or `SSHPIC_CONFIG` was set during installation, set the same environment variable when uninstalling. There are still no alternate uninstall modes: the environment only identifies the owned manifest/config created by the original install. With no manifest or resumable journal, uninstall fails closed instead of claiming that a possibly installed executable was removed. Reinstall once with `.\install.ps1` to recreate ownership evidence, then run `.\uninstall.ps1`.
 
-If `WEZTERM_CONFIG_FILE` was set during installation, provide the same environment value during uninstall (or pass `--wezterm-config`) so the owned manifest can be found. With no manifest or retry journal, uninstall refuses before mutation because it cannot prove which executable and integration state belong to sshpic; it never reports successful uninstall while a possibly installed `sshpic.exe` remains.
+Go is required to build the separate helper. If Windows keeps the installed executable locked, close the named process and rerun; the journal preserves the validated binary identity for that retry.
 
-Before running the real uninstall, commit and push anything you need and move any ChatGPT/Codex project rooted in the checkout. The uninstaller refuses a dirty checkout, ignored or untracked files, stashes/custom refs, linked worktrees, reflog-only/unreachable commits, unpublished local branches or tags, stale or manually saved remote-tracking refs, a missing live upstream, or a local HEAD that differs from the verified live upstream head. Its completion receipt binds the exact settled install generation and deterministic sibling quarantine path. A separately synced ownership marker permits no-follow recovery after a crash, and an isolated recovery runtime supplies the exact retry when the original checkout is already unavailable. A new Windows install refuses to overwrite pending uninstall recovery state.
-
-The uninstaller does not remove Go, WezTerm, winget package records, SSH configuration/keys, the current clipboard value, or remote images. Go and WezTerm are shared dependencies and this release has no ownership receipt that proves they are unused elsewhere. Remote cleanup is host-specific network deletion, and sshpic has no complete ledger of every host/path used; review and remove those files separately rather than allowing uninstall to guess.
+Go, WezTerm, winget package records, SSH configuration/keys, the current clipboard value, and remote images are not removed. They are shared or host-specific state that sshpic cannot safely claim as exclusively owned.
 
 ## Release evidence
 
@@ -149,9 +161,9 @@ Run the interactive Windows harness from the repository on a real Windows 10/11 
 powershell -ExecutionPolicy Bypass -File .\scripts\verify-windows-wezterm-codex-e2e.ps1
 ```
 
-Set `SSHPIC_E2E_HOST` to the same simple SSH destination/alias you use in the focused pane. The harness records system/tool versions, installation and doctor output, an image-path confirmation, remote file mode/content checks, native text-paste confirmation, and restore output. It restores sshpic-owned WezTerm state by default. No retained real interactive PASS bundle is currently present in this repository, so running CI or reading this harness does not promote the candidate to supported status.
+Set `SSHPIC_E2E_HOST` to the same simple SSH destination/alias you use in the focused pane. An SSH config alias is recommended; a raw IP is discouraged and accepted only when the harness's `BatchMode=yes` key-authentication preflight succeeds. The harness runs that preflight before it writes to the clipboard or asks for a paste, then records system/tool versions, installation and doctor output, an exact `[Image #1]` confirmation, remote file mode/content checks, native text-paste confirmation, and restore output. It restores sshpic-owned WezTerm state by default. No retained real interactive PASS bundle is currently present in this repository, so running CI or reading this harness does not promote the candidate to supported status.
 
-The automated remote check targets the fresh-install default `$HOME/.sshpic/images/clipboard.png` and compares its SHA-256 with the unique clipboard readback fixture, so a stale PNG cannot pass. If you intentionally configured another `remote_dir`, preserve that manual evidence separately; the stock harness will fail rather than claim a false pass.
+The automated remote check targets the fresh-install default `$HOME/.sshpic/images/clipboard.png` and compares its SHA-256 with the locally materialized PNG read back from the exact clipboard fixture, so a stale or different PNG cannot pass. Both SHA-256 values and their equality result are retained in the evidence. If you intentionally configured another `remote_dir`, preserve that manual evidence separately; the stock harness will fail rather than claim a false pass.
 
 The interactive harness requires the Windows clipboard to be completely empty before its first write. It refuses every pre-existing format—including plain text, bitmap, HTML, file lists, and multi-format combinations—because converting any of those into a simplified backup would be lossy. Clear the clipboard deliberately before starting the E2E. During cleanup, the harness clears only the exact image or text fixture state it recorded as its own; if another application or the user changes the clipboard, cleanup refuses to overwrite the new contents and the run fails safely.
 

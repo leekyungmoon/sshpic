@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/leekyungmoon/sshpic/internal/config"
 	"github.com/leekyungmoon/sshpic/internal/paste"
@@ -61,6 +62,9 @@ func BuildDispatchWithDependencies(ctx context.Context, cfg config.Config, src p
 	}
 	invocation, focusedSSH := ParseSSHInvocation(sess.Process)
 	if !focusedSSH {
+		if IsSSHExecutable(sess.Process.Executable) {
+			return nativeResult("unusable_ssh_process", "focused process reports ssh/ssh.exe but its argv could not be verified; using native paste")
+		}
 		return buildNeutralDispatch(ctx, cfg, src, sess, SSHInvocation{}, false, deps)
 	}
 	if src == nil {
@@ -191,6 +195,7 @@ func buildNeutralDispatch(ctx context.Context, cfg config.Config, src provider.L
 		}
 	}
 
+	var uploadDiagnostic *diagnosticUploader
 	result := dispatch.Build(ctx, cfg, src, neutral, dispatch.Dependencies{
 		DetectSSH: func(context.Context, dispatch.SessionContext) (dispatch.SSHTarget, bool) {
 			if !focusedSSH {
@@ -204,10 +209,18 @@ func buildNeutralDispatch(ctx context.Context, cfg config.Config, src provider.L
 			}, true
 		},
 		UploaderForTarget: func(dispatch.SSHTarget) paste.RemoteUploader {
-			return uploaderFactory(invocation)
+			uploader := uploaderFactory(invocation)
+			if uploader == nil {
+				return nil
+			}
+			uploadDiagnostic = &diagnosticUploader{RemoteUploader: uploader}
+			return uploadDiagnostic
 		},
 		Log: deps.Log,
 	})
+	if result.Action == dispatch.ActionNativePaste && result.Kind == "image" && uploadDiagnostic != nil && uploadDiagnostic.Err != nil {
+		result.Reason = "image upload failed: " + sanitizeHelperDiagnostic(uploadDiagnostic.Err.Error())
+	}
 	if result.Action == dispatch.ActionInsertRemoteImagePath {
 		if err := validateShortcutPOSIXPath(result.Payload); err != nil {
 			logDispatch(deps.Log, "wezterm unsafe remote payload rejected: "+err.Error())
@@ -215,6 +228,70 @@ func buildNeutralDispatch(ctx context.Context, cfg config.Config, src provider.L
 		}
 	}
 	return result
+}
+
+type diagnosticUploader struct {
+	paste.RemoteUploader
+	Err error
+}
+
+func (uploader *diagnosticUploader) Upload(ctx context.Context, localPath, remotePath string) error {
+	err := uploader.RemoteUploader.Upload(ctx, localPath, remotePath)
+	if err != nil {
+		uploader.Err = errors.New(sanitizeHelperDiagnostic(err.Error()))
+		return uploader.Err
+	}
+	return nil
+}
+
+func (uploader *diagnosticUploader) Verify(ctx context.Context, localPath, remotePath string) (upload.VerifyResult, error) {
+	result, err := uploader.RemoteUploader.Verify(ctx, localPath, remotePath)
+	if err != nil {
+		uploader.Err = errors.New(sanitizeHelperDiagnostic(err.Error()))
+		return result, uploader.Err
+	}
+	return result, nil
+}
+
+func sanitizeHelperDiagnostic(value string) string {
+	unsafeControl := false
+	value = strings.Map(func(r rune) rune {
+		if !unicode.IsControl(r) {
+			return r
+		}
+		switch r {
+		case '\r', '\n', '\t':
+			return ' '
+		default:
+			unsafeControl = true
+			return -1
+		}
+	}, value)
+	if unsafeControl {
+		return "[redacted ssh diagnostic]"
+	}
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		return "unknown helper error"
+	}
+	lower := strings.ToLower(value)
+	for _, sensitive := range []string{
+		"private key",
+		"identityfile",
+		"identity file",
+		"load key",
+		"bad permissions",
+		"permissions for '",
+	} {
+		if strings.Contains(lower, sensitive) {
+			return "[redacted ssh diagnostic]"
+		}
+	}
+	runes := []rune(value)
+	if len(runes) > 400 {
+		value = string(runes[:400]) + "..."
+	}
+	return value
 }
 
 func nativeResult(kind, reason string) dispatch.Result {

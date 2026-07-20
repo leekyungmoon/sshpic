@@ -25,17 +25,13 @@ const (
 	// their ownership is an exact original-file family, not a broad directory.
 	TargetCustomConfigQuarantine TargetKind = "custom-config-quarantine"
 	TargetCrashTempQuarantine    TargetKind = "crash-temp-quarantine"
-	TargetInstallReceiptPending  TargetKind = "install-receipt-pending"
-	TargetReceiptWritePending    TargetKind = "receipt-write-pending"
+	TargetStaleRuntime           TargetKind = "stale-helper-runtime"
 )
 
-const (
-	sourcePurgeInstallPendingMarker = ".sshpic-install-"
-	sourcePurgeReceiptWriteMarker   = ".write-"
-	sourcePurgeInstallCleanupMarker = ".cleanup-"
-	sourcePurgePendingSuffix        = ".pending"
-	sourcePurgeGenerationFile       = "generation-v1.json"
-)
+// legacyWindowsControlDir was owned by earlier Windows builds. The current
+// uninstaller deletes this exact namespace as inert local state and never
+// interprets its contents or any source path recorded inside it.
+const legacyWindowsControlDir = "sshpic-source-purge"
 
 // Target is one exact local path selected for cleanup.
 type Target struct {
@@ -186,37 +182,18 @@ func BuildLocalPlan(options LocalOptions) (LocalPlan, error) {
 		}
 		plan.targets = append(plan.targets, quarantine)
 	}
-	receiptQuarantines, err := findInstallReceiptPendingTargets(opts.cacheDir, plan.excluded, opts)
+	staleRuntimes, err := findStaleRuntimeTargets(opts.tempDir, plan.excluded, opts)
 	if err != nil {
 		return LocalPlan{}, err
 	}
-	for _, quarantine := range receiptQuarantines {
-		if targetPathPlanned(plan.targets, quarantine.Path) {
-			continue
-		}
-		if err := validateInstallReceiptPendingTarget(quarantine.Path, opts); err != nil {
+	for _, runtimeTarget := range staleRuntimes {
+		if err := validateStaleRuntimeTarget(runtimeTarget.Path, opts); err != nil {
 			return LocalPlan{}, err
 		}
-		plan.targets = append(plan.targets, quarantine)
-	}
-	receiptWritePending, err := findReceiptWritePendingTargets(opts.cacheDir, plan.excluded, opts)
-	if err != nil {
-		return LocalPlan{}, err
-	}
-	for _, pending := range receiptWritePending {
-		if targetPathPlanned(plan.targets, pending.Path) {
-			continue
-		}
-		if err := validateReceiptWritePendingTarget(pending.Path, opts); err != nil {
-			return LocalPlan{}, err
-		}
-		plan.targets = append(plan.targets, pending)
+		plan.targets = append(plan.targets, runtimeTarget)
 	}
 	plan.targets = uniqueSortedTargets(plan.targets)
 	if err := validateProtectedPathIsolation(plan.targets, opts.protectedPaths); err != nil {
-		return LocalPlan{}, err
-	}
-	if err := validateReservedReceiptStateIsolation(plan.targets, opts); err != nil {
 		return LocalPlan{}, err
 	}
 	plan.leafSelections, err = captureLocalLeafSelections(plan.targets, defaultLocalRemoveOps())
@@ -357,6 +334,10 @@ func normalizeLocalOptions(options LocalOptions) (normalizedLocalOptions, error)
 		{filepath.Join(opts.homeDir, ".config", "sshpic"), filepath.Join(opts.homeDir, ".config")},
 		{filepath.Join(opts.homeDir, ".sshpic"), opts.homeDir},
 		{filepath.Join(opts.cacheDir, "sshpic"), opts.cacheDir},
+		// Remove control state left by the previously published source-purge
+		// implementation. Current uninstall never reads it or acts on a source
+		// path from it; the exact sshpic-owned namespace is simply deleted.
+		{filepath.Join(opts.cacheDir, legacyWindowsControlDir), opts.cacheDir},
 		{filepath.Join(opts.homeDir, ".cache", "sshpic"), filepath.Join(opts.homeDir, ".cache")},
 	}
 	for _, namespace := range namespaces {
@@ -474,7 +455,7 @@ func checkedAbsolutePath(label, value string) (string, error) {
 }
 
 func validateOwnedTarget(target string, opts normalizedLocalOptions) error {
-	if filepath.Base(target) != "sshpic" && filepath.Base(target) != ".sshpic" {
+	if filepath.Base(target) != "sshpic" && filepath.Base(target) != ".sshpic" && filepath.Base(target) != legacyWindowsControlDir {
 		return fmt.Errorf("refusing non-sshpic namespace target: %s", target)
 	}
 	// The namespace entry itself may be a stale link, which is safe to remove as
@@ -683,34 +664,16 @@ func findCrashTempQuarantineTargets(tempDir string, excluded []string, opts norm
 	return targets, nil
 }
 
-func findInstallReceiptPendingTargets(cacheDir string, excluded []string, opts normalizedLocalOptions) ([]Target, error) {
-	return findReceiptPendingTargets(cacheDir, excluded, opts, TargetInstallReceiptPending, "install receipt", isInstallReceiptPendingName)
-}
-
-func findReceiptWritePendingTargets(cacheDir string, excluded []string, opts normalizedLocalOptions) ([]Target, error) {
-	return findReceiptPendingTargets(cacheDir, excluded, opts, TargetReceiptWritePending, "receipt write", isReceiptWritePendingName)
-}
-
-func findReceiptPendingTargets(cacheDir string, excluded []string, opts normalizedLocalOptions, kind TargetKind, label string, matchesName func(string) bool) ([]Target, error) {
-	receiptDir := filepath.Join(cacheDir, sourcePurgeReceiptDir)
-	entries, directoryGuard, closeDirectory, missing, err := readStablePlainDirectory("source purge receipt directory", receiptDir, defaultLocalRemoveOps())
-	if missing {
-		return nil, nil
-	}
+func findStaleRuntimeTargets(tempDir string, excluded []string, opts normalizedLocalOptions) ([]Target, error) {
+	entries, err := os.ReadDir(tempDir)
 	if err != nil {
-		return nil, fmt.Errorf("scan source purge %s pending files: %w", label, err)
+		return nil, fmt.Errorf("scan sshpic helper runtimes: %w", err)
 	}
-	defer closeDirectory()
 	var targets []Target
 	for _, entry := range entries {
-		if err := directoryGuard(); err != nil {
-			return nil, err
-		}
-		if !matchesName(entry.Name()) {
-			continue
-		}
-		path := filepath.Join(receiptDir, entry.Name())
-		if isExcluded(path, excluded) {
+		path := filepath.Join(tempDir, entry.Name())
+		origin := localQuarantineFamilyBase(path)
+		if !samePath(filepath.Dir(origin), tempDir) || !validStaleRuntimeName(filepath.Base(origin)) || isExcluded(path, excluded) {
 			continue
 		}
 		info, err := os.Lstat(path)
@@ -720,162 +683,65 @@ func findReceiptPendingTargets(cacheDir string, excluded []string, opts normaliz
 		if err != nil {
 			return nil, err
 		}
-		if err := directoryGuard(); err != nil {
-			return nil, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("refusing unsafe source purge %s pending entry: %s", label, path)
+		if info.Mode()&os.ModeSymlink == 0 && !info.IsDir() {
+			continue
 		}
 		if os.SameFile(info, opts.helperInfo) {
-			return nil, fmt.Errorf("source purge %s pending entry aliases the active helper: %s", label, path)
+			continue
 		}
-		targets = append(targets, Target{Kind: kind, Path: path})
-	}
-	if err := directoryGuard(); err != nil {
-		return nil, err
-	}
-	if err := closeDirectory(); err != nil {
-		return nil, err
+		targets = append(targets, Target{Kind: TargetStaleRuntime, Path: path})
 	}
 	return targets, nil
 }
 
-func readStablePlainDirectory(label, path string, ops localRemoveOps) ([]os.DirEntry, pathGuard, func() error, bool, error) {
-	if _, err := ops.lstat(path); errors.Is(err, os.ErrNotExist) {
-		return nil, nil, nil, true, nil
-	} else if err != nil {
-		return nil, nil, nil, false, err
-	}
-	initial, err := checkedExistingPlainDirectory(label, path)
-	if err != nil {
-		return nil, nil, nil, false, err
-	}
-	identity, missing, err := capturePathIdentity(path, ops)
-	if err != nil || missing {
-		if err == nil {
-			err = fmt.Errorf("%s disappeared during identity pinning: %s", label, path)
+func validStaleRuntimeName(name string) bool {
+	validPrefix := false
+	for _, prefix := range []string{"sshpic-install.", "sshpic-uninstall."} {
+		if strings.HasPrefix(name, prefix) {
+			name = strings.TrimPrefix(name, prefix)
+			validPrefix = true
+			break
 		}
-		return nil, nil, nil, false, err
 	}
-	if identity.isSymlink || !identity.isDir || !os.SameFile(initial, identity.info) {
-		return nil, nil, nil, false, fmt.Errorf("%s identity changed before scan: %s", label, path)
-	}
-	entries, guard, closeDirectory, err := readVerifiedDirectory(path, identity, ops)
-	if err != nil {
-		return nil, nil, nil, false, err
-	}
-	return entries, guard, closeDirectory, false, nil
-}
-
-func isInstallReceiptPendingName(name string) bool {
-	prefix := sourcePurgeReceiptFile + sourcePurgeInstallPendingMarker
-	return isReceiptPendingNameWithCleanup(name, prefix)
-}
-
-func isReceiptWritePendingName(name string) bool {
-	prefix := sourcePurgeReceiptFile + sourcePurgeReceiptWriteMarker
-	return isReceiptPendingNameWithCleanup(name, prefix)
-}
-
-func isGenerationWritePendingName(name string) bool {
-	prefix := sourcePurgeGenerationFile + sourcePurgeReceiptWriteMarker
-	return isReceiptPendingNameWithCleanup(name, prefix)
-}
-
-func isReceiptPendingNameWithCleanup(name, prefix string) bool {
-	if !strings.HasPrefix(name, prefix) {
+	if !validPrefix || len(name) != 6 {
 		return false
 	}
-	remainder := name[len(prefix):]
-	if !consumeStrictPendingNonce(&remainder, sourcePurgePendingSuffix) {
-		return false
-	}
-	for remainder != "" {
-		if !strings.HasPrefix(remainder, sourcePurgeInstallCleanupMarker) {
-			return false
-		}
-		remainder = remainder[len(sourcePurgeInstallCleanupMarker):]
-		if !consumeStrictPendingNonce(&remainder, sourcePurgePendingSuffix) {
+	for _, char := range name {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9')) {
 			return false
 		}
 	}
 	return true
 }
 
-func consumeStrictPendingNonce(remainder *string, suffix string) bool {
-	if len(*remainder) < 32+len(suffix) {
-		return false
+func validateStaleRuntimeTarget(target string, opts normalizedLocalOptions) error {
+	origin := localQuarantineFamilyBase(target)
+	if !samePath(filepath.Dir(origin), opts.tempDir) || !validStaleRuntimeName(filepath.Base(origin)) {
+		return fmt.Errorf("invalid stale sshpic helper runtime: %s", target)
 	}
-	nonce := (*remainder)[:32]
-	for _, character := range nonce {
-		if !strings.ContainsRune("0123456789abcdef", character) {
-			return false
-		}
+	if isExcluded(target, []string{opts.helperDir, opts.helperPath}) {
+		return fmt.Errorf("stale runtime target aliases the active uninstall helper: %s", target)
 	}
-	if !strings.HasPrefix((*remainder)[32:], suffix) {
-		return false
+	info, err := os.Lstat(target)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	*remainder = (*remainder)[32+len(suffix):]
-	return true
-}
-
-func validateInstallReceiptPendingTarget(path string, opts normalizedLocalOptions) error {
-	return validateReceiptPendingTarget(path, opts, "install receipt", isInstallReceiptPendingName)
-}
-
-func validateReceiptWritePendingTarget(path string, opts normalizedLocalOptions) error {
-	return validateReceiptPendingTarget(path, opts, "receipt write", isReceiptWritePendingName)
-}
-
-func validateReceiptPendingTarget(path string, opts normalizedLocalOptions, label string, matchesName func(string) bool) error {
-	expectedDir := filepath.Join(opts.cacheDir, sourcePurgeReceiptDir)
-	if !samePath(filepath.Dir(path), expectedDir) || !matchesName(filepath.Base(path)) {
-		return fmt.Errorf("invalid source purge %s pending target: %s", label, path)
-	}
-	authoritative := filepath.Join(expectedDir, sourcePurgeReceiptFile)
-	if samePath(path, authoritative) {
-		return fmt.Errorf("refusing authoritative source purge receipt as pending cleanup: %s", path)
+	if err == nil && info.Mode()&os.ModeSymlink == 0 && !info.IsDir() {
+		return fmt.Errorf("stale sshpic helper runtime is not a directory or exact link: %s", target)
 	}
 	for _, protected := range []struct {
 		label string
 		path  string
 	}{
 		{"source checkout", opts.sourceRoot},
-		{"active helper", opts.helperDir},
+		{"active uninstall helper", opts.helperDir},
 	} {
-		overlap, err := pathsOverlap(path, protected.path)
+		overlap, err := pathsOverlap(target, protected.path)
 		if err != nil {
-			return fmt.Errorf("verify install receipt pending isolation for %s: %w", path, err)
+			return fmt.Errorf("verify stale runtime isolation for %s: %w", target, err)
 		}
 		if overlap {
-			return fmt.Errorf("source purge install receipt pending target overlaps the %s: %s", protected.label, path)
-		}
-	}
-	return nil
-}
-
-func validateReservedReceiptStateIsolation(targets []Target, opts normalizedLocalOptions) error {
-	receiptDir := filepath.Join(opts.cacheDir, sourcePurgeReceiptDir)
-	reserved := []string{
-		filepath.Join(receiptDir, sourcePurgeReceiptFile),
-		filepath.Join(receiptDir, sourcePurgeGenerationFile),
-	}
-
-	for _, target := range targets {
-		if samePath(filepath.Dir(target.Path), receiptDir) {
-			name := filepath.Base(target.Path)
-			if name == sourcePurgeReceiptFile || name == sourcePurgeGenerationFile || isGenerationWritePendingName(name) {
-				return fmt.Errorf("local cleanup target overlaps reserved source purge receipt state: %s", target.Path)
-			}
-		}
-		for _, protected := range reserved {
-			overlap, err := pathsOverlap(target.Path, protected)
-			if err != nil {
-				return fmt.Errorf("verify reserved source purge receipt state %s: %w", protected, err)
-			}
-			if overlap {
-				return fmt.Errorf("local cleanup target overlaps reserved source purge receipt state: target=%s protected=%s", target.Path, protected)
-			}
+			return fmt.Errorf("stale sshpic helper runtime overlaps the %s: %s", protected.label, target)
 		}
 	}
 	return nil
@@ -924,20 +790,32 @@ func localQuarantineFamilyBase(path string) string {
 	name := filepath.Base(path)
 	const marker = ".sshpic-purge-"
 	const suffix = ".pending"
-	markerIndex := strings.LastIndex(name, marker)
-	if markerIndex <= 0 || !strings.HasSuffix(name, suffix) {
-		return path
-	}
-	nonce := name[markerIndex+len(marker) : len(name)-len(suffix)]
-	if len(nonce) != 32 {
-		return path
-	}
-	for _, char := range nonce {
-		if !strings.ContainsRune("0123456789abcdef", char) {
-			return path
+	original := name
+	for {
+		markerIndex := strings.LastIndex(name, marker)
+		if markerIndex <= 0 || !strings.HasSuffix(name, suffix) {
+			break
 		}
+		nonce := name[markerIndex+len(marker) : len(name)-len(suffix)]
+		if len(nonce) != 32 {
+			break
+		}
+		valid := true
+		for _, char := range nonce {
+			if !strings.ContainsRune("0123456789abcdef", char) {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			break
+		}
+		name = name[:markerIndex]
 	}
-	return filepath.Join(filepath.Dir(path), name[:markerIndex])
+	if name == original {
+		return path
+	}
+	return filepath.Join(filepath.Dir(path), name)
 }
 
 func validateCustomConfig(path string, opts normalizedLocalOptions) error {
@@ -1109,6 +987,17 @@ func revalidatePlan(plan LocalPlan) error {
 			if err := validateQuarantineTarget(target.Path, plan.opts); err != nil {
 				return err
 			}
+		case TargetStaleRuntime:
+			if err := validateStaleRuntimeTarget(target.Path, plan.opts); err != nil {
+				return err
+			}
+			selection, ok := plan.leafSelection(target)
+			if !ok {
+				return fmt.Errorf("stale runtime target has no pinned plan identity: %s", target.Path)
+			}
+			if err := revalidateLocalLeafSelection(target, selection, defaultLocalRemoveOps()); err != nil {
+				return err
+			}
 		case TargetCustomConfig:
 			if err := validateCustomConfig(target.Path, plan.opts); err != nil {
 				return err
@@ -1142,28 +1031,6 @@ func revalidatePlan(plan LocalPlan) error {
 			if err := revalidateLocalLeafSelection(target, selection, defaultLocalRemoveOps()); err != nil {
 				return err
 			}
-		case TargetInstallReceiptPending:
-			if err := validateInstallReceiptPendingTarget(target.Path, plan.opts); err != nil {
-				return err
-			}
-			selection, ok := plan.leafSelection(target)
-			if !ok {
-				return fmt.Errorf("install receipt pending target has no pinned plan identity: %s", target.Path)
-			}
-			if err := revalidateLocalLeafSelection(target, selection, defaultLocalRemoveOps()); err != nil {
-				return err
-			}
-		case TargetReceiptWritePending:
-			if err := validateReceiptWritePendingTarget(target.Path, plan.opts); err != nil {
-				return err
-			}
-			selection, ok := plan.leafSelection(target)
-			if !ok {
-				return fmt.Errorf("receipt write pending target has no pinned plan identity: %s", target.Path)
-			}
-			if err := revalidateLocalLeafSelection(target, selection, defaultLocalRemoveOps()); err != nil {
-				return err
-			}
 		default:
 			return fmt.Errorf("unknown local cleanup target kind %q", target.Kind)
 		}
@@ -1171,7 +1038,7 @@ func revalidatePlan(plan LocalPlan) error {
 	if err := validateProtectedPathIsolation(plan.targets, plan.opts.protectedPaths); err != nil {
 		return err
 	}
-	return validateReservedReceiptStateIsolation(plan.targets, plan.opts)
+	return nil
 }
 
 func verifyProtectedIdentities(opts normalizedLocalOptions) error {
@@ -1218,7 +1085,12 @@ func removeTarget(target Target, excluded []string, selection localLeafSelection
 	switch target.Kind {
 	case TargetNamespace, TargetQuarantine:
 		return removeOwnedTree(target.Path, excluded)
-	case TargetCustomConfig, TargetCrashTemp, TargetCustomConfigQuarantine, TargetCrashTempQuarantine, TargetInstallReceiptPending, TargetReceiptWritePending:
+	case TargetStaleRuntime:
+		if !hasSelection {
+			return false, fmt.Errorf("stale runtime target has no pinned plan identity: %s", target.Path)
+		}
+		return removeSelectedRuntimeWithOps(target, excluded, selection, defaultLocalRemoveOps())
+	case TargetCustomConfig, TargetCrashTemp, TargetCustomConfigQuarantine, TargetCrashTempQuarantine:
 		if !hasSelection {
 			return false, fmt.Errorf("local leaf target has no pinned plan identity: %s", target.Path)
 		}
@@ -1322,9 +1194,13 @@ func validateLocalLeafType(target Target, identity localPathIdentity) error {
 		if identity.info == nil || !identity.info.Mode().IsRegular() {
 			return fmt.Errorf("custom config is not a regular file or exact link: %s", target.Path)
 		}
-	case TargetCrashTemp, TargetCrashTempQuarantine, TargetInstallReceiptPending, TargetReceiptWritePending:
+	case TargetCrashTemp, TargetCrashTempQuarantine:
 		if identity.isSymlink || identity.isDir || identity.info == nil || !identity.info.Mode().IsRegular() {
 			return fmt.Errorf("crash temp target changed type after confirmation: %s", target.Path)
+		}
+	case TargetStaleRuntime:
+		if !identity.isSymlink && !identity.isDir {
+			return fmt.Errorf("stale helper runtime changed to a non-directory after confirmation: %s", target.Path)
 		}
 	default:
 		return fmt.Errorf("target is not a local leaf: %s", target.Path)
@@ -1334,7 +1210,7 @@ func validateLocalLeafType(target Target, identity localPathIdentity) error {
 
 func isLocalLeafTargetKind(kind TargetKind) bool {
 	switch kind {
-	case TargetCustomConfig, TargetCrashTemp, TargetCustomConfigQuarantine, TargetCrashTempQuarantine, TargetInstallReceiptPending, TargetReceiptWritePending:
+	case TargetCustomConfig, TargetCrashTemp, TargetCustomConfigQuarantine, TargetCrashTempQuarantine, TargetStaleRuntime:
 		return true
 	default:
 		return false
@@ -1392,11 +1268,25 @@ func removeSelectedLeafWithOps(target Target, excluded []string, selection local
 	if target.Kind == TargetCustomConfigQuarantine || target.Kind == TargetCrashTempQuarantine {
 		quarantineFamily = localQuarantineFamilyBase(target.Path)
 	}
-	var allocator quarantinePathAllocator
-	if target.Kind == TargetInstallReceiptPending || target.Kind == TargetReceiptWritePending {
-		allocator = uniqueInstallReceiptCleanupPath
+	return quarantineAndRemoveExpected(target.Path, quarantineFamily, excluded, ops, nil, &selection, nil)
+}
+
+func removeSelectedRuntimeWithOps(target Target, excluded []string, selection localLeafSelection, ops localRemoveOps) (bool, error) {
+	if target.Kind != TargetStaleRuntime {
+		return false, fmt.Errorf("target is not a stale helper runtime: %s", target.Path)
 	}
-	return quarantineAndRemoveExpected(target.Path, quarantineFamily, excluded, ops, nil, &selection, allocator)
+	if isExcluded(target.Path, excluded) {
+		return true, nil
+	}
+	return quarantineAndRemoveExpected(
+		target.Path,
+		localQuarantineFamilyBase(target.Path),
+		excluded,
+		ops,
+		nil,
+		&selection,
+		nil,
+	)
 }
 
 type pathGuard func() error
@@ -1561,22 +1451,6 @@ func uniqueLocalQuarantinePath(path string, lstat func(string) (os.FileInfo, err
 	return "", errors.New("could not allocate a local purge quarantine path")
 }
 
-func uniqueInstallReceiptCleanupPath(path string, lstat func(string) (os.FileInfo, error)) (string, error) {
-	for attempt := 0; attempt < 32; attempt++ {
-		var nonce [16]byte
-		if _, err := rand.Read(nonce[:]); err != nil {
-			return "", fmt.Errorf("generate install receipt cleanup quarantine name: %w", err)
-		}
-		candidate := path + sourcePurgeInstallCleanupMarker + hex.EncodeToString(nonce[:]) + sourcePurgePendingSuffix
-		if _, err := lstat(candidate); errors.Is(err, os.ErrNotExist) {
-			return candidate, nil
-		} else if err != nil {
-			return "", err
-		}
-	}
-	return "", errors.New("could not allocate an install receipt cleanup quarantine path")
-}
-
 func restoreLocalQuarantine(quarantinePath, originalPath string, identity localPathIdentity, ops localRemoveOps) error {
 	matches, err := pathIdentityMatches(quarantinePath, identity, ops)
 	if err != nil {
@@ -1715,7 +1589,7 @@ func readVerifiedDirectory(path string, identity localPathIdentity, ops localRem
 func verifyLocalCleanup(plan LocalPlan) error {
 	for _, target := range plan.targets {
 		switch target.Kind {
-		case TargetNamespace, TargetQuarantine:
+		case TargetNamespace, TargetQuarantine, TargetStaleRuntime:
 			if _, err := verifyOnlyExcluded(target.Path, plan.excluded); err != nil {
 				return err
 			}
@@ -1736,16 +1610,6 @@ func verifyLocalCleanup(plan LocalPlan) error {
 			if _, err := os.Lstat(target.Path); !errors.Is(err, os.ErrNotExist) {
 				if err == nil {
 					return fmt.Errorf("crash temp path remains after local cleanup: %s", target.Path)
-				}
-				return err
-			}
-		case TargetInstallReceiptPending, TargetReceiptWritePending:
-			if isExcluded(target.Path, plan.excluded) {
-				continue
-			}
-			if _, err := os.Lstat(target.Path); !errors.Is(err, os.ErrNotExist) {
-				if err == nil {
-					return fmt.Errorf("source purge install receipt pending path remains after local cleanup: %s", target.Path)
 				}
 				return err
 			}
@@ -1775,19 +1639,12 @@ func verifyLocalCleanup(plan LocalPlan) error {
 	if len(tempPending) != 0 {
 		return fmt.Errorf("crash temp purge quarantine remains after cleanup: %s", tempPending[0].Path)
 	}
-	receiptPending, err := findInstallReceiptPendingTargets(plan.opts.cacheDir, plan.excluded, plan.opts)
+	staleRuntimes, err := findStaleRuntimeTargets(plan.opts.tempDir, plan.excluded, plan.opts)
 	if err != nil {
 		return err
 	}
-	if len(receiptPending) != 0 {
-		return fmt.Errorf("source purge install receipt pending file remains after cleanup: %s", receiptPending[0].Path)
-	}
-	receiptWritePending, err := findReceiptWritePendingTargets(plan.opts.cacheDir, plan.excluded, plan.opts)
-	if err != nil {
-		return err
-	}
-	if len(receiptWritePending) != 0 {
-		return fmt.Errorf("source purge receipt write pending file remains after cleanup: %s", receiptWritePending[0].Path)
+	if len(staleRuntimes) != 0 {
+		return fmt.Errorf("stale sshpic helper runtime remains after cleanup: %s", staleRuntimes[0].Path)
 	}
 	for _, namespace := range plan.opts.namespacePath {
 		pending, err := findLocalQuarantineTargets(namespace)

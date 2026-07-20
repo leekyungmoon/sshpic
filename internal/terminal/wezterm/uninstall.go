@@ -23,7 +23,7 @@ type UninstallOptions struct {
 	JournalPath    string
 	// ValidateManagedPaths must perform read-only cross-plan validation. It is
 	// called with every owned/protected transaction path before journal writes,
-	// Restore, local cleanup, binary quarantine or source completion.
+	// Restore, local cleanup, binary quarantine or post-binary completion.
 	ValidateManagedPaths func(UninstallManagedPaths) error
 	// BeforeBinaryRemoval runs after WezTerm ownership has been restored and
 	// confirmed, but before the installed executable is quarantined. It should
@@ -31,7 +31,7 @@ type UninstallOptions struct {
 	BeforeBinaryRemoval func() error
 	// AfterBinaryRemoval runs after the exact owned binary is gone but before
 	// the resumable ownership journal is removed. A failure therefore leaves
-	// authority for a safe retry instead of stranding source-purge completion.
+	// authority for a safe retry instead of stranding final state cleanup.
 	AfterBinaryRemoval func() error
 	DryRun             bool
 }
@@ -76,6 +76,9 @@ func Uninstall(ctx context.Context, opts UninstallOptions) (UninstallResult, err
 	result.ConfigPath = configPath
 	result.ManifestPath = manifestPath
 	result.JournalPath = journalPath
+	if err := rejectPendingInstallUpgrade(configPath); err != nil {
+		return result, err
+	}
 
 	manifest, err := readManifest(manifestPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -241,6 +244,9 @@ func Uninstall(ctx context.Context, opts UninstallOptions) (UninstallResult, err
 	if err := runAfterBinaryRemoval(opts); err != nil {
 		return result, err
 	}
+	if err := verifyUninstallBinaryPathsAbsent(result, defaultUninstallFileOps()); err != nil {
+		return result, err
+	}
 	if err := cleanupUninstallJournal(journalPath, journal); err != nil {
 		return result, err
 	}
@@ -321,6 +327,9 @@ func resumeUninstallFromJournal(result UninstallResult, opts UninstallOptions, s
 		return result, err
 	}
 	if err := runAfterBinaryRemoval(opts); err != nil {
+		return result, err
+	}
+	if err := verifyUninstallBinaryPathsAbsent(result, defaultUninstallFileOps()); err != nil {
 		return result, err
 	}
 	if err := cleanupUninstallJournal(journalPath, journal); err != nil {
@@ -442,7 +451,7 @@ func inspectUninstallBinary(sourceRoot, binaryPath, helperPath string) (os.FileI
 		return nil, false, fmt.Errorf("temporary uninstall helper is unavailable: %w", err)
 	}
 	if os.SameFile(info, helperInfo) {
-		return nil, false, errors.New("refusing Windows self-delete; run ./uninstall.sh from the source checkout")
+		return nil, false, errors.New("refusing Windows self-delete; run .\\uninstall.ps1 from PowerShell in the source checkout")
 	}
 	return info, false, nil
 }
@@ -548,10 +557,7 @@ func removeUninstallBinaryWithOps(result UninstallResult, sourceRoot string, sou
 		}
 		return result, fmt.Errorf("WezTerm integration was restored, but the installed binary could not be removed%s; close processes using it and retry: %s: %w", uninstallJournalRetryHint(result), result.BinaryPath, err)
 	}
-	if _, err := ops.lstat(quarantinePath); !errors.Is(err, os.ErrNotExist) {
-		if err == nil {
-			return result, fmt.Errorf("quarantined installed binary still exists after removal: %s", quarantinePath)
-		}
+	if err := verifyUninstallBinaryPathsAbsent(result, ops); err != nil {
 		return result, err
 	}
 	result.BinaryRemoved = true
@@ -571,6 +577,9 @@ func removeJournalQuarantinedBinary(result UninstallResult, sourceRoot string, s
 		// A prior process completed deletion and stopped before removing the
 		// journal. Both owned binary paths are absent, so only journal cleanup
 		// remains.
+		if err := verifyUninstallBinaryPathsAbsent(result, ops); err != nil {
+			return result, err
+		}
 		return verifySourceCheckout(result, sourceRoot, sourceRootInfo)
 	}
 	if err != nil {
@@ -606,14 +615,32 @@ func removeJournalQuarantinedBinary(result UninstallResult, sourceRoot string, s
 	if err := ops.remove(result.QuarantinePath); err != nil {
 		return result, fmt.Errorf("remove journal-owned quarantined sshpic binary: %w", err)
 	}
-	if _, err := ops.lstat(result.QuarantinePath); !errors.Is(err, os.ErrNotExist) {
-		if err == nil {
-			return result, fmt.Errorf("quarantined installed binary still exists after removal: %s", result.QuarantinePath)
-		}
+	if err := verifyUninstallBinaryPathsAbsent(result, ops); err != nil {
 		return result, err
 	}
 	result.BinaryRemoved = true
 	return verifySourceCheckout(result, sourceRoot, sourceRootInfo)
+}
+
+func verifyUninstallBinaryPathsAbsent(result UninstallResult, ops uninstallFileOps) error {
+	for _, candidate := range []struct {
+		label string
+		path  string
+	}{
+		{label: "installed binary", path: result.BinaryPath},
+		{label: "quarantined installed binary", path: result.QuarantinePath},
+	} {
+		label, path := candidate.label, candidate.path
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		if _, err := ops.lstat(path); err == nil {
+			return fmt.Errorf("%s still exists after removal: %s", label, path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("verify %s removal: %w", label, err)
+		}
+	}
+	return nil
 }
 
 func uniqueUninstallQuarantinePath(binaryPath string, lstat func(string) (os.FileInfo, error)) (string, error) {
@@ -716,10 +743,6 @@ func UninstallSummary(result UninstallResult) string {
 	if result.DryRun && result.BinaryPath != "" {
 		builder.WriteString("dry-run: no files changed\n")
 	}
-	if result.DryRun {
-		builder.WriteString("source checkout: would be removed last by the guarded source finalizer\n")
-	} else {
-		builder.WriteString("source checkout: validated for final removal by the guarded source finalizer\n")
-	}
+	builder.WriteString("source checkout: preserved\n")
 	return builder.String()
 }

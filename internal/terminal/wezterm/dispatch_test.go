@@ -285,6 +285,101 @@ func TestBuildDispatchNonSSHDoesNotReadClipboardOrUseConfiguredHost(t *testing.T
 	}
 }
 
+func TestBuildDispatchSSHExecutableWithUnverifiableArgvIsDiagnosticNativePaste(t *testing.T) {
+	source := &fakeImageSource{image: provider.LocalImage{Path: "must-not-read"}}
+	session := SessionContext{
+		PaneID: "7",
+		Process: LocalProcessInfo{
+			Executable: `C:\Windows\System32\OpenSSH\ssh.exe`,
+			Argv:       []string{"ssh.exe"},
+			PID:        42,
+		},
+	}
+	result := BuildDispatchWithDependencies(context.Background(), config.Defaults(), source, session, DispatchDependencies{})
+	if result.Action != dispatch.ActionNativePaste || result.Kind != "unusable_ssh_process" || !strings.Contains(result.Reason, "argv could not be verified") {
+		t.Fatalf("result=%+v", result)
+	}
+	if source.imageReads != 0 || source.textReads != 0 {
+		t.Fatalf("unverified SSH process must not read clipboard: %+v", source)
+	}
+}
+
+func TestBuildDispatchPreservesSanitizedBatchModeAuthenticationFailureForToast(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		err       error
+		want      string
+		forbidden string
+	}{
+		{
+			name: "permission denied remains actionable",
+			err:  errors.New("ssh upload failed: exit status 255: deploy@169.213.3.141: Permission denied (publickey,password)"),
+			want: "Permission denied",
+		},
+		{
+			name:      "key diagnostic is redacted",
+			err:       errors.New(`ssh upload failed: identityfile C:\Users\alice\.ssh\secret private key rejected`),
+			want:      "[redacted ssh diagnostic]",
+			forbidden: `C:\Users\alice`,
+		},
+		{
+			name:      "spaced identity file diagnostic is redacted",
+			err:       errors.New(`Warning: Identity file C:\Users\alice\.ssh\id_ed25519 not accessible`),
+			want:      "[redacted ssh diagnostic]",
+			forbidden: `C:\Users\alice`,
+		},
+		{
+			name:      "load key diagnostic is redacted",
+			err:       errors.New(`Load key "C:\Users\alice\.ssh\id_ed25519": invalid format`),
+			want:      "[redacted ssh diagnostic]",
+			forbidden: `C:\Users\alice`,
+		},
+		{
+			name:      "terminal control diagnostic is redacted",
+			err:       errors.New("ssh failed: \x1b[31mPermission denied\x1b[0m"),
+			want:      "[redacted ssh diagnostic]",
+			forbidden: "\x1b",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			imagePath := filepath.Join(t.TempDir(), "clipboard.png")
+			if err := os.WriteFile(imagePath, []byte("png"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Defaults()
+			// Avoid the preliminary $HOME query so this exercises the actual
+			// BatchMode upload helper failure for a raw-IP destination.
+			cfg.RemoteDir = "/srv/sshpic/images"
+			var logs []string
+			result := BuildDispatchWithDependencies(context.Background(), cfg, &fakeImageSource{
+				image: provider.LocalImage{Path: imagePath, Format: "png"},
+			}, sshSession("169.213.3.141"), DispatchDependencies{
+				ResolveUser: func(context.Context, SSHInvocation) (string, error) { return "deploy", nil },
+				Log:         func(message string) { logs = append(logs, message) },
+				UploaderForInvocation: func(inv SSHInvocation) paste.RemoteUploader {
+					if !containsExact(inv.Args, "-oBatchMode=yes") {
+						t.Fatalf("BatchMode safety option missing: %q", inv.Args)
+					}
+					return &recordingUploader{uploadErr: test.err}
+				},
+			})
+			if result.Action != dispatch.ActionNativePaste || result.Kind != "image" || !strings.Contains(result.Reason, test.want) {
+				t.Fatalf("result=%+v", result)
+			}
+			if test.forbidden != "" && strings.Contains(result.Reason, test.forbidden) {
+				t.Fatalf("sensitive key diagnostic leaked into toast reason: %q", result.Reason)
+			}
+			joinedLogs := strings.Join(logs, "\n")
+			if !strings.Contains(joinedLogs, test.want) {
+				t.Fatalf("sanitized diagnostic missing from integration log: %q", joinedLogs)
+			}
+			if test.forbidden != "" && strings.Contains(joinedLogs, test.forbidden) {
+				t.Fatalf("sensitive diagnostic leaked into integration log: %q", joinedLogs)
+			}
+		})
+	}
+}
+
 func TestBuildDispatchRequiresPaneIdentityBeforeClipboardRead(t *testing.T) {
 	source := &fakeImageSource{imageErr: provider.ErrNoImage}
 	session := sshSession("host")
@@ -365,13 +460,15 @@ func (source *fakeImageSource) CopyTextToClipboard(context.Context, string) erro
 type recordingUploader struct {
 	uploadPath string
 	verifyPath string
+	uploadErr  error
+	verifyErr  error
 }
 
 func (uploader *recordingUploader) Upload(_ context.Context, _ string, remotePath string) error {
 	uploader.uploadPath = remotePath
-	return nil
+	return uploader.uploadErr
 }
 func (uploader *recordingUploader) Verify(_ context.Context, _ string, remotePath string) (upload.VerifyResult, error) {
 	uploader.verifyPath = remotePath
-	return upload.VerifyResult{Match: true}, nil
+	return upload.VerifyResult{Match: uploader.verifyErr == nil}, uploader.verifyErr
 }

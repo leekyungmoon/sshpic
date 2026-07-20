@@ -86,6 +86,27 @@ local function is_focused_ssh(info)
   return argv0 == 'ssh' or argv0 == 'ssh.exe'
 end
 
+local function focused_process_diagnostic(info)
+  if type(info) ~= 'table' then
+    return 'WezTerm could not inspect the focused process; using native paste'
+  end
+  if type(info.executable) ~= 'string' or info.executable == '' then
+    return 'WezTerm did not report the focused executable; using native paste'
+  end
+  local executable = basename(info.executable)
+  if executable ~= 'ssh' and executable ~= 'ssh.exe' then
+    return nil
+  end
+  if type(info.argv) ~= 'table' or type(info.argv[1]) ~= 'string' then
+    return 'WezTerm reported ssh/ssh.exe without usable argv; SSH image paste was not attempted'
+  end
+  local argv0 = basename(info.argv[1])
+  if argv0 ~= 'ssh' and argv0 ~= 'ssh.exe' then
+    return 'WezTerm ssh executable and argv disagree; SSH image paste was not attempted'
+  end
+  return nil
+end
+
 local function original_pane_is_active(win, pane, pane_id)
   local ok, active = pcall(function() return win:active_pane() end)
   if not ok or active == nil then
@@ -173,7 +194,15 @@ end
 
 local function temp_result_path(pane_id)
   sequence = sequence + 1
-  local temp = os.getenv('TEMP') or os.getenv('TMP') or '.'
+  local temp = nil
+  for _, name in ipairs({ 'TMP', 'TEMP', 'USERPROFILE', 'WINDIR' }) do
+    local candidate = os.getenv(name)
+    if type(candidate) == 'string' and candidate ~= '' then
+      temp = candidate
+      break
+    end
+  end
+  temp = temp or '.'
   local separator = package.config:sub(1, 1)
   if string.sub(temp, -1) ~= '/' and string.sub(temp, -1) ~= '\\' then
     temp = temp .. separator
@@ -216,6 +245,10 @@ local function start_dispatch(win, pane, info)
   }
   local encoded_ok, process_json = pcall(wezterm.json_encode, process)
   if not encoded_ok then
+    notify_failure(win, {
+      kind = 'process_encode_error',
+      reason = 'sshpic could not encode focused SSH process information; using native paste',
+    })
     native_paste(win, pane, pane_id, process)
     return
   end
@@ -235,6 +268,10 @@ local function start_dispatch(win, pane, info)
   if not spawned then
     in_flight[pane_id] = nil
     wezterm.log_error('sshpic: could not start dispatch: ' .. tostring(spawn_error))
+    notify_failure(win, {
+      kind = 'helper_start_error',
+      reason = 'sshpic helper could not start; using native paste (see WezTerm log)',
+    })
     native_paste(win, pane, pane_id, process)
     return
   end
@@ -287,7 +324,20 @@ function module.apply_to_config(config)
     mods = 'CTRL',
     action = wezterm.action_callback(function(win, pane)
       local ok, info = pcall(function() return pane:get_foreground_process_info() end)
-      if not ok or not is_focused_ssh(info) then
+      if not ok then
+        notify_failure(win, {
+          kind = 'process_info_unavailable',
+          reason = 'WezTerm could not inspect the focused process; using native paste',
+        })
+        local pane_id = tostring(pane:pane_id())
+        native_paste(win, pane, pane_id)
+        return
+      end
+      if not is_focused_ssh(info) then
+        local diagnostic = focused_process_diagnostic(info)
+        if diagnostic ~= nil then
+          notify_failure(win, { kind = 'process_info_unusable', reason = diagnostic })
+        end
         local pane_id = tostring(pane:pane_id())
         native_paste(win, pane, pane_id)
         return

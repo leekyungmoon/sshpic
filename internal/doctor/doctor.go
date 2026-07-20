@@ -22,6 +22,12 @@ type Check struct {
 	Fatal  bool
 }
 
+type TargetOptions struct {
+	RequireInstalled  bool
+	WezTermConfigPath string
+	WezTermPath       string
+}
+
 func Run(cfg config.Config) []Check {
 	if runtime.GOOS == "windows" {
 		return RunWezTerm()
@@ -49,6 +55,10 @@ func Run(cfg config.Config) []Check {
 }
 
 func RunTarget(cfg config.Config, target string) []Check {
+	return RunTargetWithOptions(cfg, target, TargetOptions{})
+}
+
+func RunTargetWithOptions(cfg config.Config, target string, opts TargetOptions) []Check {
 	switch normalizeTarget(target) {
 	case "", "all":
 		return Run(cfg)
@@ -63,16 +73,24 @@ func RunTarget(cfg config.Config, target string) []Check {
 	case "ubuntu-terminal":
 		return RunUbuntuTerminal()
 	case "wezterm":
-		return RunWezTerm()
+		return RunWezTermWithOptions(opts)
 	default:
 		return []Check{{Name: "target", Status: "error", Detail: "unknown doctor target " + target, Fatal: true}}
 	}
 }
 
 func RunWezTerm() []Check {
+	return RunWezTermWithOptions(TargetOptions{})
+}
+
+func RunWezTermWithOptions(opts TargetOptions) []Check {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return convertWezTermChecks(wezterm.DoctorChecks(ctx, wezterm.DoctorOptions{}))
+	return convertWezTermChecks(wezterm.DoctorChecks(ctx, wezterm.DoctorOptions{
+		ConfigPath:       opts.WezTermConfigPath,
+		WezTermPath:      opts.WezTermPath,
+		RequireInstalled: opts.RequireInstalled,
+	}))
 }
 
 func RunTerminalApp() []Check {

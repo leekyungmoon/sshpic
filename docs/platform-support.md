@@ -10,11 +10,11 @@
 | Ubuntu GNOME Terminal on Wayland | TBD; no support claim until real Wayland E2E passes |
 | macOS Terminal.app | TBD; no support claim until real Terminal.app E2E passes |
 
-Do not claim Codex CLI, Claude Code, or any other terminal agent receives a native image attachment; `sshpic` inserts a remote file path.
+`sshpic` uploads an image and pastes its remote path rather than calling a terminal-agent attachment API. In the Windows+WezTerm Codex flow, Codex CLI recognizes that path and the required UI result is exactly `[Image #1]`; other terminal agents may continue to display the path.
 
 The Windows release-candidate row is intentionally narrow:
 
-- install from Git Bash with the same `git clone`, `cd sshpic`, `./install.sh` flow used on macOS;
+- install from PowerShell with `git clone`, `Set-Location sshpic`, `.\install.ps1`, or from Git Bash with `git clone`, `cd sshpic`, `./install.sh`;
 - run WezTerm with native PowerShell or Git Bash as the pane shell;
 - start the connection with native Windows `ssh.exe` in the focused pane;
 - use current releases that provide the WezTerm Lua APIs and OpenSSH safety options used by the integration;
@@ -22,7 +22,7 @@ The Windows release-candidate row is intentionally narrow:
 - use `Ctrl+V` for both image handling and WezTerm-native text paste;
 - manage the integration with `sshpic install wezterm`, `sshpic doctor wezterm`, and `sshpic restore wezterm`.
 
-PowerShell is an implemented **WezTerm pane shell** for this candidate, but `install.sh` itself must run in Git Bash. Windows Terminal, WSL, PuTTY/Plink, nested SSH hidden behind an unsupported wrapper, and arbitrary terminals are outside the candidate boundary.
+PowerShell is supported as the installer shell through `.\install.ps1` and as a shell **inside a WezTerm pane**. Do not invoke `./install.sh` directly from PowerShell: a `.sh` file association may launch Git Bash asynchronously and return before installation finishes. A standalone PowerShell terminal host, Windows Terminal, WSL, PuTTY/Plink, nested SSH hidden behind an unsupported wrapper, and arbitrary terminals are outside the candidate boundary.
 
 `TBD` means no direct-paste support claim exists yet. Windows Terminal, WSL, Terminal.app, and Ubuntu require target-specific restore proof and real E2E evidence before this matrix changes. Binary releases, clipboard-provider stubs, generic `sshpic doctor` output, or read-only `sshpic doctor terminalapp` / `sshpic doctor ubuntu-terminal` safe-fail probes are not direct-paste support evidence by themselves.
 
@@ -45,4 +45,4 @@ Windows + WezTerm has its own Windows-only evidence harness:
 .\scripts\verify-windows-wezterm-codex-e2e.ps1
 ```
 
-A Windows CI build and the harness's `-PreflightOnly` check prove portability and preflight behavior only. This repository does not retain a real interactive PASS bundle yet, so Windows + WezTerm remains experimental. A reviewed bundle proving focused-pane `Ctrl+V`, remote mode `0600`, native text paste, and configuration restore is required before making a public support claim.
+A Windows CI build and the harness's `-PreflightOnly` check prove portability and preflight behavior only. This repository does not retain a real interactive PASS bundle yet, so Windows + WezTerm remains experimental. A reviewed bundle must prove focused-pane `Ctrl+V` produces exactly `[Image #1]` in Codex, the locally materialized clipboard PNG matches the remote mode-`0600` PNG by SHA-256, native text paste is unchanged, and configuration restore succeeds before making a public support claim.

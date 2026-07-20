@@ -88,20 +88,77 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		`Darwin`,
 		`Linux`,
 		`*[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]*|*[Ww][Ss][Ll]*`,
-		`Windows direct-paste installation must run from Git Bash, not WSL`,
+		`Windows direct-paste installation must run on native Windows, not WSL`,
+		`use .\install.ps1 in PowerShell or ./install.sh in Git Bash`,
 		`--detect-os`,
-		`internal-invalidate-source-purge-receipt windows-wezterm`,
-		`--install-receipt-protocol 2`,
+		`internal-begin-windows-install windows-wezterm`,
+		`--install-generation-protocol 1`,
 		`Windows source installation requires a cloned sshpic checkout`,
+		`wait_for_windows_tool`,
+		`"$go_cmd" version`,
+		`"$wezterm_cmd" --version`,
+		`prepare_windows_install_helper`,
+		`temp_root="${TMP:-${TEMP:-${USERPROFILE:-/tmp}}}"`,
+		`"$go_cmd" build -o "$install_helper" ./cmd/sshpic`,
+		`$("$go_cmd" env GOEXE)`,
+		`"sshpic install helper ($install_helper)" "$install_helper" version`,
+		`"sshpic installed binary ($bin)" "$bin" version`,
+		`trap cleanup_windows_install_helper 0`,
+		`doctor wezterm --require-installed`,
+		`SSHPIC_WINDOWS_INSTALL_VERIFIED`,
+		`TEST IN WEZTERM ONLY`,
+		`Expected Codex UI: [Image #1]`,
+		`PowerShell users must run .\install.ps1`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("install.sh missing OS-detection contract %q", want)
 		}
 	}
-	invalidateIndex := strings.Index(text, "internal-invalidate-source-purge-receipt windows-wezterm")
+	beginGenerationIndex := strings.Index(text, "internal-begin-windows-install windows-wezterm")
 	publishIndex := strings.Index(text, `"$go_cmd" install ./cmd/sshpic`)
-	if invalidateIndex < 0 || publishIndex < 0 || invalidateIndex >= publishIndex {
-		t.Fatal("Windows receipt authority must be invalidated from current source before go install publishes the binary")
+	if beginGenerationIndex < 0 || publishIndex < 0 || beginGenerationIndex >= publishIndex {
+		t.Fatal("Windows install generation must begin before go install publishes the binary")
+	}
+	helperBuildIndex := strings.Index(text, `"$go_cmd" build -o "$install_helper" ./cmd/sshpic`)
+	helperProbeIndex := strings.Index(text, `"sshpic install helper ($install_helper)" "$install_helper" version`)
+	installedProbeIndex := strings.Index(text, `"sshpic installed binary ($bin)" "$bin" version`)
+	installWezTermIndex := strings.Index(text, `install wezterm --install-generation`)
+	strictDoctorIndex := strings.Index(text, `doctor wezterm --require-installed`)
+	verifiedIndex := strings.Index(text, `SSHPIC_WINDOWS_INSTALL_VERIFIED`)
+	if helperBuildIndex < 0 || helperProbeIndex < 0 || installedProbeIndex < 0 || installWezTermIndex < 0 || strictDoctorIndex < 0 || verifiedIndex < 0 ||
+		helperBuildIndex >= helperProbeIndex || helperProbeIndex >= beginGenerationIndex || publishIndex >= installedProbeIndex ||
+		installedProbeIndex >= installWezTermIndex || installWezTermIndex >= strictDoctorIndex || strictDoctorIndex >= verifiedIndex {
+		t.Fatal("Windows verified marker must be emitted only after integration install and strict doctor")
+	}
+	if strings.Contains(text, `"$go_cmd" run ./cmd/sshpic`) {
+		t.Fatal("Windows install generation must not execute through a one-shot go run temporary binary")
+	}
+	if strings.Count(text, "SSHPIC_WINDOWS_INSTALL_VERIFIED") != 1 {
+		t.Fatal("Windows verified marker must have one success-only emission site")
+	}
+
+	powerShellPath := filepath.Join(repoRoot, "install.ps1")
+	powerShellData, err := os.ReadFile(powerShellPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	powerShellText := string(powerShellData)
+	for _, want := range []string{
+		`$PSScriptRoot`,
+		`SSHPIC_GIT_BASH`,
+		`Push-Location -LiteralPath $repoRoot`,
+		`"./install.sh"`,
+		`$exitCode = $LASTEXITCODE`,
+		`PowerShell .sh file associations may launch Git Bash asynchronously`,
+	} {
+		if !strings.Contains(powerShellText, want) {
+			t.Fatalf("install.ps1 missing synchronous wrapper contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{"Start-Process", "Invoke-Item", "cmd /c start"} {
+		if strings.Contains(powerShellText, forbidden) {
+			t.Fatalf("install.ps1 must not use asynchronous file association path %q", forbidden)
+		}
 	}
 	if runtime.GOOS != "windows" {
 		cmd := exec.Command("sh", installPath, "--detect-os")
@@ -153,6 +210,32 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 				t.Fatalf("detect_host_os(%q, %q)=%q want=%q", tc.platform, tc.release, got, tc.want)
 			}
 		}
+	}
+}
+
+func TestWindowsWezTermE2EHarnessUsesRunUniqueImageAndExactCodexGate(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	path := filepath.Join(repoRoot, "scripts", "verify-windows-wezterm-codex-e2e.ps1")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`[Guid]::NewGuid().ToByteArray()`,
+		`$bitmap.SetPixel`,
+		`$LocalMaterializedSha256`,
+		`$RemotePngSha256`,
+		`$ShaEqualityResult`,
+		`[Image #1]`,
+		`BatchMode=yes`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Windows E2E harness missing %q", want)
+		}
+	}
+	if strings.Contains(text, `$png = "iVBOR`) {
+		t.Fatal("Windows E2E harness must not reuse one constant PNG across runs")
 	}
 }
 

@@ -463,22 +463,35 @@ func confirmJournalIntegrationRestored(journal uninstallJournal) error {
 			return err
 		}
 	}
-	configData, err := os.ReadFile(journal.ConfigPath)
 	if journal.ConfigCreated {
-		if errors.Is(err, os.ErrNotExist) {
+		beforeInfo, beforeHash, missing, pinErr := pinRegularFileHash(journal.ConfigPath)
+		if pinErr != nil {
+			return fmt.Errorf("cannot confirm preserved sshpic-created WezTerm config: %w", pinErr)
+		}
+		if missing {
 			return nil
 		}
+		configData, err := os.ReadFile(journal.ConfigPath)
 		if err != nil {
-			return err
+			return fmt.Errorf("cannot read preserved sshpic-created WezTerm config: %w", err)
 		}
-		return fmt.Errorf("cannot resume uninstall because the sshpic-created WezTerm config still exists: %s", journal.ConfigPath)
+		afterInfo, afterHash, afterMissing, pinErr := pinRegularFileHash(journal.ConfigPath)
+		if pinErr != nil {
+			return fmt.Errorf("cannot revalidate preserved sshpic-created WezTerm config: %w", pinErr)
+		}
+		if afterMissing || !os.SameFile(beforeInfo, afterInfo) || beforeHash != afterHash || sha256Hex(configData) != beforeHash {
+			return fmt.Errorf("cannot resume uninstall because the preserved sshpic-created WezTerm config changed while it was being verified: %s", journal.ConfigPath)
+		}
+		if configHasManagedIntegrationReference(configData, journal.ModulePath) {
+			return fmt.Errorf("cannot resume uninstall because the preserved sshpic-created WezTerm config still references the sshpic integration: %s", journal.ConfigPath)
+		}
+		return nil
 	}
+	configData, err := os.ReadFile(journal.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("cannot confirm restored WezTerm config: %w", err)
 	}
-	configText := string(configData)
-	if strings.Contains(configText, configBegin) || strings.Contains(configText, configEnd) ||
-		strings.Contains(configText, configBlock(journal.ModulePath, journal.ConfigIdentifier)) {
+	if configHasManagedIntegrationReference(configData, journal.ModulePath) {
 		return fmt.Errorf("cannot resume uninstall because the sshpic WezTerm marker is still active: %s", journal.ConfigPath)
 	}
 	return nil

@@ -40,15 +40,16 @@ type InstallOptions struct {
 }
 
 type InstallResult struct {
-	BinaryPath       string
-	WezTermPath      string
-	ConfigPath       string
-	ModulePath       string
-	ManifestPath     string
-	BackupPath       string
-	ConfigCreated    bool
-	ConfigPatched    bool
-	AlreadyInstalled bool
+	BinaryPath         string
+	WezTermPath        string
+	ConfigPath         string
+	ModulePath         string
+	ManifestPath       string
+	BackupPath         string
+	ConfigCreated      bool
+	ConfigPatched      bool
+	AlreadyInstalled   bool
+	IntegrationUpdated bool
 }
 
 type installManifest struct {
@@ -123,6 +124,15 @@ func installWithAtomicReplaceOps(ctx context.Context, opts InstallOptions, repla
 	}
 	moduleHash := sha256Hex([]byte(moduleSource))
 
+	if updated, updateErr := upgradeExistingInstall(
+		ctx, manifestPath, configPath, modulePath, []byte(moduleSource),
+		binaryPath, weztermPath, opts, validator, replaceOps,
+	); updateErr != nil {
+		return result, updateErr
+	} else if updated {
+		result.IntegrationUpdated = true
+		return result, nil
+	}
 	if _, err := readManifest(manifestPath); err == nil {
 		installed, checkErr := verifyExistingInstall(manifestPath, configPath, modulePath, []byte(moduleSource), binaryPath)
 		if checkErr != nil {

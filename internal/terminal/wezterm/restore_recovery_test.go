@@ -4,9 +4,92 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestRestoreRecoversEditedCreatedConfigAcrossReplacementCrashPoints(t *testing.T) {
+	for _, crashPoint := range []string{"after-rename", "after-publish", "after-recovery-cleanup"} {
+		t.Run(crashPoint, func(t *testing.T) {
+			home := t.TempDir()
+			binary := testFile(t, filepath.Join(home, "bin", "sshpic.exe"), "binary")
+			wezterm := testFile(t, filepath.Join(home, "bin", "wezterm.exe"), "binary")
+			t.Setenv("SSHPIC_WEZTERM_EXE", "")
+			installed, err := Install(context.Background(), InstallOptions{
+				BinaryPath: binary, HomeDir: home, WezTermPath: wezterm,
+				ConfigValidator: noOpConfigValidator,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := readManifest(installed.ManifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			generated, err := os.ReadFile(installed.ConfigPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			edited := []byte(strings.Replace(string(generated), "return config\n", "config.color_scheme = 'Batman'\nreturn config\n", 1))
+			cleaned, ok := removeExactConfigBlock(edited, manifest.ModulePath, manifest.ConfigIdentifier)
+			if !ok {
+				t.Fatal("test config did not contain the exact managed block")
+			}
+			writeTestFile(t, installed.ConfigPath, edited)
+			rollback, err := ownedQuarantinePath(installed.ConfigPath, "rollback", sha256Hex(edited))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var replacementPath string
+			switch crashPoint {
+			case "after-rename":
+				replacement, stageErr := prepareOwnedContentStage(installed.ConfigPath, "replace", cleaned, 0o600)
+				if stageErr != nil {
+					t.Fatal(stageErr)
+				}
+				replacementPath = replacement.Path
+				if err := os.Rename(installed.ConfigPath, rollback); err != nil {
+					t.Fatal(err)
+				}
+			case "after-publish":
+				replacement, stageErr := prepareOwnedContentStage(installed.ConfigPath, "replace", cleaned, 0o600)
+				if stageErr != nil {
+					t.Fatal(stageErr)
+				}
+				replacementPath = replacement.Path
+				if err := os.Rename(installed.ConfigPath, rollback); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Link(replacement.Path, installed.ConfigPath); err != nil {
+					t.Fatal(err)
+				}
+			case "after-recovery-cleanup":
+				writeTestFile(t, installed.ConfigPath, cleaned)
+			}
+			unrelated := installed.ConfigPath + ".sshpic-rollback-" + strings.Repeat("e", 64) + ".pending"
+			writeTestFile(t, unrelated, []byte("unrelated pending-like file"))
+
+			result, err := Restore(context.Background(), RestoreOptions{ConfigPath: installed.ConfigPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.ManifestRemoved || !result.ModuleRemoved || result.ConfigRemoved {
+				t.Fatalf("restore result=%+v", result)
+			}
+			assertFileContent(t, installed.ConfigPath, cleaned)
+			for _, path := range []string{rollback, replacementPath, installed.ModulePath, installed.ManifestPath} {
+				if path == "" {
+					continue
+				}
+				if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("managed restore artifact remains at %s: %v", path, statErr)
+				}
+			}
+			assertFileContent(t, unrelated, []byte("unrelated pending-like file"))
+		})
+	}
+}
 
 func TestRestoreRecoversEditedConfigAcrossReplacementCrashPoints(t *testing.T) {
 	for _, crashPoint := range []string{"after-rename", "after-publish", "after-recovery-cleanup"} {

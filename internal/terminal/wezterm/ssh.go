@@ -395,7 +395,17 @@ func ResolveUserWithRunner(ctx context.Context, invocation SSHInvocation, runner
 }
 
 func execCommandRunner(ctx context.Context, executable string, args []string) ([]byte, error) {
-	return exec.CommandContext(ctx, executable, args...).Output()
+	out, err := exec.CommandContext(ctx, executable, args...).Output()
+	if err == nil {
+		return out, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if detail := sanitizeHelperDiagnostic(string(exitErr.Stderr)); detail != "unknown helper error" {
+			return out, fmt.Errorf("%w: %s", err, detail)
+		}
+	}
+	return out, err
 }
 
 // ResolveRemoteHome queries the target account rather than assuming

@@ -59,6 +59,9 @@ func restoreWithMode(opts RestoreOptions, validationOnly bool) (RestoreResult, e
 	modulePath := filepath.Join(filepath.Dir(configPath), moduleName)
 	manifestPath := filepath.Join(filepath.Dir(configPath), manifestName)
 	result := RestoreResult{ConfigPath: configPath, ModulePath: modulePath, ManifestPath: manifestPath, ValidationOnly: validationOnly}
+	if err := rejectPendingInstallUpgrade(configPath); err != nil {
+		return result, err
+	}
 	if err := reconcileOwnedPartialFiles([]string{configPath, modulePath, manifestPath, configPath + backupSuffix}, !validationOnly); err != nil {
 		return result, fmt.Errorf("reconcile interrupted WezTerm partial files: %w", err)
 	}
@@ -172,11 +175,29 @@ func restoreWithMode(opts RestoreOptions, validationOnly bool) (RestoreResult, e
 		if pendingErr != nil {
 			return result, pendingErr
 		}
-		if !configMissing || configRemovalPending || configPublishPending {
-			if sha256Hex(configData) != manifest.InstalledConfigSHA256 {
-				if !configMissing {
-					return result, fmt.Errorf("sshpic-created WezTerm config changed; refusing to remove it: %s", configPath)
+		rollback, rollbackTarget, rollbackErr := findRecoverableConfigRollback(configPath, manifest, configData, configMissing, nil, false)
+		if rollbackErr != nil {
+			return result, rollbackErr
+		}
+		if rollback != nil && configMissing {
+			// The edited config was displaced immediately before the marker-free
+			// replacement was published. Resume only from this hash-bound sibling.
+			configData = rollback.Data
+			configHash = rollback.Hash
+		}
+		switch {
+		case rollback != nil:
+			if !validationOnly {
+				if err := replaceIfHash(configPath, rollback.Hash, rollbackTarget, 0o600); err != nil {
+					return result, err
 				}
+			}
+			legacyGeneratedHashes[sha256Hex(rollbackTarget)] = true
+			result.ConfigRestored = true
+			result.Warnings = append(result.Warnings, "preserved user edits made outside the sshpic marker block in the sshpic-created config")
+		case configMissing:
+			if !configRemovalPending && !configPublishPending {
+				break
 			}
 			if !validationOnly {
 				if err := removeIfHash(configPath, manifest.InstalledConfigSHA256); err != nil {
@@ -184,6 +205,35 @@ func restoreWithMode(opts RestoreOptions, validationOnly bool) (RestoreResult, e
 				}
 			}
 			result.ConfigRemoved = true
+		case configHash == manifest.InstalledConfigSHA256:
+			if !validationOnly {
+				if err := removeIfHash(configPath, manifest.InstalledConfigSHA256); err != nil {
+					return result, err
+				}
+			}
+			result.ConfigRemoved = true
+		default:
+			cleaned, ok := removeExactConfigBlock(configData, manifest.ModulePath, manifest.ConfigIdentifier)
+			if !ok {
+				if configHasManagedIntegrationReference(configData, manifest.ModulePath) {
+					return result, fmt.Errorf("sshpic-created WezTerm config changed inside or around the sshpic marker; refusing to overwrite it: %s", configPath)
+				}
+				result.Warnings = append(result.Warnings, "sshpic-created config was already free of the managed integration; preserved user content unchanged")
+			} else {
+				if !validationOnly {
+					if err := replaceIfHash(configPath, configHash, cleaned, 0o600); err != nil {
+						return result, err
+					}
+				}
+				legacyGeneratedHashes[sha256Hex(cleaned)] = true
+				result.ConfigRestored = true
+				result.Warnings = append(result.Warnings, "preserved user edits made outside the sshpic marker block in the sshpic-created config")
+			}
+		}
+		if configRemovalPending && !result.ConfigRemoved && !validationOnly {
+			if err := removePreparedOwnedContentStage(configPath, "owned", manifest.InstalledConfigSHA256); err != nil {
+				return result, fmt.Errorf("clean interrupted removal of the original sshpic-created config: %w", err)
+			}
 		}
 	} else {
 		backupData, backupExists, backupPending, backupPublishPending, err = readManagedFileOrRemovalPending(manifest.BackupPath, manifest.OriginalConfigSHA256)
@@ -381,12 +431,52 @@ func reconcileOwnedReplaceStageForRestore(configPath string, manifest installMan
 		}
 		return removePreparedOwnedContentStage(configPath, "replace", stage.Hash)
 	}
-	if manifest.ConfigCreated || configHasManagedIntegrationReference(stage.Data, manifest.ModulePath) {
+	if configHasManagedIntegrationReference(stage.Data, manifest.ModulePath) {
 		return fmt.Errorf("owned replacement stage is not a proven native config; preserving it: %s", stage.Path)
 	}
 	finalInfo, finalHash, finalMissing, finalErr := pinRegularFileHash(configPath)
 	if finalErr != nil {
 		return finalErr
+	}
+	if manifest.ConfigCreated && !finalMissing && finalHash == manifest.InstalledConfigSHA256 {
+		// An unchanged generated config is removed as a whole. A marker-free
+		// replacement prepared beside it is therefore stale and must not survive
+		// that removal or become authority on a later retry.
+		if validationOnly {
+			return nil
+		}
+		return removePreparedOwnedContentStage(configPath, "replace", stage.Hash)
+	}
+	if manifest.ConfigCreated && (finalMissing || finalHash != stage.Hash) {
+		proven := false
+		if !finalMissing {
+			finalData, readErr := os.ReadFile(configPath)
+			if readErr != nil {
+				return readErr
+			}
+			if sha256Hex(finalData) != finalHash {
+				return fmt.Errorf("active config changed while validating its owned replacement stage: %s", configPath)
+			}
+			if cleaned, ok := removeExactConfigBlock(finalData, manifest.ModulePath, manifest.ConfigIdentifier); ok && sha256Hex(cleaned) == stage.Hash {
+				proven = true
+			}
+		} else {
+			rollbacks, rollbackErr := findOwnedPendingFiles(configPath, "rollback")
+			if rollbackErr != nil {
+				return rollbackErr
+			}
+			for _, candidate := range rollbacks {
+				if cleaned, ok := removeExactConfigBlock(candidate.Data, manifest.ModulePath, manifest.ConfigIdentifier); ok && sha256Hex(cleaned) == stage.Hash {
+					if proven {
+						return fmt.Errorf("multiple rollback files could authorize the created config replacement stage: %s", stage.Path)
+					}
+					proven = true
+				}
+			}
+		}
+		if !proven {
+			return fmt.Errorf("owned replacement stage is not derivable from the sshpic-created config; preserving it: %s", stage.Path)
+		}
 	}
 	if finalMissing || finalHash != stage.Hash {
 		// This is a prepared native replacement. The normal config restore path
@@ -490,7 +580,7 @@ func findRecoverableConfigRollback(configPath string, manifest installManifest, 
 			continue
 		}
 		if !activeMissing && activeHash != sha256Hex(target) {
-			continue
+			return nil, nil, fmt.Errorf("active config does not match its recoverable sshpic rollback target; preserving both: %s", candidate.Path)
 		}
 		if selected != nil {
 			return nil, nil, fmt.Errorf("multiple valid sshpic config rollback files exist; refusing ambiguous recovery for %s", configPath)
@@ -515,7 +605,7 @@ func removeExactConfigBlock(data []byte, modulePath, identifier string) ([]byte,
 		return nil, false
 	}
 	cleaned := strings.Replace(text, block, "", 1)
-	if strings.Contains(cleaned, configBegin) || strings.Contains(cleaned, configEnd) {
+	if configHasManagedIntegrationReference([]byte(cleaned), modulePath) {
 		return nil, false
 	}
 	return []byte(cleaned), true

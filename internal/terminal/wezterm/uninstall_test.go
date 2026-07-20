@@ -90,7 +90,7 @@ func newUninstallFixture(t *testing.T, binaryInSource bool) uninstallFixture {
 	}
 }
 
-func TestUninstallRestoresExactConfigAndBinaryBeforeSourceFinalizer(t *testing.T) {
+func TestUninstallRestoresExactConfigAndBinaryWhilePreservingSource(t *testing.T) {
 	fixture := newUninstallFixture(t, false)
 	headBefore, err := os.ReadFile(filepath.Join(fixture.sourceRoot, ".git", "HEAD"))
 	if err != nil {
@@ -360,6 +360,80 @@ func TestRemoveUninstallBinaryDoesNotDeleteReplacementDuringQuarantineRace(t *te
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("quarantine race lost file %s: %v", path, err)
 		}
+	}
+}
+
+func TestRemoveUninstallBinaryFailsIfOriginalPathReappearsAfterQuarantine(t *testing.T) {
+	fixture := newUninstallFixture(t, false)
+	rootInfo, err := os.Stat(fixture.sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedInfo, err := os.Lstat(fixture.binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := defaultUninstallFileOps()
+	ops.rename = func(source, destination string) error {
+		if err := os.Rename(source, destination); err != nil {
+			return err
+		}
+		return os.WriteFile(source, []byte("new unowned binary"), 0o700)
+	}
+
+	result, err := removeUninstallBinaryWithOps(UninstallResult{BinaryPath: fixture.binaryPath}, fixture.sourceRoot, rootInfo, fixture.helperPath, expectedInfo, ops)
+	if err == nil || !strings.Contains(err.Error(), "installed binary still exists after removal") {
+		t.Fatalf("reappeared binary path error=%v result=%+v", err, result)
+	}
+	if result.BinaryRemoved {
+		t.Fatalf("reappeared binary path was reported removed: %+v", result)
+	}
+	if data, readErr := os.ReadFile(fixture.binaryPath); readErr != nil || string(data) != "new unowned binary" {
+		t.Fatalf("replacement at original path was not preserved: data=%q err=%v", data, readErr)
+	}
+	pending, globErr := filepath.Glob(fixture.binaryPath + ".sshpic-uninstall-*.pending")
+	if globErr != nil || len(pending) != 0 {
+		t.Fatalf("owned quarantine was not removed before final path verification: pending=%v err=%v", pending, globErr)
+	}
+}
+
+func TestRemoveJournalQuarantinedBinaryFailsIfOriginalPathReappears(t *testing.T) {
+	fixture := newUninstallFixture(t, false)
+	rootInfo, err := os.Stat(fixture.sourceRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaryHash, err := sha256File(fixture.binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quarantinePath := fixture.binaryPath + ".sshpic-uninstall-" + strings.Repeat("a", 32) + ".pending"
+	if err := os.Rename(fixture.binaryPath, quarantinePath); err != nil {
+		t.Fatal(err)
+	}
+	ops := defaultUninstallFileOps()
+	ops.remove = func(path string) error {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		return os.WriteFile(fixture.binaryPath, []byte("new unowned binary"), 0o700)
+	}
+	result, err := removeJournalQuarantinedBinary(UninstallResult{
+		BinaryPath:     fixture.binaryPath,
+		BinarySHA256:   binaryHash,
+		QuarantinePath: quarantinePath,
+	}, fixture.sourceRoot, rootInfo, fixture.helperPath, ops)
+	if err == nil || !strings.Contains(err.Error(), "installed binary still exists after removal") {
+		t.Fatalf("journal reappeared binary path error=%v result=%+v", err, result)
+	}
+	if result.BinaryRemoved {
+		t.Fatalf("journal reappeared binary path was reported removed: %+v", result)
+	}
+	if data, readErr := os.ReadFile(fixture.binaryPath); readErr != nil || string(data) != "new unowned binary" {
+		t.Fatalf("journal replacement at original path was not preserved: data=%q err=%v", data, readErr)
+	}
+	if _, statErr := os.Lstat(quarantinePath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("journal quarantine remains after owned removal: %v", statErr)
 	}
 }
 

@@ -23,40 +23,60 @@ After:  screenshot → stay in Codex → normal paste shortcut → remote image 
 
 ### 💻 Clone and install
 
+On macOS, keep using the existing shell installer:
+
 ```bash
 git clone https://github.com/leekyungmoon/sshpic.git
 cd sshpic
 ./install.sh
 ```
 
-Use these same three commands for the supported macOS path and the Windows release candidate:
+On Windows 10/11, choose the commands for the shell where you are installing.
+
+PowerShell:
+
+```powershell
+git clone https://github.com/leekyungmoon/sshpic.git
+Set-Location sshpic
+.\install.ps1
+```
+
+Git Bash:
+
+```bash
+git clone https://github.com/leekyungmoon/sshpic.git
+cd sshpic
+./install.sh
+```
+
+From PowerShell, do **not** run `./install.sh` directly. A Windows `.sh` file association can launch a separate Git Bash process asynchronously and return the PowerShell prompt before installation has finished; `install.ps1` invokes it synchronously and propagates its exit status.
+
+The platform-specific installers provide these paths:
 
 - **macOS:** run them in a normal shell. The installer builds `sshpic`, sets up the macOS clipboard helper when Homebrew is available, creates a config file if needed, removes older sshpic iTerm2 settings, and enables the current iTerm2 `Cmd+V` integration.
-- **Windows 10/11 (experimental):** run them in **Git Bash**, not WSL. The installer builds the Windows executable and enables the WezTerm `Ctrl+V` release-candidate integration. If Go or WezTerm is missing and `winget` is available, it uses the normal `winget` package installation path automatically.
+- **Windows 10/11 (experimental):** use `install.ps1` from PowerShell or `install.sh` from Git Bash, not WSL. The installer builds the Windows executable and enables the WezTerm `Ctrl+V` release-candidate integration. If Go or WezTerm is missing and `winget` is available, it uses the normal `winget` package installation path automatically.
 
 `install.sh` normalizes the host as `windows`, `macos`, `linux`, `wsl`, or `unsupported` before installing (`./install.sh --detect-os` prints only the detected value). WSL and unknown platforms stop before dependency installation so they cannot accidentally take the native Windows or macOS path.
 
 If your Mac cannot set up the required iTerm2 support, the installer stops before changing `Cmd+V`. Your normal paste shortcut stays untouched.
 
-On Windows, Git Bash is required for `./install.sh` and `./uninstall.sh`. The release-candidate WezTerm pane may run native PowerShell or Git Bash, but the SSH client must be Windows OpenSSH (`ssh.exe`). Windows Terminal and WSL integration remain `TBD`.
+After installation on Windows, open a **WezTerm pane** whose shell is native PowerShell or Git Bash and run SSH there. A standalone PowerShell window, Windows Terminal, and WSL are not supported terminal hosts for image paste. The SSH client must be Windows OpenSSH (`ssh.exe`).
 
-### 🧹 Deletion-equivalent Windows uninstall
+### 🧹 Windows uninstall
 
-An optional dry-run may start inside the checkout. For the real uninstall, first move the parent Git Bash shell outside the checkout because Windows keeps that shell's current directory locked:
+Run the single Windows uninstall command from PowerShell inside the cloned checkout:
 
-```bash
-./uninstall.sh --dry-run
-cd ..
-./sshpic/uninstall.sh
+```powershell
+.\uninstall.ps1
 ```
 
-There is exactly one uninstall behavior. A successful non-dry run restores the validated manifest-owned WezTerm changes, deletes and verifies sshpic's local config, cache, log, materialized local images, and strictly named crash-temporary files, removes the exact manifest-bound `sshpic.exe`, and finally removes the exact source checkout selected by the uninstall invocation. There is no checkout-preserving variant. After success, `sshpic` no longer runs locally and the removed checkout cannot be used to reinstall; clone the repository again if you later want to reinstall it.
+It has one behavior and no mode flags. A successful run restores the manifest-owned WezTerm configuration, removes the exact manifest-bound `sshpic.exe`, and deletes sshpic-owned config, cache, logs, materialized local images, legacy control state, strictly named crash-temporary files, and stale install/uninstall helper runtimes. It then verifies completion, so that Windows installation can no longer handle image paste.
 
-`--dry-run` performs the same validation and prints the complete plan without deleting anything. The checkout directory name in the real command above is `sshpic`; use the actual clone directory name if you renamed it. Before the real uninstall, commit and push anything you need from the checkout and move any ChatGPT/Codex project that depends on that directory. The uninstaller deliberately refuses a dirty checkout, ignored or untracked files, stashes/custom refs, linked worktrees, reflog-only/unreachable commits, unpublished local branches or tags, stale or manually saved remote-tracking refs, a missing live upstream, or a local HEAD that differs from the live upstream head. It uses an isolated Go helper, an immutable completion receipt, a deterministic sibling quarantine, and a separately synced ownership marker so interrupted deletion can be retried without guessing ownership. A new Windows install refuses to overwrite pending uninstall recovery state.
+The source checkout is always preserved, including dirty, untracked, and ignored files. This keeps a Codex/ChatGPT project rooted in the clone usable and lets you reinstall later with `.\install.ps1`. The PowerShell entry point synchronously runs the bundled Git Bash implementation and propagates its real exit status.
 
-Go, WezTerm, SSH configuration/keys, the current clipboard value, and images already uploaded to SSH servers are not local sshpic-owned runtime state and are not removed. Go and WezTerm may be shared by other software, and the current release has no trustworthy history of every remote host used, so guessing at either would be destructive. Delete remote images separately with an authenticated, host-specific cleanup after reviewing that server.
+Go is required to build a separate helper from the current checkout because Windows cannot delete the executable that is currently running. Ownership comes from the install manifest and recorded executable SHA-256; if those cannot prove the exact installed binary, uninstall fails instead of claiming success. If `WEZTERM_CONFIG_FILE` or `SSHPIC_CONFIG` was set for installation, set the same environment variable when uninstalling so the owned state can be found.
 
-Go is required because the uninstaller must build a fresh isolated helper that can safely finish checkout deletion and recovery. A required uninstall-protocol handshake makes older binaries fail during read-only preflight instead of silently performing partial cleanup. A legacy install manifest without a recorded executable SHA-256 cannot prove ownership of a still-present binary, so uninstall refuses before mutation; rerun `./install.sh` once to publish the hash, then uninstall. If Windows keeps the executable locked, close the named process and rerun: the transaction journal retains the exact validated target instead of guessing from `GOBIN`. `--config <path>` selects an exact custom sshpic config file for removal, while `--wezterm-config <path>` selects the WezTerm config whose ownership manifest should be restored. Use `--yes` only when a non-interactive uninstall is intentional.
+Go, WezTerm, winget package records, SSH configuration/keys, the current clipboard value, and images already uploaded to SSH servers are shared or remote state and are not removed.
 
 ### 👉 One-liner
 
@@ -68,15 +88,18 @@ curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh
 
 ### Windows + WezTerm (experimental)
 
-After installing from Git Bash:
+After installing from PowerShell or Git Bash:
 
 1. 🖥️ Open WezTerm with native PowerShell or Git Bash.
-2. 🔐 Run `ssh.exe my-host` (or `ssh` when that resolves to Windows `ssh.exe`).
-3. 🤖 Start Codex in that SSH session.
-4. 🖼️ Copy an image to the Windows clipboard.
-5. ⌨️ Focus the Codex input and press `Ctrl+V`.
+2. 🔐 Verify non-interactive key authentication with `ssh.exe -o BatchMode=yes -o ConnectTimeout=5 my-host true`.
+3. 🔐 Run `ssh.exe my-host` (or `ssh` when that resolves to Windows `ssh.exe`).
+4. 🤖 Start Codex in that SSH session.
+5. 🖼️ Copy an image to the Windows clipboard.
+6. ⌨️ Focus the Codex input and press `Ctrl+V`.
 
-The Windows upload helpers use non-interactive OpenSSH (`BatchMode=yes`), so the same target must authenticate with a key, `ssh-agent`, or another method that does not require a new password prompt.
+Use an SSH `Host` alias such as `my-host` that carries the intended user, key, and jump-host settings. A raw IP destination is discouraged and is usable only if that exact `BatchMode=yes` preflight succeeds without a password or host-key prompt. The Windows upload helpers open their own non-interactive SSH connections, so success in a password-authenticated interactive pane is not sufficient.
+
+For Codex CLI, a successful image paste is rendered as exactly `[Image #1]` in the input. A raw `/home/.../clipboard.png` string remaining in the Codex input is not a passing result, even though that remote path is the value sshpic sends to Codex.
 
 Use `sshpic doctor wezterm` to inspect the installed integration. `sshpic install wezterm` reinstalls it, and `sshpic restore wezterm` removes sshpic-owned WezTerm state and restores the saved configuration. See [Windows + WezTerm](docs/windows-wezterm.md) for the exact candidate boundary, evidence gate, and recovery steps. This implementation remains experimental until a real interactive PASS bundle is retained and reviewed.
 
@@ -105,14 +128,14 @@ When you press an installed paste shortcut in a focused SSH session:
 
 1. `sshpic` checks the local clipboard for an image.
 2. If the clipboard contains an image, `sshpic` copies it to the SSH machine you are using.
-3. iTerm2 or WezTerm inserts only the remote image path into the focused terminal input.
+3. iTerm2 or WezTerm inserts only the remote image path into the focused terminal input. Codex CLI recognizes a valid pasted image path and renders it as an attachment placeholder such as `[Image #1]`; other terminal agents may continue to show the path.
 4. If the clipboard contains text, the terminal's native paste action handles it; ordinary text is not routed through sshpic's image-upload path.
 5. On the existing macOS+iTerm2 path, local Codex can use a local image copy under `~/.sshpic/images/clipboard.png`. The Windows WezTerm shortcut currently requires a focused native `ssh.exe` process and leaves non-SSH panes on native paste.
 6. Upload starts only from the supported focused shortcut context: macOS+iTerm2's recognized session path, or a Windows WezTerm pane whose foreground executable and tokenized `argv[0]` both identify native `ssh`/`ssh.exe`. Other panes keep normal native paste. On Windows, sshpic validates the focused SSH process and target; it does not claim to identify which remote program is reading that terminal input.
 
 On Windows, WezTerm reports foreground process information using its local process-tree heuristic. The sshpic hook accepts that context only when both the reported executable and tokenized `argv[0]` identify native `ssh`/`ssh.exe`. It does not choose an upload target from an unrelated pane, a global process search, or a configured-host fallback. A paste may start short additional non-interactive SSH processes to resolve the remote home, upload, and verify the image; it does not send bytes through the interactive pane's stdin.
 
-The pasted result is just the path. No extra command, debug message, or accidental newline should appear.
+At the terminal boundary, the pasted value is just the path. No extra command, debug message, or accidental newline should appear. In Codex CLI, the accepted Windows QA result is the resulting `[Image #1]` attachment placeholder rather than visible raw path text.
 
 Codex CLI, Claude Code, or another terminal agent still needs to read the path. `sshpic` makes sure the image file exists and that the path lands in the active terminal input.
 

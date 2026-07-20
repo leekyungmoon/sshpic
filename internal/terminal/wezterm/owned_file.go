@@ -88,6 +88,53 @@ func pinRegularFileHash(path string) (os.FileInfo, string, bool, error) {
 	return openInfo, hash, false, nil
 }
 
+// readPinnedRegularFile returns bytes from the same regular, non-symlink file
+// identity observed at path. It also rechecks the path after the read so an
+// upgrade never derives replacement content through a link or path swap.
+func readPinnedRegularFile(path string) (os.FileInfo, []byte, string, bool, error) {
+	pathInfo, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil, "", true, nil
+	}
+	if err != nil {
+		return nil, nil, "", false, err
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() {
+		return nil, nil, "", false, fmt.Errorf("owned path is not a regular non-symlink file: %s", path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, "", false, err
+	}
+	defer file.Close()
+	openInfo, err := file.Stat()
+	if err != nil || !openInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openInfo) {
+		if err == nil {
+			err = fmt.Errorf("owned path identity changed while opening it: %s", path)
+		}
+		return nil, nil, "", false, err
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, nil, "", false, err
+	}
+	afterOpenInfo, err := file.Stat()
+	if err != nil || !os.SameFile(openInfo, afterOpenInfo) {
+		if err == nil {
+			err = fmt.Errorf("owned file identity changed while reading it: %s", path)
+		}
+		return nil, nil, "", false, err
+	}
+	afterPathInfo, err := os.Lstat(path)
+	if err != nil || afterPathInfo.Mode()&os.ModeSymlink != 0 || !afterPathInfo.Mode().IsRegular() || !os.SameFile(openInfo, afterPathInfo) {
+		if err == nil {
+			err = fmt.Errorf("owned path identity changed while reading it: %s", path)
+		}
+		return nil, nil, "", false, err
+	}
+	return openInfo, data, sha256Hex(data), false, nil
+}
+
 func sha256OpenFile(file *os.File) (string, error) {
 	if _, err := file.Seek(0, 0); err != nil {
 		return "", err

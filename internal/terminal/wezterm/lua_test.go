@@ -29,6 +29,11 @@ func TestLuaIntegrationSourceUsesFocusedAsyncNativePasteContract(t *testing.T) {
 		"forbidden_path_bytes", "safe_remote_path(result.payload)", "unsafe_remote_path",
 		"pane:send_paste(result.payload)", "wezterm.action.PasteFrom 'Clipboard'",
 		"result.reason", "toast_notification", "os.remove(result_path)",
+		"focused_process_diagnostic", "process_info_unavailable", "process_info_unusable",
+		"WezTerm reported ssh/ssh.exe without usable argv", "SSH image paste was not attempted",
+		"helper_start_error", "sshpic helper could not start",
+		"ipairs({ 'TMP', 'TEMP', 'USERPROFILE', 'WINDIR' })",
+		"type(candidate) == 'string' and candidate ~= ''",
 	} {
 		if !strings.Contains(source, want) {
 			t.Fatalf("Lua source missing %q", want)
@@ -44,6 +49,16 @@ func TestLuaIntegrationSourceUsesFocusedAsyncNativePasteContract(t *testing.T) {
 	}
 	if strings.Count(source, "pane:get_foreground_process_info()") < 2 {
 		t.Fatal("delayed completion must re-query focused process identity")
+	}
+	tmp := strings.Index(source, "ipairs({ 'TMP', 'TEMP', 'USERPROFILE', 'WINDIR' })")
+	resultPath := strings.Index(source, "local function temp_result_path")
+	if resultPath < 0 || tmp < resultPath {
+		t.Fatal("result-file directory must reproduce Windows os.TempDir precedence inside temp_result_path")
+	}
+	nonSSH := strings.Index(source, "if executable ~= 'ssh' and executable ~= 'ssh.exe' then\n    return nil")
+	missingArgv := strings.Index(source, "WezTerm reported ssh/ssh.exe without usable argv")
+	if nonSSH < 0 || missingArgv < 0 || nonSSH > missingArgv {
+		t.Fatal("non-SSH panes must select silent native paste before SSH argv diagnostics")
 	}
 }
 

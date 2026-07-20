@@ -58,11 +58,11 @@ Ubuntu support language needs separate evidence bundles for GNOME Terminal on X1
 
 Windows WezTerm release evidence needs a real Windows 10 or 11 interactive desktop bundle showing:
 
-- installation through Git Bash with the documented three commands;
+- installation through PowerShell with `.\install.ps1` or through Git Bash with `./install.sh`; PowerShell must not invoke `./install.sh` through an asynchronous Windows file association;
 - WezTerm and Windows OpenSSH identity/version evidence;
-- an image copied from the Windows clipboard and a path inserted exactly once into focused remote Codex with `Ctrl+V`;
+- an image copied from the Windows clipboard and exactly one `[Image #1]` attachment placeholder rendered in focused remote Codex with `Ctrl+V`, with no raw path or debug text left visible;
 - the real focused-pane outcome bundle plus passing regression tests showing target derivation from native `ssh.exe` tokenized `argv`, without configured/global fallback (the interactive bundle alone cannot independently attest WezTerm's process-tree report);
-- remote content verification and mode `0600`;
+- local materialized clipboard PNG and remote PNG SHA-256 equality, plus remote mode `0600`;
 - an ordinary text sentinel pasted exactly once through WezTerm native Paste;
 - configuration backup and `sshpic restore wezterm` proof;
 - a safe fallback when PowerShell clipboard access, STA/System.Windows.Forms, foreground process evidence, or native `ssh.exe` is unavailable.

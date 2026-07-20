@@ -1,6 +1,7 @@
 package wezterm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -144,6 +145,83 @@ func TestUninstallJournalIsRemovedWithEmptyDirectoryAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestUninstallPostBinaryCallbackFailureRetainsJournalAndCanRetry(t *testing.T) {
+	fixture := newUninstallFixture(t, false)
+	journalDir := filepath.Join(filepath.Dir(fixture.sourceRoot), "sshpic-uninstall-post-binary")
+	journalPath := filepath.Join(journalDir, "state-v1.json")
+	callbackCalls := 0
+
+	result, err := Uninstall(context.Background(), UninstallOptions{
+		ConfigPath:  fixture.configPath,
+		SourceRoot:  fixture.sourceRoot,
+		HelperPath:  fixture.helperPath,
+		JournalPath: journalPath,
+		AfterBinaryRemoval: func() error {
+			callbackCalls++
+			return errors.New("simulated final local cleanup failure")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "uninstall journal was retained for retry") {
+		t.Fatalf("post-binary callback failure error=%v", err)
+	}
+	if callbackCalls != 1 || !result.IntegrationRestored || !result.BinaryRemoved {
+		t.Fatalf("calls=%d result=%+v", callbackCalls, result)
+	}
+	if _, statErr := os.Lstat(fixture.binaryPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("owned binary remains after post-binary callback failure: %v", statErr)
+	}
+	if _, statErr := os.Stat(journalPath); statErr != nil {
+		t.Fatalf("post-binary callback failure did not retain journal: %v", statErr)
+	}
+
+	result, err = Uninstall(context.Background(), UninstallOptions{
+		ConfigPath:  fixture.configPath,
+		SourceRoot:  fixture.sourceRoot,
+		HelperPath:  fixture.helperPath,
+		JournalPath: journalPath,
+		AfterBinaryRemoval: func() error {
+			callbackCalls++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if callbackCalls != 2 || !result.IntegrationRestored || (!result.BinaryRemoved && !result.BinaryMissing) {
+		t.Fatalf("calls=%d retry result=%+v", callbackCalls, result)
+	}
+	for _, path := range []string{fixture.binaryPath, journalPath, journalDir} {
+		if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("successful post-binary callback retry retained %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestUninstallFinalBinaryVerificationRetainsJournalOnReappearance(t *testing.T) {
+	fixture := newUninstallFixture(t, false)
+	journalPath := filepath.Join(filepath.Dir(fixture.sourceRoot), "sshpic-uninstall-final-binary", "state-v1.json")
+	replacement := []byte("new unowned binary")
+
+	result, err := Uninstall(context.Background(), UninstallOptions{
+		ConfigPath:  fixture.configPath,
+		SourceRoot:  fixture.sourceRoot,
+		HelperPath:  fixture.helperPath,
+		JournalPath: journalPath,
+		AfterBinaryRemoval: func() error {
+			return os.WriteFile(fixture.binaryPath, replacement, 0o700)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "installed binary still exists after removal") {
+		t.Fatalf("final binary reappearance error=%v result=%+v", err, result)
+	}
+	if data, readErr := os.ReadFile(fixture.binaryPath); readErr != nil || !bytes.Equal(data, replacement) {
+		t.Fatalf("reappeared unowned binary was not preserved: data=%q err=%v", data, readErr)
+	}
+	if _, statErr := os.Stat(journalPath); statErr != nil {
+		t.Fatalf("final binary verification failure did not retain journal: %v", statErr)
+	}
+}
+
 func TestUninstallCleanupCallbackFailurePreservesBinaryJournalAndCanRetry(t *testing.T) {
 	fixture := newUninstallFixture(t, false)
 	journalDir := filepath.Join(filepath.Dir(fixture.sourceRoot), "sshpic-uninstall")
@@ -197,6 +275,168 @@ func TestUninstallCleanupCallbackFailurePreservesBinaryJournalAndCanRetry(t *tes
 		if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
 			t.Fatalf("successful callback retry retained %s: %v", path, statErr)
 		}
+	}
+}
+
+func TestUninstallCreatedConfigWithUserEditsCanRetryAfterCleanupFailure(t *testing.T) {
+	fixture := newCreatedConfigUninstallFixture(t)
+	journalDir := filepath.Join(filepath.Dir(fixture.sourceRoot), "sshpic-uninstall-created")
+	journalPath := filepath.Join(journalDir, "state-v1.json")
+	wantConfig := editCreatedConfigForUninstall(t, fixture)
+	callbackCalls := 0
+
+	result, err := Uninstall(context.Background(), UninstallOptions{
+		ConfigPath: fixture.configPath, SourceRoot: fixture.sourceRoot,
+		HelperPath: fixture.helperPath, JournalPath: journalPath,
+		BeforeBinaryRemoval: func() error {
+			callbackCalls++
+			return errors.New("simulated local cleanup failure")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "installed binary and uninstall journal were preserved") {
+		t.Fatalf("callback failure error=%v", err)
+	}
+	if callbackCalls != 1 || !result.IntegrationRestored || result.BinaryRemoved {
+		t.Fatalf("calls=%d result=%+v", callbackCalls, result)
+	}
+	assertFileContent(t, fixture.configPath, wantConfig)
+	for _, path := range []string{fixture.binaryPath, journalPath} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("callback failure removed %s: %v", path, statErr)
+		}
+	}
+	for _, path := range []string{fixture.install.ManifestPath, fixture.install.ModulePath} {
+		if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("callback failure left restored integration artifact %s: %v", path, statErr)
+		}
+	}
+
+	result, err = Uninstall(context.Background(), UninstallOptions{
+		ConfigPath: fixture.configPath, SourceRoot: fixture.sourceRoot,
+		HelperPath: fixture.helperPath, JournalPath: journalPath,
+		BeforeBinaryRemoval: func() error {
+			callbackCalls++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if callbackCalls != 2 || !result.IntegrationRestored || !result.BinaryRemoved {
+		t.Fatalf("calls=%d retry result=%+v", callbackCalls, result)
+	}
+	assertFileContent(t, fixture.configPath, wantConfig)
+	for _, path := range []string{fixture.binaryPath, journalPath, journalDir} {
+		if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("successful retry retained %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestUninstallCreatedConfigRetryRejectsUnsafePreservedConfig(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		mutate     func(*testing.T, uninstallFixture)
+		wantErr    string
+		assertPath func(*testing.T, string)
+	}{
+		{
+			name: "residual managed reference",
+			mutate: func(t *testing.T, fixture uninstallFixture) {
+				t.Helper()
+				data, err := os.ReadFile(fixture.configPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data = append(data, []byte("\nlocal retained = _sshpic_wezterm_integration_v1\n")...)
+				if err := os.WriteFile(fixture.configPath, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "still references the sshpic integration",
+			assertPath: func(t *testing.T, path string) {
+				t.Helper()
+				if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+					t.Fatalf("managed-reference config changed: info=%v err=%v", info, err)
+				}
+			},
+		},
+		{
+			name: "directory at config path",
+			mutate: func(t *testing.T, fixture uninstallFixture) {
+				t.Helper()
+				if err := os.Remove(fixture.configPath); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(fixture.configPath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "not a regular non-symlink file",
+			assertPath: func(t *testing.T, path string) {
+				t.Helper()
+				if info, err := os.Lstat(path); err != nil || !info.IsDir() {
+					t.Fatalf("non-regular config changed: info=%v err=%v", info, err)
+				}
+			},
+		},
+		{
+			name: "symlink at config path",
+			mutate: func(t *testing.T, fixture uninstallFixture) {
+				t.Helper()
+				target := fixture.configPath + ".user-preserved"
+				if err := os.Rename(fixture.configPath, target); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, fixture.configPath); err != nil {
+					t.Skipf("symlink creation is unavailable: %v", err)
+				}
+			},
+			wantErr: "not a regular non-symlink file",
+			assertPath: func(t *testing.T, path string) {
+				t.Helper()
+				if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+					t.Fatalf("symlink config changed: info=%v err=%v", info, err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newCreatedConfigUninstallFixture(t)
+			journalPath := filepath.Join(filepath.Dir(fixture.sourceRoot), "sshpic-uninstall-created", "state-v1.json")
+			_ = editCreatedConfigForUninstall(t, fixture)
+			_, err := Uninstall(context.Background(), UninstallOptions{
+				ConfigPath: fixture.configPath, SourceRoot: fixture.sourceRoot,
+				HelperPath: fixture.helperPath, JournalPath: journalPath,
+				BeforeBinaryRemoval: func() error { return errors.New("simulated local cleanup failure") },
+			})
+			if err == nil || !strings.Contains(err.Error(), "installed binary and uninstall journal were preserved") {
+				t.Fatalf("prepare retry state error=%v", err)
+			}
+			test.mutate(t, fixture)
+
+			callbackCalled := false
+			_, err = Uninstall(context.Background(), UninstallOptions{
+				ConfigPath: fixture.configPath, SourceRoot: fixture.sourceRoot,
+				HelperPath: fixture.helperPath, JournalPath: journalPath,
+				BeforeBinaryRemoval: func() error {
+					callbackCalled = true
+					return nil
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("unsafe retry error=%v", err)
+			}
+			if callbackCalled {
+				t.Fatal("unsafe retry reached pre-binary-removal cleanup")
+			}
+			for _, path := range []string{fixture.binaryPath, journalPath} {
+				if _, statErr := os.Stat(path); statErr != nil {
+					t.Fatalf("unsafe retry removed recovery evidence %s: %v", path, statErr)
+				}
+			}
+			test.assertPath(t, fixture.configPath)
+		})
 	}
 }
 
@@ -610,6 +850,58 @@ func prepareUninstallJournal(t *testing.T, fixture uninstallFixture, journalPath
 	if _, err := ensureUninstallJournal(journalPath, newUninstallJournal(manifest, fixture.sourceRoot, binaryHash, false)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func newCreatedConfigUninstallFixture(t *testing.T) uninstallFixture {
+	t.Helper()
+	fixture := newUninstallFixture(t, false)
+	restored, err := Restore(context.Background(), RestoreOptions{ConfigPath: fixture.configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restored.ManifestRemoved || !restored.ModuleRemoved {
+		t.Fatalf("initial fixture restore=%+v", restored)
+	}
+	if err := os.Remove(fixture.configPath); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := Install(context.Background(), InstallOptions{
+		BinaryPath: fixture.binaryPath, ConfigPath: fixture.configPath,
+		WezTermPath: fixture.wezterm, ConfigValidator: noOpConfigValidator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !installed.ConfigCreated {
+		t.Fatalf("fixture config was not created by sshpic: %+v", installed)
+	}
+	fixture.install = installed
+	fixture.original = nil
+	return fixture
+}
+
+func editCreatedConfigForUninstall(t *testing.T, fixture uninstallFixture) []byte {
+	t.Helper()
+	manifest, err := readManifest(fixture.install.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := os.ReadFile(fixture.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := []byte(strings.Replace(string(generated), "return config\n", "config.color_scheme = 'Batman'\nreturn config\n", 1))
+	if string(edited) == string(generated) {
+		t.Fatal("created config did not contain the expected return statement")
+	}
+	cleaned, ok := removeExactConfigBlock(edited, manifest.ModulePath, manifest.ConfigIdentifier)
+	if !ok {
+		t.Fatal("created config did not contain one exact managed block")
+	}
+	if err := os.WriteFile(fixture.configPath, edited, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cleaned
 }
 
 func TestUninstallResumesWhenJournalItselfWasQuarantined(t *testing.T) {

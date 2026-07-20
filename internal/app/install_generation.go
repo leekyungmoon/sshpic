@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -24,6 +25,8 @@ const (
 	installGenerationStateBusy  = "in_progress"
 	installGenerationGenesis    = "00000000000000000000000000000000"
 	installGenerationWriteMark  = ".write-"
+	windowsInstallStateDir      = "sshpic-windows-install"
+	windowsInstallPendingSuffix = ".pending"
 )
 
 type installGenerationLedger struct {
@@ -43,7 +46,7 @@ func installGenerationStateDir() (string, error) {
 		}
 		cacheDir = filepath.Join(homeDir, ".cache")
 	}
-	path, err := filepath.Abs(filepath.Join(cacheDir, sourcePurgeReceiptDir))
+	path, err := filepath.Abs(filepath.Join(cacheDir, windowsInstallStateDir))
 	if err != nil {
 		return "", err
 	}
@@ -150,8 +153,8 @@ func abortInstallGeneration(token string) error {
 		}
 		if ledger.Previous == installGenerationGenesis {
 			// Genesis is represented canonically by an absent ledger. Restoring
-			// that representation also keeps an interrupted source-completion
-			// retry distinguishable from a later settled installation.
+			// that representation keeps an aborted first installation
+			// distinguishable from a later settled installation.
 			path := filepath.Join(directory, installGenerationLedgerFile)
 			info, statErr := os.Lstat(path)
 			if statErr != nil {
@@ -169,22 +172,6 @@ func abortInstallGeneration(token string) error {
 			Token:   ledger.Previous,
 		})
 	})
-}
-
-func settledInstallGeneration() (string, error) {
-	var token string
-	err := withInstallGenerationLock(false, func(directory string) error {
-		ledger, err := readInstallGenerationLedgerUnlocked(directory)
-		if err != nil {
-			return err
-		}
-		if ledger.State != installGenerationStateDone {
-			return errors.New("a Windows installation is in progress; source purge authority is paused")
-		}
-		token = ledger.Token
-		return nil
-	})
-	return token, err
 }
 
 func peekSettledInstallGeneration() (string, error) {
@@ -207,7 +194,7 @@ func peekSettledInstallGeneration() (string, error) {
 		return "", err
 	}
 	canonical, err = filepath.Abs(canonical)
-	if err != nil || !sameSourcePurgePath(canonical, directory) {
+	if err != nil || !sameWindowsInstallPath(canonical, directory) {
 		return "", errors.New("Windows install generation directory uses an ancestor alias")
 	}
 	ledger, err := readInstallGenerationLedgerUnlocked(directory)
@@ -215,63 +202,73 @@ func peekSettledInstallGeneration() (string, error) {
 		return "", err
 	}
 	if ledger.State != installGenerationStateDone {
-		return "", errors.New("a Windows installation is in progress; source purge authority is paused")
+		return "", errors.New("a Windows installation is in progress")
 	}
 	return ledger.Token, nil
 }
 
-func requireSettledInstallGeneration(expected string) error {
+// completeWindowsUninstallControlState removes the install generation ledger
+// only when it is still the exact settled generation observed before
+// uninstall began. The checkout is deliberately unrelated to this cleanup:
+// uninstall disables sshpic while preserving its source tree.
+func completeWindowsUninstallControlState(expected string) error {
 	if !validInstallGenerationToken(expected) {
-		return errors.New("source purge receipt has an invalid install generation")
+		return errors.New("Windows uninstall has an invalid install generation")
 	}
-	current, err := settledInstallGeneration()
-	if err != nil {
-		return err
-	}
-	if current != expected {
-		return errors.New("Windows install generation changed after source purge was authorized")
-	}
-	return nil
-}
-
-func completeSourcePurgeControlState(expected string, cleanupAuthority func() error) error {
-	if cleanupAuthority == nil || !validInstallGenerationToken(expected) {
-		return errors.New("source purge control-state completion is invalid")
-	}
-	return withInstallGenerationLock(false, func(directory string) error {
+	err := withInstallGenerationLock(false, func(directory string) error {
 		ledger, err := readInstallGenerationLedgerUnlocked(directory)
 		if err != nil {
 			return err
 		}
+		if ledger.State != installGenerationStateDone || ledger.Token != expected {
+			return errors.New("Windows install generation changed while uninstall was running")
+		}
+
 		ledgerPath := filepath.Join(directory, installGenerationLedgerFile)
-		_, ledgerStatErr := os.Lstat(ledgerPath)
-		completionRetry := ledger.State == installGenerationStateDone &&
-			ledger.Token == installGenerationGenesis && expected != installGenerationGenesis &&
-			errors.Is(ledgerStatErr, os.ErrNotExist)
-		if ledger.State != installGenerationStateDone || (ledger.Token != expected && !completionRetry) {
-			return errors.New("Windows install generation changed before source authority cleanup")
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			return err
 		}
-		if !completionRetry {
-			info, err := os.Lstat(ledgerPath)
-			if err != nil {
-				return err
-			}
-			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-				return errors.New("Windows install generation ledger has an unsafe type during source completion")
-			}
-			current, statErr := os.Lstat(ledgerPath)
-			if statErr != nil || !os.SameFile(info, current) {
-				return errors.New("Windows install generation ledger identity changed during source completion")
-			}
-			if err := os.Remove(ledgerPath); err != nil {
-				return err
+		wantEntries := 1
+		if expected != installGenerationGenesis {
+			wantEntries = 2
+		}
+		if len(entries) != wantEntries {
+			return errors.New("Windows install control-state contains unexpected entries")
+		}
+		for _, entry := range entries {
+			if entry.Name() != installGenerationLockFile && entry.Name() != installGenerationLedgerFile {
+				return fmt.Errorf("Windows install control-state contains an unexpected entry: %s", entry.Name())
 			}
 		}
-		// Keep the lock while removing marker and receipt. If cleanup fails, the
-		// still-valid receipt authorizes only a completion retry against an
-		// absent (genesis) ledger; no install can cross this critical section.
-		return cleanupAuthority()
+
+		if expected == installGenerationGenesis {
+			if _, err := os.Lstat(ledgerPath); !errors.Is(err, os.ErrNotExist) {
+				if err != nil {
+					return err
+				}
+				return errors.New("Windows genesis install generation unexpectedly has a ledger")
+			}
+			return nil
+		}
+
+		info, err := os.Lstat(ledgerPath)
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("Windows install generation ledger has an unsafe type during uninstall")
+		}
+		current, err := os.Lstat(ledgerPath)
+		if err != nil || !os.SameFile(info, current) {
+			return errors.New("Windows install generation ledger identity changed during uninstall")
+		}
+		return os.Remove(ledgerPath)
 	})
+	if err != nil {
+		return err
+	}
+	return removeInstallGenerationLockAndDirectory()
 }
 
 func removeInstallGenerationLockAndDirectory() error {
@@ -314,45 +311,6 @@ func removeInstallGenerationLockAndDirectory() error {
 	return nil
 }
 
-// sourcePurgeCompletionCleanupOnlyPending recognizes only the final residue
-// possible after source, quarantine, marker, receipt, and generation ledger
-// are already gone. It never authorizes source deletion or installed-state
-// mutation; it merely permits an isolated preserved helper to retry removing
-// the exact lock and now-empty dedicated directory.
-func sourcePurgeCompletionCleanupOnlyPending() (bool, error) {
-	directory, err := installGenerationStateDir()
-	if err != nil {
-		return false, err
-	}
-	info, err := os.Lstat(directory)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return false, errors.New("Windows uninstall control-state directory has an unsafe type")
-	}
-	canonical, err := filepath.EvalSymlinks(directory)
-	if err != nil {
-		return false, err
-	}
-	canonical, err = filepath.Abs(canonical)
-	if err != nil || !sameSourcePurgePath(canonical, directory) {
-		return false, errors.New("Windows uninstall control-state directory uses an ancestor alias")
-	}
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		return false, err
-	}
-	if len(entries) != 1 || entries[0].Name() != installGenerationLockFile {
-		return false, nil
-	}
-	lockInfo, err := os.Lstat(filepath.Join(directory, installGenerationLockFile))
-	if err != nil || !lockInfo.Mode().IsRegular() || lockInfo.Mode()&os.ModeSymlink != 0 {
-		return false, errors.New("Windows install generation lock has an unsafe type during completion retry")
-	}
-	return true, nil
-}
-
 // withInstallGenerationLock serializes every read/modify/write transition. The
 // OS lock is released automatically on process death, unlike a lock-directory
 // convention that can permanently strand a crashed install.
@@ -362,8 +320,7 @@ func withInstallGenerationLock(createDirectory bool, fn func(string) error) erro
 		return err
 	}
 	// Even a read of the implicit genesis generation creates and locks the
-	// dedicated directory. Otherwise a concurrent begin could create its first
-	// ledger in the gap while source purge believes the namespace is absent.
+	// dedicated directory so a concurrent install cannot publish in a gap.
 	_ = createDirectory
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("create Windows install generation directory: %w", err)
@@ -380,7 +337,7 @@ func withInstallGenerationLock(createDirectory bool, fn func(string) error) erro
 		return err
 	}
 	canonical, err = filepath.Abs(canonical)
-	if err != nil || !sameSourcePurgePath(canonical, directory) {
+	if err != nil || !sameWindowsInstallPath(canonical, directory) {
 		return errors.New("Windows install generation directory uses an ancestor alias")
 	}
 	lockPath := filepath.Join(directory, installGenerationLockFile)
@@ -479,6 +436,15 @@ func validInstallGenerationToken(token string) bool {
 	return true
 }
 
+func sameWindowsInstallPath(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
 func writeInstallGenerationLedgerUnlocked(directory string, ledger installGenerationLedger) error {
 	if err := validateInstallGenerationLedger(ledger); err != nil {
 		return err
@@ -494,7 +460,7 @@ func writeInstallGenerationLedgerUnlocked(directory string, ledger installGenera
 		if nonceErr != nil {
 			return nonceErr
 		}
-		candidate := filepath.Join(directory, installGenerationLedgerFile+installGenerationWriteMark+nonce+installReceiptPendingSuffix)
+		candidate := filepath.Join(directory, installGenerationLedgerFile+installGenerationWriteMark+nonce+windowsInstallPendingSuffix)
 		file, openErr := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(openErr, os.ErrExist) {
 			continue
@@ -603,5 +569,28 @@ func cleanupInstallGenerationWritePendingUnlocked(directory string) error {
 }
 
 func isInstallGenerationWritePendingName(name string) bool {
-	return isStrictWritePendingName(name, installGenerationLedgerFile)
+	prefix := installGenerationLedgerFile + installGenerationWriteMark
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	remainder := strings.TrimPrefix(name, prefix)
+	for segment := 0; ; segment++ {
+		if segment > 0 {
+			if !strings.HasPrefix(remainder, ".cleanup-") {
+				return false
+			}
+			remainder = strings.TrimPrefix(remainder, ".cleanup-")
+		}
+		if len(remainder) < 32+len(windowsInstallPendingSuffix) || !validInstallGenerationToken(remainder[:32]) {
+			return false
+		}
+		remainder = remainder[32:]
+		if !strings.HasPrefix(remainder, windowsInstallPendingSuffix) {
+			return false
+		}
+		remainder = strings.TrimPrefix(remainder, windowsInstallPendingSuffix)
+		if remainder == "" {
+			return true
+		}
+	}
 }

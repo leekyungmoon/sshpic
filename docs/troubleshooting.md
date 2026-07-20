@@ -1,8 +1,8 @@
 # Troubleshooting
 
-## Windows `Ctrl+V` does not insert an image path
+## Windows `Ctrl+V` does not show `[Image #1]` in Codex
 
-First confirm that the session is inside WezTerm on an interactive Windows 10/11 desktop and inspect the target-specific checks:
+First confirm that native PowerShell or Git Bash and the SSH/Codex session are inside a WezTerm pane on an interactive Windows 10/11 desktop. A standalone PowerShell window and Windows Terminal do not load the integration. Then inspect the target-specific checks:
 
 ```powershell
 sshpic doctor wezterm
@@ -13,15 +13,17 @@ wezterm.exe --version
 
 Use current WezTerm and Windows OpenSSH releases. `doctor wezterm` checks executable and capability probes but does not yet reject every old version; some Windows 10 inbox OpenSSH builds lack safety options used by the upload invocation, and old WezTerm builds lack required Lua APIs.
 
-The focused WezTerm pane must have native Windows `ssh.exe` as its foreground process. A pane running `wsl ssh`, PuTTY/Plink, Windows Terminal, a global SSH process in another pane, or a wrapper that hides the foreground `ssh.exe` is outside the experimental candidate boundary. sshpic deliberately does not fall back to an unrelated process or `remote_host` for shortcut-driven upload.
+The focused WezTerm pane must have native Windows `ssh.exe` as its foreground process. A pane running `wsl ssh`, PuTTY/Plink, a global SSH process in another pane, or a wrapper that hides the foreground `ssh.exe` is outside the experimental candidate boundary. sshpic deliberately does not fall back to an unrelated process or `remote_host` for shortcut-driven upload. A successful Codex image paste renders exactly `[Image #1]`; no response or a raw remote path left visible is a failed result.
 
 The foreground session can be interactive, but sshpic's short home/upload/verify connections use `BatchMode=yes`. If `Ctrl+V` reports an authentication failure, first run a separate non-interactive check and resolve keys, `ssh-agent`, host-key acceptance, or jump-host configuration:
 
 ```powershell
-ssh.exe -o BatchMode=yes my-host true
+ssh.exe -o BatchMode=yes -o ConnectTimeout=5 my-host true
 ```
 
-If the installer just added Go or WezTerm through `winget`, open a new Git Bash and rerun `./install.sh`. Then fully restart or reload WezTerm as directed by the install output.
+Prefer an SSH `Host` alias containing the intended user/key settings. A raw IP is discouraged and works only if that exact preflight succeeds.
+
+If the installer just added Go or WezTerm through `winget`, open a new PowerShell and rerun `.\install.ps1`, or open a new Git Bash and rerun `./install.sh`. Do not run `./install.sh` directly from PowerShell: its Windows file association may launch a separate Git Bash process asynchronously and return before installation finishes. Then fully restart or reload WezTerm as directed by the install output.
 
 ## Windows clipboard checks fail
 
@@ -35,7 +37,7 @@ Temporary clipboard contention is retried. A persistent `clipboard busy` or `Sys
 
 This is release-blocking. With text on the clipboard, `Ctrl+V` must call WezTerm's native clipboard Paste exactly once. Text must not pass through an sshpic payload, upload command, shell command, or synthetic keystroke path.
 
-Run the Windows E2E harness and retain its evidence bundle:
+Run the Windows E2E harness and retain its exact `[Image #1]`, local/remote PNG SHA-256 equality, native text-paste, and restore evidence:
 
 ```powershell
 .\scripts\verify-windows-wezterm-codex-e2e.ps1

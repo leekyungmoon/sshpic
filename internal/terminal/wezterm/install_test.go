@@ -60,6 +60,150 @@ func TestInstallAndRestoreCreatedConfig(t *testing.T) {
 	}
 }
 
+func TestRestorePreservesUserEditsOutsideCreatedConfigMarker(t *testing.T) {
+	home := t.TempDir()
+	binary := testFile(t, filepath.Join(home, "bin", "sshpic.exe"), "binary")
+	wezterm := testFile(t, filepath.Join(home, "bin", "wezterm.exe"), "binary")
+	t.Setenv("SSHPIC_WEZTERM_EXE", "")
+	installed, err := Install(context.Background(), InstallOptions{
+		BinaryPath: binary, HomeDir: home, WezTermPath: wezterm,
+		ConfigValidator: noOpConfigValidator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(installed.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userSetting := "config.color_scheme = 'Batman'\n"
+	edited := strings.Replace(string(data), "return config\n", userSetting+"return config\n", 1)
+	if edited == string(data) {
+		t.Fatal("created config did not contain the expected return statement")
+	}
+	if err := os.WriteFile(installed.ConfigPath, []byte(edited), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	validated, err := ValidateRestore(context.Background(), RestoreOptions{ConfigPath: installed.ConfigPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !validated.ValidationOnly || !validated.ConfigRestored || validated.ConfigRemoved || !validated.ModuleRemoved || !validated.ManifestRemoved {
+		t.Fatalf("validation=%+v", validated)
+	}
+	if afterValidation, readErr := os.ReadFile(installed.ConfigPath); readErr != nil || string(afterValidation) != edited {
+		t.Fatalf("validation changed config: err=%v got=%q", readErr, afterValidation)
+	}
+	for _, path := range []string{installed.ModulePath, installed.ManifestPath} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("validation changed owned artifact %s: %v", path, statErr)
+		}
+	}
+
+	restored, err := Restore(context.Background(), RestoreOptions{ConfigPath: installed.ConfigPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restored.ConfigRestored || restored.ConfigRemoved || !restored.ModuleRemoved || !restored.ManifestRemoved {
+		t.Fatalf("restored=%+v", restored)
+	}
+	if len(restored.Warnings) != 1 || !strings.Contains(restored.Warnings[0], "preserved user edits") {
+		t.Fatalf("warnings=%q", restored.Warnings)
+	}
+	after, err := os.ReadFile(installed.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(edited, configBlock(installed.ModulePath, "config"), "", 1)
+	if string(after) != want {
+		t.Fatalf("restored config=%q want=%q", after, want)
+	}
+	if !strings.Contains(string(after), userSetting) || configHasManagedIntegrationReference(after, installed.ModulePath) {
+		t.Fatalf("user edit or managed integration state is wrong after restore: %s", after)
+	}
+	for _, path := range []string{installed.ModulePath, installed.ManifestPath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("owned artifact remains %s: %v", path, err)
+		}
+	}
+}
+
+func TestRestoreCreatedConfigRefusesManagedBlockChanges(t *testing.T) {
+	home := t.TempDir()
+	binary := testFile(t, filepath.Join(home, "bin", "sshpic.exe"), "binary")
+	wezterm := testFile(t, filepath.Join(home, "bin", "wezterm.exe"), "binary")
+	t.Setenv("SSHPIC_WEZTERM_EXE", "")
+	installed, err := Install(context.Background(), InstallOptions{
+		BinaryPath: binary, HomeDir: home, WezTermPath: wezterm,
+		ConfigValidator: noOpConfigValidator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(installed.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := strings.Replace(string(data), "_sshpic_wezterm_integration_v1.apply_to_config(config)", "_sshpic_wezterm_integration_v1.apply_to_config(other_config)", 1)
+	if tampered == string(data) {
+		t.Fatal("created config did not contain the expected managed call")
+	}
+	if err := os.WriteFile(installed.ConfigPath, []byte(tampered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Restore(context.Background(), RestoreOptions{ConfigPath: installed.ConfigPath})
+	if err == nil || !strings.Contains(err.Error(), "changed inside or around the sshpic marker") {
+		t.Fatalf("err=%v", err)
+	}
+	after, readErr := os.ReadFile(installed.ConfigPath)
+	if readErr != nil || string(after) != tampered {
+		t.Fatalf("tampered config changed: err=%v got=%q", readErr, after)
+	}
+	for _, path := range []string{installed.ModulePath, installed.ManifestPath} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("owned artifact changed after refusal %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestRestoreCreatedConfigRefusesResidualManagedReference(t *testing.T) {
+	home := t.TempDir()
+	binary := testFile(t, filepath.Join(home, "bin", "sshpic.exe"), "binary")
+	wezterm := testFile(t, filepath.Join(home, "bin", "wezterm.exe"), "binary")
+	t.Setenv("SSHPIC_WEZTERM_EXE", "")
+	installed, err := Install(context.Background(), InstallOptions{
+		BinaryPath: binary, HomeDir: home, WezTermPath: wezterm,
+		ConfigValidator: noOpConfigValidator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(installed.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extraReference := "-- keep this user edit, but never delete its referenced module\nlocal retained = _sshpic_wezterm_integration_v1\n"
+	edited := strings.Replace(string(data), "return config\n", extraReference+"return config\n", 1)
+	if err := os.WriteFile(installed.ConfigPath, []byte(edited), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Restore(context.Background(), RestoreOptions{ConfigPath: installed.ConfigPath})
+	if err == nil || !strings.Contains(err.Error(), "changed inside or around the sshpic marker") {
+		t.Fatalf("err=%v", err)
+	}
+	after, readErr := os.ReadFile(installed.ConfigPath)
+	if readErr != nil || string(after) != edited {
+		t.Fatalf("config changed after refusal: err=%v got=%q", readErr, after)
+	}
+	for _, path := range []string{installed.ModulePath, installed.ManifestPath} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("owned artifact changed after refusal %s: %v", path, statErr)
+		}
+	}
+}
+
 func TestInstallPatchesAndExactlyRestoresSimpleUserConfig(t *testing.T) {
 	dir := t.TempDir()
 	binary := testFile(t, filepath.Join(dir, "sshpic.exe"), "binary")
@@ -657,6 +801,7 @@ func TestResolveWezTermExecutableFindsPerUserStandardLocation(t *testing.T) {
 	}
 	checks := DoctorChecks(context.Background(), DoctorOptions{
 		ConfigPath:     configPath,
+		WezTermProbe:   successfulWezTermProbe,
 		PowerShellPath: binary,
 		PowerShellProbe: func(context.Context, string) error {
 			return nil

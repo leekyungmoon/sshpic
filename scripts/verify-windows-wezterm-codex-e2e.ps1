@@ -22,9 +22,27 @@ function Get-App {
     return $null
 }
 
+function Resolve-WezTerm {
+    $found = Get-App @("wezterm.exe", "wezterm-gui.exe")
+    if ($found) {
+        return $found
+    }
+    $candidates = @()
+    if ($env:ProgramFiles) {
+        $candidates += (Join-Path $env:ProgramFiles "WezTerm\wezterm.exe")
+        $candidates += (Join-Path $env:ProgramFiles "WezTerm\wezterm-gui.exe")
+    }
+    if ($env:LOCALAPPDATA) {
+        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\WezTerm\wezterm.exe")
+        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\WezTerm\wezterm-gui.exe")
+    }
+    return $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+}
+
 function Assert-RepoContract {
     $required = @(
         (Join-Path $RepoRoot "install.sh"),
+        (Join-Path $RepoRoot "install.ps1"),
         (Join-Path $RepoRoot ".github\workflows\ci.yml"),
         (Join-Path $RepoRoot "internal\terminal\wezterm\lua.go"),
         (Join-Path $RepoRoot "internal\terminal\wezterm\install.go")
@@ -58,7 +76,7 @@ if ($PreflightOnly) {
     Assert-RepoContract
     $powerShellTool = Get-App @("powershell.exe", "pwsh.exe")
     $sshTool = Get-App @("ssh.exe")
-    $wezTermTool = Get-App @("wezterm.exe", "wezterm-gui.exe")
+    $wezTermTool = Resolve-WezTerm
     Write-Host "sshpic Windows WezTerm E2E harness preflight: PASS"
     Write-Host "powershell: $(if ($powerShellTool) { $powerShellTool } else { 'not found (runtime prerequisite)' })"
     Write-Host "ssh.exe: $(if ($sshTool) { $sshTool } else { 'not found (runtime prerequisite)' })"
@@ -94,6 +112,7 @@ New-Item -ItemType Directory -Path $RunDir -Force | Out-Null
 $SystemLog = Join-Path $RunDir "system.txt"
 $InstallLog = Join-Path $RunDir "install.txt"
 $DoctorLog = Join-Path $RunDir "doctor-wezterm.txt"
+$SshPreflightLog = Join-Path $RunDir "ssh-batchmode-preflight.txt"
 $ClipboardLog = Join-Path $RunDir "clipboard.txt"
 $RemoteLog = Join-Path $RunDir "remote-verify.txt"
 $RestoreLog = Join-Path $RunDir "restore-wezterm.txt"
@@ -122,7 +141,8 @@ function Invoke-Logged {
         }
         # Windows PowerShell 5.1 turns successful native stderr into a
         # terminating NativeCommandError when ErrorActionPreference is Stop.
-        # install.sh intentionally prints a supported-surface notice to stderr.
+        # install.ps1 and its synchronous install.sh child may print supported-
+        # surface notices to stderr.
         $ErrorActionPreference = "Continue"
         $output = & $FilePath @Arguments 2>&1 | Out-String
         $code = $LASTEXITCODE
@@ -468,8 +488,12 @@ $PowerShellExe = Get-App @("powershell.exe", "pwsh.exe")
 $SshExe = Get-App @("ssh.exe")
 $Sshpic = $null
 $InstallAttempted = $false
+$SshPreflightResult = "not_run"
 $ImageResult = "not_run"
 $RemoteResult = "not_run"
+$ShaEqualityResult = "not_run"
+$LocalMaterializedSha256 = "not_run"
+$RemotePngSha256 = "not_run"
 $TextResult = "not_run"
 $RestoreResult = "not_run"
 $ClipboardBackupSucceeded = $false
@@ -483,9 +507,21 @@ try {
     if (-not $PowerShellExe) { throw "powershell.exe or pwsh.exe is required" }
     if (-not $SshExe) { throw "native Windows OpenSSH ssh.exe is required" }
 
+    if ($SshTarget -match '^(?:[^@]+@)?(?:\d{1,3}\.){3}\d{1,3}$' -or $SshTarget -match '^(?:[^@]+@)?\[[0-9a-fA-F:]+\]$') {
+        Write-Warning "A raw IP SSH target is discouraged. Prefer an SSH Host alias with the intended user and identity; this run continues only if the exact target passes BatchMode authentication."
+    }
+    Write-Host "Checking non-interactive SSH authentication before installation, clipboard access, or paste..."
+    $sshPreflightExit = Invoke-Logged $SshExe @("-o", "BatchMode=yes", "-o", "ConnectTimeout=5", $SshTarget, "true") $SshPreflightLog
+    if ($sshPreflightExit -ne 0) {
+        $SshPreflightResult = "fail"
+        throw "SSH target failed the BatchMode key-authentication preflight. Configure an SSH Host alias with the correct user/key and verify 'ssh.exe -o BatchMode=yes $SshTarget true' before E2E."
+    }
+    $SshPreflightResult = "pass"
+
     $InstallAttempted = $true
-    $installExit = Invoke-Logged $GitBash @("./install.sh") $InstallLog $RepoRoot
-    if ($installExit -ne 0) { throw "./install.sh exited $installExit" }
+    $PowerShellInstaller = Join-Path $RepoRoot "install.ps1"
+    $installExit = Invoke-Logged $PowerShellExe @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PowerShellInstaller, "-GitBashPath", $GitBash) $InstallLog $RepoRoot
+    if ($installExit -ne 0) { throw "install.ps1 exited $installExit" }
     $Sshpic = Resolve-Sshpic
     if (-not $Sshpic) { throw "sshpic.exe could not be resolved after install" }
 
@@ -502,19 +538,7 @@ try {
     $doctorExit = Invoke-Logged $Sshpic @("doctor", "wezterm") $DoctorLog
     if ($doctorExit -ne 0) { throw "doctor wezterm exited $doctorExit" }
 
-    $WezTermExe = Get-App @("wezterm.exe", "wezterm-gui.exe")
-    if (-not $WezTermExe) {
-        $versionCandidates = @()
-        if ($env:ProgramFiles) {
-            $versionCandidates += (Join-Path $env:ProgramFiles "WezTerm\wezterm.exe")
-            $versionCandidates += (Join-Path $env:ProgramFiles "WezTerm\wezterm-gui.exe")
-        }
-        if ($env:LOCALAPPDATA) {
-            $versionCandidates += (Join-Path $env:LOCALAPPDATA "Programs\WezTerm\wezterm.exe")
-            $versionCandidates += (Join-Path $env:LOCALAPPDATA "Programs\WezTerm\wezterm-gui.exe")
-        }
-        $WezTermExe = $versionCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-    }
+    $WezTermExe = Resolve-WezTerm
     $system = @(
         "date_utc=$([DateTime]::UtcNow.ToString('o'))",
         "os=$([Environment]::OSVersion.VersionString)",
@@ -528,18 +552,44 @@ try {
     ) -join "`r`n"
     Write-Utf8 $SystemLog ($system + "`r`n")
 
-    $png = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAH0lEQVR42mP4z8DwHwwZ/gMBA5QL5YB5KBwwROYAmQC5wiPdExH21gAAAABJRU5ErkJggg=="
-    [IO.File]::WriteAllBytes($Fixture, [Convert]::FromBase64String($png))
+    # A run-unique pixel payload prevents a stale clipboard.png from satisfying
+    # the remote SHA-256 gate after a failed current upload.
+    Add-Type -AssemblyName System.Drawing
+    $fixtureNonce = [Guid]::NewGuid().ToByteArray()
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $fixtureDigest = $sha256.ComputeHash($fixtureNonce)
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    $bitmap = New-Object -TypeName System.Drawing.Bitmap -ArgumentList 4, 4
+    try {
+        for ($y = 0; $y -lt 4; $y++) {
+            for ($x = 0; $x -lt 4; $x++) {
+                $pixel = ($y * 4) + $x
+                $red = $fixtureDigest[($pixel * 3) % $fixtureDigest.Length]
+                $green = $fixtureDigest[(($pixel * 3) + 1) % $fixtureDigest.Length]
+                $blue = $fixtureDigest[(($pixel * 3) + 2) % $fixtureDigest.Length]
+                $bitmap.SetPixel($x, $y, [Drawing.Color]::FromArgb(255, $red, $green, $blue))
+            }
+        }
+        $bitmap.Save($Fixture, [Drawing.Imaging.ImageFormat]::Png)
+    }
+    finally {
+        $bitmap.Dispose()
+    }
     Write-Utf8 $ClipboardLog ""
     Write-Warning "This E2E requires an empty Windows clipboard. It refuses every pre-existing format, including text, images, HTML, and file lists, rather than risk a lossy backup."
     Set-ClipboardFixture $PowerShellExe "backup" $ClipboardBackupDir
     $ClipboardBackupKind = [IO.File]::ReadAllText($ClipboardBackupKindPath).Trim()
     $ClipboardBackupSucceeded = $true
     Set-ClipboardFixture $PowerShellExe "image" $Fixture
-    $expectedClipboardSha = (Get-FileHash -LiteralPath $ExpectedClipboardPng -Algorithm SHA256).Hash.ToLowerInvariant()
+    $LocalMaterializedSha256 = (Get-FileHash -LiteralPath $ExpectedClipboardPng -Algorithm SHA256).Hash.ToLowerInvariant()
 
     Write-Host "In WezTerm: run 'ssh.exe $SshTarget', start Codex, focus its input, and press Ctrl+V once."
-    $ImageResult = if (Confirm-Pass "Did one remote image path appear, with no command/debug text? [y/N]") { "pass" } else { "fail" }
+    Write-Host "Expected Codex UI: exactly one [Image #1] attachment placeholder. A visible raw remote path is a failure."
+    $ImageResult = if (Confirm-Pass "Did Codex show exactly one [Image #1], with no raw path or command/debug text? [y/N]") { "pass" } else { "fail" }
 
     $remoteCommand = @'
 p="$HOME/.sshpic/images/clipboard.png"
@@ -556,15 +606,19 @@ test "$signature" = 89504e470d0a1a0a || exit 14
     $remoteExit = Invoke-Logged $SshExe @("-o", "BatchMode=yes", "-o", "ConnectTimeout=5", $SshTarget, $remoteCommand) $RemoteLog
     $remoteText = [IO.File]::ReadAllText($RemoteLog)
     $remoteShaMatch = [regex]::Match($remoteText, '(?m)^sha256=([0-9a-fA-F]{64})\r?$')
-    $RemoteResult = if ($remoteExit -eq 0 -and $remoteShaMatch.Success -and $remoteShaMatch.Groups[1].Value.ToLowerInvariant() -eq $expectedClipboardSha) { "pass" } else { "fail" }
+    if ($remoteShaMatch.Success) {
+        $RemotePngSha256 = $remoteShaMatch.Groups[1].Value.ToLowerInvariant()
+    }
+    $ShaEqualityResult = if ($RemotePngSha256 -ne "not_run" -and $RemotePngSha256 -eq $LocalMaterializedSha256) { "pass" } else { "fail" }
+    $RemoteResult = if ($remoteExit -eq 0 -and $ShaEqualityResult -eq "pass") { "pass" } else { "fail" }
 
     $sentinel = "sshpic-windows-text-$Stamp"
     Set-ClipboardFixture $PowerShellExe "text" $sentinel
     Write-Host "In the same focused WezTerm input, press Ctrl+V once. Expect exactly: $sentinel"
     $TextResult = if (Confirm-Pass "Did native text paste appear exactly once? [y/N]") { "pass" } else { "fail" }
 
-    if ($ImageResult -ne "pass") { throw "image UI confirmation failed" }
-    if ($RemoteResult -ne "pass") { throw "remote PNG or mode 0600 verification failed" }
+    if ($ImageResult -ne "pass") { throw "exact Codex [Image #1] UI confirmation failed" }
+    if ($RemoteResult -ne "pass") { throw "remote PNG, mode 0600, or local/remote SHA-256 verification failed" }
     if ($TextResult -ne "pass") { throw "native text paste confirmation failed" }
     $Failure = "none"
 }
@@ -622,7 +676,7 @@ finally {
     }
 
     $overall = "fail"
-    if ($ImageResult -eq "pass" -and $RemoteResult -eq "pass" -and $TextResult -eq "pass" -and $RestoreResult -eq "pass" -and $ClipboardRestoreResult -eq "pass_exact_empty") {
+    if ($SshPreflightResult -eq "pass" -and $ImageResult -eq "pass" -and $RemoteResult -eq "pass" -and $ShaEqualityResult -eq "pass" -and $TextResult -eq "pass" -and $RestoreResult -eq "pass" -and $ClipboardRestoreResult -eq "pass_exact_empty") {
         $overall = "pass"
         $ExitCode = 0
     }
@@ -637,7 +691,11 @@ finally {
 - Result: $overall
 - Failure reason: $Failure
 - SSH target: $SshTarget
-- Image UI result: $ImageResult
+- SSH BatchMode preflight: $SshPreflightResult
+- Codex exact `[Image #1]` UI result: $ImageResult
+- Local materialized PNG SHA-256: $LocalMaterializedSha256
+- Remote PNG SHA-256: $RemotePngSha256
+- Local/remote PNG SHA-256 equality: $ShaEqualityResult
 - Remote PNG/mode result: $RemoteResult
 - Native text paste result: $TextResult
 - Configuration restore result: $RestoreResult
@@ -645,12 +703,16 @@ finally {
 - Clipboard restore result: $ClipboardRestoreResult
 - Clipboard ownership-marker directory (only retained on cleanup refusal): $ClipboardBackupDir
 
-The bundle contains tool identity, install and `doctor wezterm` output, config
+The bundle contains tool identity, install, SSH BatchMode preflight, and
+`doctor wezterm` output, config
 existence/size/SHA-256 metadata (not raw personal config), clipboard fixture
-readback, remote PNG + mode `0600` verification, and `restore wezterm` output.
+readback, local/remote PNG SHA-256 equality + mode `0600` verification, and
+`restore wezterm` output.
 
 Pass requires a real Windows 10/11 interactive WezTerm pane using native
-`ssh.exe`, one image path insertion, exact WezTerm-native text paste, and an
+`ssh.exe`, a successful non-interactive SSH preflight, exactly one Codex
+`[Image #1]` attachment placeholder with no visible raw path, identical local
+and remote PNG SHA-256 values, exact WezTerm-native text paste, and an
 exact config existence/hash restoration, and exact restoration of the required
 empty clipboard state. Any pre-existing clipboard format makes the harness stop
 before its first clipboard write. CI `-PreflightOnly` is not E2E proof.

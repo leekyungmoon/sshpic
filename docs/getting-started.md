@@ -2,7 +2,7 @@
 
 ## Install from a clone
 
-Use the same commands on macOS and Windows:
+On macOS, keep using the existing installer:
 
 ```sh
 git clone https://github.com/leekyungmoon/sshpic.git
@@ -10,9 +10,23 @@ cd sshpic
 ./install.sh
 ```
 
-On Windows 10/11, run these commands in **Git Bash**. Do not run the installer in WSL. When Go or WezTerm is missing, the installer can use `winget` to install the official packages before continuing. If `winget` is unavailable or a newly installed executable is not visible to the current shell, install the named dependency, open a new Git Bash window, and rerun `./install.sh`.
+On Windows 10/11, install from PowerShell:
 
-On macOS, the existing iTerm2 installation path is unchanged.
+```powershell
+git clone https://github.com/leekyungmoon/sshpic.git
+Set-Location sshpic
+.\install.ps1
+```
+
+Or install from Git Bash:
+
+```sh
+git clone https://github.com/leekyungmoon/sshpic.git
+cd sshpic
+./install.sh
+```
+
+Do not run `./install.sh` directly from PowerShell: its Windows file association may launch a separate Git Bash process asynchronously and return the prompt before installation finishes. Do not run either installer in WSL. When Go or WezTerm is missing, the installer can use `winget`; after installing a missing dependency, open a new shell and rerun the matching installer if directed.
 
 ## Install with the one-liner
 
@@ -27,15 +41,17 @@ curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh
 Open WezTerm with a native PowerShell or Git Bash pane:
 
 ```text
+ssh.exe -o BatchMode=yes -o ConnectTimeout=5 my-host true
 ssh.exe my-host
 codex
 copy image locally
 Ctrl+V
+expected Codex UI: [Image #1]
 ```
 
-`ssh` is also accepted when it resolves to native Windows `ssh.exe`. This is an experimental candidate rather than a public support claim; `wsl ssh`, SSH inside a WSL shell, PuTTY/Plink, and Windows Terminal are outside even that candidate boundary.
+`ssh` is also accepted when it resolves to native Windows `ssh.exe`. PowerShell and Git Bash are supported here only as shells inside a WezTerm pane; a standalone PowerShell window does not load the integration. This is an experimental candidate rather than a public support claim; `wsl ssh`, SSH inside a WSL shell, PuTTY/Plink, and Windows Terminal are outside even that candidate boundary.
 
-Set up key/agent authentication and accept the target host key before testing image paste. sshpic uses short `BatchMode=yes` SSH calls for remote-home lookup, upload, and verification, so it cannot answer an additional password prompt.
+Use an SSH `Host` alias that carries the intended user/key settings, set up key/agent authentication, and accept the target host key before testing image paste. A raw IP is discouraged and is usable only if the exact `BatchMode=yes` preflight above succeeds. sshpic uses short non-interactive SSH calls for remote-home lookup, upload, and verification, so it cannot answer an additional password prompt.
 
 The installer runs the equivalent of:
 
@@ -69,7 +85,7 @@ Current direct-paste setup is terminal-specific: macOS+iTerm2 is supported, whil
 
 ## What sshpic does not do
 
-`sshpic` does not guarantee that a terminal agent will treat the path as a native image attachment. It only uploads the file to the remote host and inserts the path.
+`sshpic` itself uploads the file and pastes its remote path rather than calling a terminal-agent attachment API. In the Windows+WezTerm Codex flow, Codex CLI recognizes that existing PNG path and must render exactly `[Image #1]`; a raw path left visible in Codex is a failed QA result. Other terminal agents may continue to show the path.
 
 `sshpic` also does not treat a binary, clipboard provider, or generic doctor check as proof of direct-paste support on a terminal not listed as supported. See [platform support](platform-support.md) and [terminal support gates](terminal-support-gates.md).
 

@@ -315,6 +315,41 @@ func TestDoctorUbuntuTerminalSafeFailProbe(t *testing.T) {
 	}
 }
 
+func TestDoctorWezTermRequireInstalledFlagRoutesAndFailsWhenManifestMissing(t *testing.T) {
+	dir := t.TempDir()
+	weztermPath := filepath.Join(dir, "wezterm.exe")
+	configPath := filepath.Join(dir, "wezterm.lua")
+	if err := os.WriteFile(weztermPath, []byte("wezterm"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("return {}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSHPIC_CONFIG", filepath.Join(dir, "missing-sshpic.toml"))
+	t.Setenv("SSHPIC_WEZTERM_EXE", weztermPath)
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"doctor", "wezterm", "--require-installed", "--wezterm-config", configPath}, BuildInfo{}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "install_manifest") || !strings.Contains(stdout.String(), "does not exist") {
+		t.Fatalf("strict doctor did not reach installed-state checks:\n%s", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "unknown flag") || strings.Contains(stderr.String(), "unknown override") {
+		t.Fatalf("strict doctor flag/config routing failed: %s", stderr.String())
+	}
+}
+
+func TestDoctorRequireInstalledRejectsNonWezTermTarget(t *testing.T) {
+	t.Setenv("SSHPIC_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"doctor", "terminalapp", "--require-installed"}, BuildInfo{}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "only with doctor wezterm") {
+		t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+}
+
 func TestRestoreTerminalTargetsAreSafeNoops(t *testing.T) {
 	setTestHome(t, t.TempDir())
 	for _, tc := range []struct {

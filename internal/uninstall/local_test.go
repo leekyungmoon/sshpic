@@ -180,63 +180,6 @@ func TestCrashTempNameMatchesOnlyGeneratorGrammar(t *testing.T) {
 	}
 }
 
-func TestInstallReceiptPendingNameMatchesStrictRepeatedCleanupGrammar(t *testing.T) {
-	base := sourcePurgeReceiptFile + sourcePurgeInstallPendingMarker + strings.Repeat("a", 32) + sourcePurgePendingSuffix
-	valid := []string{
-		base,
-		base + sourcePurgeInstallCleanupMarker + strings.Repeat("b", 32) + sourcePurgePendingSuffix,
-		base + sourcePurgeInstallCleanupMarker + strings.Repeat("b", 32) + sourcePurgePendingSuffix + sourcePurgeInstallCleanupMarker + strings.Repeat("c", 32) + sourcePurgePendingSuffix,
-	}
-	for _, name := range valid {
-		if !isInstallReceiptPendingName(name) {
-			t.Errorf("strict install receipt pending name rejected: %s", name)
-		}
-	}
-	invalid := []string{
-		sourcePurgeReceiptFile,
-		sourcePurgeReceiptFile + sourcePurgeInstallPendingMarker + strings.Repeat("a", 31) + sourcePurgePendingSuffix,
-		sourcePurgeReceiptFile + sourcePurgeInstallPendingMarker + strings.Repeat("A", 32) + sourcePurgePendingSuffix,
-		base + sourcePurgeInstallCleanupMarker + strings.Repeat("b", 31) + sourcePurgePendingSuffix,
-		base + sourcePurgeInstallCleanupMarker + strings.Repeat("B", 32) + sourcePurgePendingSuffix,
-		base + ".cleanup-user.pending",
-		base + ".user",
-	}
-	for _, name := range invalid {
-		if isInstallReceiptPendingName(name) {
-			t.Errorf("similar user name incorrectly accepted: %s", name)
-		}
-	}
-}
-
-func TestReceiptWritePendingNameMatchesStrictRepeatedCleanupGrammar(t *testing.T) {
-	base := sourcePurgeReceiptFile + sourcePurgeReceiptWriteMarker + strings.Repeat("a", 32) + sourcePurgePendingSuffix
-	valid := []string{
-		base,
-		base + sourcePurgeInstallCleanupMarker + strings.Repeat("b", 32) + sourcePurgePendingSuffix,
-		base + sourcePurgeInstallCleanupMarker + strings.Repeat("b", 32) + sourcePurgePendingSuffix + sourcePurgeInstallCleanupMarker + strings.Repeat("c", 32) + sourcePurgePendingSuffix,
-	}
-	for _, name := range valid {
-		if !isReceiptWritePendingName(name) {
-			t.Errorf("strict receipt write pending name rejected: %s", name)
-		}
-	}
-	invalid := []string{
-		sourcePurgeReceiptFile + ".sshpic-write-" + strings.Repeat("a", 32) + sourcePurgePendingSuffix,
-		sourcePurgeReceiptFile + sourcePurgeReceiptWriteMarker + strings.Repeat("a", 31) + sourcePurgePendingSuffix,
-		sourcePurgeReceiptFile + sourcePurgeReceiptWriteMarker + strings.Repeat("A", 32) + sourcePurgePendingSuffix,
-		base + sourcePurgeInstallCleanupMarker + strings.Repeat("b", 31) + sourcePurgePendingSuffix,
-		base + ".user",
-	}
-	for _, name := range invalid {
-		if isReceiptWritePendingName(name) {
-			t.Errorf("similar receipt write name incorrectly accepted: %s", name)
-		}
-	}
-	if !isGenerationWritePendingName(sourcePurgeGenerationFile + sourcePurgeReceiptWriteMarker + strings.Repeat("d", 32) + sourcePurgePendingSuffix) {
-		t.Fatal("strict generation write pending name was not recognized for protection")
-	}
-}
-
 func TestPurgeLocalDoesNotFollowSymlinkOrJunction(t *testing.T) {
 	fixture := newLocalFixture(t)
 	external := filepath.Join(fixture.root, "external")
@@ -917,199 +860,153 @@ func TestPurgeLocalPreservesSimilarLeafQuarantineNames(t *testing.T) {
 	}
 }
 
-func TestPurgeLocalResumesInstallReceiptPendingCleanupAfterCrash(t *testing.T) {
+func TestPurgeLocalRemovesLegacyWindowsControlNamespace(t *testing.T) {
 	fixture := newLocalFixture(t)
-	receiptDir := filepath.Join(fixture.cache, sourcePurgeReceiptDir)
-	authoritative := filepath.Join(receiptDir, sourcePurgeReceiptFile)
-	mustWriteFile(t, authoritative, "authoritative receipt")
-	pending := authoritative + sourcePurgeInstallPendingMarker + strings.Repeat("a", 32) + sourcePurgePendingSuffix
-	mustWriteFile(t, pending, "reserved pending data")
-	similar := authoritative + sourcePurgeInstallPendingMarker + strings.Repeat("B", 32) + sourcePurgePendingSuffix
-	mustWriteFile(t, similar, "user data")
-
-	plan, err := BuildLocalPlan(fixture.options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	target := mustFindLocalTarget(t, plan, TargetInstallReceiptPending, pending)
-	selection, ok := plan.leafSelection(target)
-	if !ok || !selection.present {
-		t.Fatal("install receipt pending selection was not pinned")
-	}
-	cleanupPending := simulateLeafCrashAfterQuarantineRename(t, target, plan.excluded, selection)
-	assertNotExist(t, pending)
-	assertFileContent(t, cleanupPending, "reserved pending data")
-	if !isInstallReceiptPendingName(filepath.Base(cleanupPending)) {
-		t.Fatalf("cleanup crash path left strict retry grammar: %s", cleanupPending)
+	legacyDir := filepath.Join(fixture.cache, legacyWindowsControlDir)
+	for name, content := range map[string]string{
+		"state-v1.json":      "legacy source receipt",
+		"generation-v1.json": "legacy generation ledger",
+		"generation-v1.lock": "",
+		"unknown.pending":    "legacy crash residue",
+	} {
+		mustWriteFile(t, filepath.Join(legacyDir, name), content)
 	}
 
-	retryPlan, err := BuildLocalPlan(fixture.options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustFindLocalTarget(t, retryPlan, TargetInstallReceiptPending, cleanupPending)
-	result, err := ExecuteLocalPlan(retryPlan)
+	result, err := PurgeLocal(fixture.options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.Verified {
 		t.Fatalf("result=%+v", result)
 	}
-	assertNotExist(t, cleanupPending)
-	assertFileContent(t, authoritative, "authoritative receipt")
-	assertFileContent(t, similar, "user data")
+	assertNotExist(t, legacyDir)
 }
 
-func TestPurgeLocalResumesReceiptWritePendingAndPreservesGenerationState(t *testing.T) {
+func TestPurgeLocalRemovesLegacyControlLinkWithoutFollowing(t *testing.T) {
 	fixture := newLocalFixture(t)
-	receiptDir := filepath.Join(fixture.cache, sourcePurgeReceiptDir)
-	authoritative := filepath.Join(receiptDir, sourcePurgeReceiptFile)
-	mustWriteFile(t, authoritative, "authoritative receipt")
-	pending := authoritative + sourcePurgeReceiptWriteMarker + strings.Repeat("a", 32) + sourcePurgePendingSuffix
-	mustWriteFile(t, pending, "unpublished receipt")
-	generation := filepath.Join(receiptDir, sourcePurgeGenerationFile)
-	generationPending := generation + sourcePurgeReceiptWriteMarker + strings.Repeat("b", 32) + sourcePurgePendingSuffix + sourcePurgeInstallCleanupMarker + strings.Repeat("c", 32) + sourcePurgePendingSuffix
-	for path, content := range map[string]string{
-		generation:        "generation ledger",
-		generationPending: "generation publication",
-	} {
-		mustWriteFile(t, path, content)
-	}
-	similar := authoritative + sourcePurgeReceiptWriteMarker + strings.Repeat("D", 32) + sourcePurgePendingSuffix
-	mustWriteFile(t, similar, "user data")
-
-	plan, err := BuildLocalPlan(fixture.options)
-	if err != nil {
+	external := filepath.Join(fixture.root, "external-legacy-control")
+	sentinel := filepath.Join(external, "must-survive.txt")
+	mustWriteFile(t, sentinel, "outside")
+	legacyDir := filepath.Join(fixture.cache, legacyWindowsControlDir)
+	if err := makeDirectoryLink(external, legacyDir); err != nil {
 		t.Fatal(err)
 	}
-	target := mustFindLocalTarget(t, plan, TargetReceiptWritePending, pending)
-	selection, ok := plan.leafSelection(target)
-	if !ok || !selection.present {
-		t.Fatal("receipt write pending selection was not pinned")
-	}
-	cleanupPending := simulateLeafCrashAfterQuarantineRename(t, target, plan.excluded, selection)
-	assertNotExist(t, pending)
-	assertFileContent(t, cleanupPending, "unpublished receipt")
-	if !isReceiptWritePendingName(filepath.Base(cleanupPending)) {
-		t.Fatalf("receipt cleanup crash path left strict retry grammar: %s", cleanupPending)
-	}
 
-	retryPlan, err := BuildLocalPlan(fixture.options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustFindLocalTarget(t, retryPlan, TargetReceiptWritePending, cleanupPending)
-	result, err := ExecuteLocalPlan(retryPlan)
+	result, err := PurgeLocal(fixture.options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.Verified {
 		t.Fatalf("result=%+v", result)
 	}
-	assertNotExist(t, cleanupPending)
-	assertFileContent(t, authoritative, "authoritative receipt")
-	assertFileContent(t, generation, "generation ledger")
-	assertFileContent(t, generationPending, "generation publication")
-	assertFileContent(t, similar, "user data")
+	assertNotExist(t, legacyDir)
+	assertFileContent(t, sentinel, "outside")
 }
 
-func TestBuildLocalPlanRejectsReceiptWritePendingJunction(t *testing.T) {
+func TestPurgeLocalRemovesStaleHelperRuntimesAndPreservesSimilarNames(t *testing.T) {
 	fixture := newLocalFixture(t)
-	receiptDir := filepath.Join(fixture.cache, sourcePurgeReceiptDir)
-	mustMkdirAll(t, receiptDir)
-	external := filepath.Join(fixture.root, "external-write-pending")
-	externalSentinel := filepath.Join(external, "must-survive.txt")
-	mustWriteFile(t, externalSentinel, "outside")
-	pending := filepath.Join(receiptDir, sourcePurgeReceiptFile+sourcePurgeReceiptWriteMarker+strings.Repeat("a", 32)+sourcePurgePendingSuffix)
-	if err := makeDirectoryLink(external, pending); err != nil {
+	stale := []string{
+		filepath.Join(fixture.temp, "sshpic-install.A1b2C3"),
+		filepath.Join(fixture.temp, "sshpic-uninstall.z9Y8x7"),
+	}
+	for _, directory := range stale {
+		mustWriteFile(t, filepath.Join(directory, "sshpic-helper.exe"), "stale helper")
+	}
+	similar := []string{
+		filepath.Join(fixture.temp, "sshpic-install.user-data"),
+		filepath.Join(fixture.temp, "sshpic-uninstall.abcde"),
+	}
+	for _, directory := range similar {
+		mustWriteFile(t, filepath.Join(directory, "keep.txt"), "user data")
+	}
+	regularFile := filepath.Join(fixture.temp, "sshpic-install.F1lE22")
+	mustWriteFile(t, regularFile, "similarly named regular file")
+
+	result, err := PurgeLocal(fixture.options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified {
+		t.Fatalf("result=%+v", result)
+	}
+	for _, directory := range stale {
+		assertNotExist(t, directory)
+	}
+	for _, directory := range similar {
+		assertFileContent(t, filepath.Join(directory, "keep.txt"), "user data")
+	}
+	assertFileContent(t, regularFile, "similarly named regular file")
+}
+
+func TestPurgeLocalPreservesActiveHelperRuntime(t *testing.T) {
+	fixture := newLocalFixture(t)
+	activeDir := filepath.Join(fixture.temp, "sshpic-uninstall.Act1vE")
+	activeHelper := filepath.Join(activeDir, "sshpic-uninstall-helper.exe")
+	mustWriteFile(t, activeHelper, "active helper")
+	fixture.options.HelperPath = activeHelper
+	staleDir := filepath.Join(fixture.temp, "sshpic-uninstall.Sta1e0")
+	mustWriteFile(t, filepath.Join(staleDir, "sshpic-uninstall-helper.exe"), "stale helper")
+
+	result, err := PurgeLocal(fixture.options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified {
+		t.Fatalf("result=%+v", result)
+	}
+	assertFileContent(t, activeHelper, "active helper")
+	assertNotExist(t, staleDir)
+}
+
+func TestExecuteLocalPlanPreservesRuntimePathReplacement(t *testing.T) {
+	fixture := newLocalFixture(t)
+	runtimeDir := filepath.Join(fixture.temp, "sshpic-uninstall.Rac3d0")
+	mustWriteFile(t, filepath.Join(runtimeDir, "sshpic-uninstall-helper.exe"), "stale helper")
+	plan, err := BuildLocalPlan(fixture.options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := runtimeDir + ".held"
+	if err := os.Rename(runtimeDir, held); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, runtimeDir, "user replacement")
+
+	if _, err := ExecuteLocalPlan(plan); err == nil || !strings.Contains(err.Error(), "not a directory or exact link") {
+		t.Fatalf("expected runtime replacement refusal, got %v", err)
+	}
+	assertFileContent(t, runtimeDir, "user replacement")
+	assertFileContent(t, filepath.Join(held, "sshpic-uninstall-helper.exe"), "stale helper")
+}
+
+func TestPurgeLocalRemovesStaleRuntimeLinkWithoutFollowing(t *testing.T) {
+	fixture := newLocalFixture(t)
+	external := filepath.Join(fixture.root, "external-stale-runtime")
+	sentinel := filepath.Join(external, "must-survive.txt")
+	mustWriteFile(t, sentinel, "outside")
+	staleDir := filepath.Join(fixture.temp, "sshpic-install.L1nK22")
+	if err := makeDirectoryLink(external, staleDir); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := BuildLocalPlan(fixture.options); err == nil || !strings.Contains(err.Error(), "unsafe source purge receipt write pending") {
-		t.Fatalf("expected receipt write pending junction refusal, got %v", err)
-	}
-	assertFileContent(t, externalSentinel, "outside")
-}
-
-func TestBuildLocalPlanProtectsAuthoritativeReceiptAndGenerationState(t *testing.T) {
-	for _, name := range []string{
-		sourcePurgeReceiptFile,
-		sourcePurgeGenerationFile,
-		sourcePurgeGenerationFile + sourcePurgeReceiptWriteMarker + strings.Repeat("a", 32) + sourcePurgePendingSuffix,
-	} {
-		t.Run(name, func(t *testing.T) {
-			fixture := newLocalFixture(t)
-			path := filepath.Join(fixture.cache, sourcePurgeReceiptDir, name)
-			mustWriteFile(t, path, "managed state")
-			fixture.options.ConfigPath = path
-			if _, err := BuildLocalPlan(fixture.options); err == nil || !strings.Contains(err.Error(), "reserved source purge receipt state") {
-				t.Fatalf("expected reserved receipt state refusal, got %v", err)
-			}
-			assertFileContent(t, path, "managed state")
-		})
-	}
-}
-
-func TestBuildLocalPlanRejectsUnsafeStrictInstallReceiptPendingEntry(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		setup func(*testing.T, localFixture, string)
-	}{
-		{
-			name: "directory",
-			setup: func(t *testing.T, _ localFixture, path string) {
-				mustWriteFile(t, filepath.Join(path, "must-survive.txt"), "user directory")
-			},
-		},
-		{
-			name: "reparse or symlink",
-			setup: func(t *testing.T, fixture localFixture, path string) {
-				external := filepath.Join(fixture.root, "external-receipt-target")
-				mustWriteFile(t, filepath.Join(external, "must-survive.txt"), "outside")
-				if err := makeDirectoryLink(external, path); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			fixture := newLocalFixture(t)
-			receiptDir := filepath.Join(fixture.cache, sourcePurgeReceiptDir)
-			authoritative := filepath.Join(receiptDir, sourcePurgeReceiptFile)
-			mustWriteFile(t, authoritative, "authoritative receipt")
-			pending := authoritative + sourcePurgeInstallPendingMarker + strings.Repeat("a", 32) + sourcePurgePendingSuffix
-			test.setup(t, fixture, pending)
-
-			if _, err := BuildLocalPlan(fixture.options); err == nil || !strings.Contains(err.Error(), "unsafe source purge install receipt pending") {
-				t.Fatalf("expected unsafe pending refusal, got %v", err)
-			}
-			assertFileContent(t, authoritative, "authoritative receipt")
-			if test.name == "directory" {
-				assertFileContent(t, filepath.Join(pending, "must-survive.txt"), "user directory")
-			} else {
-				assertFileContent(t, filepath.Join(fixture.root, "external-receipt-target", "must-survive.txt"), "outside")
-			}
-		})
-	}
-}
-
-func TestBuildLocalPlanRejectsReceiptDirectoryAliasBeforeScanning(t *testing.T) {
-	fixture := newLocalFixture(t)
-	external := filepath.Join(fixture.root, "external-receipt-directory")
-	pending := filepath.Join(external, sourcePurgeReceiptFile+sourcePurgeInstallPendingMarker+strings.Repeat("a", 32)+sourcePurgePendingSuffix)
-	mustWriteFile(t, pending, "outside")
-	receiptDir := filepath.Join(fixture.cache, sourcePurgeReceiptDir)
-	if err := makeDirectoryLink(external, receiptDir); err != nil {
+	result, err := PurgeLocal(fixture.options)
+	if err != nil {
 		t.Fatal(err)
 	}
-	unchanged := filepath.Join(fixture.home, ".sshpic", "unchanged.txt")
-	mustWriteFile(t, unchanged, "keep")
-
-	if _, err := BuildLocalPlan(fixture.options); err == nil || !strings.Contains(err.Error(), "source purge receipt directory uses a symlink, junction, or ancestor alias") {
-		t.Fatalf("expected receipt directory alias refusal, got %v", err)
+	if !result.Verified {
+		t.Fatalf("result=%+v", result)
 	}
-	assertFileContent(t, pending, "outside")
-	assertFileContent(t, unchanged, "keep")
+	assertNotExist(t, staleDir)
+	assertFileContent(t, sentinel, "outside")
+}
+
+func TestLocalQuarantineFamilyBaseUnwrapsRepeatedCrashStages(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "sshpic-install.A1b2C3")
+	first := base + ".sshpic-purge-" + strings.Repeat("a", 32) + ".pending"
+	second := first + ".sshpic-purge-" + strings.Repeat("b", 32) + ".pending"
+	if got := localQuarantineFamilyBase(second); !samePath(got, base) {
+		t.Fatalf("repeated crash stage base=%s want=%s", got, base)
+	}
 }
 
 func TestBuildLocalPlanRejectsAliasedLocalRoots(t *testing.T) {
