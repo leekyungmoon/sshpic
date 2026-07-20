@@ -70,7 +70,7 @@ func runUninstallTestHelper() {
 			if path := os.Getenv("SSHPIC_TEST_DELETE_PATH"); path != "" {
 				_ = os.Remove(path)
 			}
-			if containsArg(os.Args[1:], "--purge-source") {
+			if containsArg(os.Args[1:], "--source-purge-receipt") {
 				receiptPath := argValue(os.Args[1:], "--source-purge-receipt")
 				sourceRoot := argValue(os.Args[1:], "--source-root")
 				helperPath, _ := os.Executable()
@@ -209,7 +209,7 @@ func copyExecutable(destination string) error {
 }
 
 func TestWindowsUninstallScriptBuildsSeparateHelperAndRemovesOnlySelectedBinary(t *testing.T) {
-	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	repoRoot, parent := newSyntheticPurgeRepo(t, true)
 	binPath := filepath.Join(t.TempDir(), "installed bin with spaces", "sshpic.exe")
 	if err := os.MkdirAll(filepath.Dir(binPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -217,10 +217,10 @@ func TestWindowsUninstallScriptBuildsSeparateHelperAndRemovesOnlySelectedBinary(
 	copyCurrentTestBinary(t, binPath)
 	logPath := filepath.Join(t.TempDir(), "helper.log")
 
-	result := runWindowsUninstallScript(t, repoRoot, []string{"--yes", "--binary", binPath}, map[string]string{
+	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes", "--binary", binPath}, sourcePurgeTestEnv(t, map[string]string{
 		"SSHPIC_TEST_UNINSTALL_LOG": logPath,
 		"SSHPIC_TEST_DELETE_PATH":   binPath,
-	})
+	}))
 	if result.err != nil {
 		t.Fatalf("uninstall failed: %v\n%s", result.err, result.output)
 	}
@@ -236,19 +236,19 @@ func TestWindowsUninstallScriptBuildsSeparateHelperAndRemovesOnlySelectedBinary(
 			t.Fatalf("helper args missing %q:\n%s", want, logData)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(repoRoot, ".git")); err != nil {
-		t.Fatalf("source checkout was not preserved: %v", err)
+	if _, err := os.Lstat(repoRoot); !os.IsNotExist(err) {
+		t.Fatalf("source checkout remains after uninstall: %v", err)
 	}
 }
 
 func TestWindowsUninstallScriptPreservesBinaryWhenHelperFails(t *testing.T) {
-	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	repoRoot, parent := newSyntheticPurgeRepo(t, true)
 	binPath := filepath.Join(t.TempDir(), "sshpic.exe")
 	copyCurrentTestBinary(t, binPath)
-	result := runWindowsUninstallScript(t, repoRoot, []string{"--yes", "--binary", binPath}, map[string]string{
+	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes", "--binary", binPath}, sourcePurgeTestEnv(t, map[string]string{
 		"SSHPIC_TEST_UNINSTALL_EXIT": "23",
 		"SSHPIC_TEST_DELETE_PATH":    binPath,
-	})
+	}))
 	if result.err == nil || !strings.Contains(result.output, "stopped safely") {
 		t.Fatalf("helper failure result: %v\n%s", result.err, result.output)
 	}
@@ -258,14 +258,18 @@ func TestWindowsUninstallScriptPreservesBinaryWhenHelperFails(t *testing.T) {
 }
 
 func TestWindowsUninstallScriptDefaultsToCancelledWithoutConfirmation(t *testing.T) {
-	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	repoRoot, parent := newSyntheticPurgeRepo(t, true)
 	binPath := filepath.Join(t.TempDir(), "sshpic.exe")
 	copyCurrentTestBinary(t, binPath)
-	result := runWindowsUninstallScript(t, repoRoot, []string{"--binary", binPath}, map[string]string{
+	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--binary", binPath}, sourcePurgeTestEnv(t, map[string]string{
 		"SSHPIC_TEST_DELETE_PATH": binPath,
-	})
-	if result.err != nil || !strings.Contains(result.output, "cancelled; no installed files changed") {
+	}))
+	if result.err == nil || !strings.Contains(result.output, "cancelled; no installed files changed") {
 		t.Fatalf("confirmation result: %v\n%s", result.err, result.output)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(result.err, &exitErr) || exitErr.ExitCode() != 130 {
+		t.Fatalf("cancelled uninstall exit code: %v\n%s", result.err, result.output)
 	}
 	if _, err := os.Stat(binPath); err != nil {
 		t.Fatalf("cancelled uninstall changed binary: %v", err)
@@ -273,12 +277,12 @@ func TestWindowsUninstallScriptDefaultsToCancelledWithoutConfirmation(t *testing
 }
 
 func TestWindowsUninstallScriptDryRunDoesNotDelete(t *testing.T) {
-	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	repoRoot, _ := newSyntheticPurgeRepo(t, true)
 	binPath := filepath.Join(t.TempDir(), "sshpic.exe")
 	copyCurrentTestBinary(t, binPath)
-	result := runWindowsUninstallScript(t, repoRoot, []string{"--dry-run", "--binary", binPath}, map[string]string{
+	result := runWindowsUninstallScript(t, repoRoot, []string{"--dry-run", "--binary", binPath}, sourcePurgeTestEnv(t, map[string]string{
 		"SSHPIC_TEST_DELETE_PATH": binPath,
-	})
+	}))
 	if result.err != nil {
 		t.Fatalf("dry-run result: %v\n%s", result.err, result.output)
 	}
@@ -288,13 +292,13 @@ func TestWindowsUninstallScriptDryRunDoesNotDelete(t *testing.T) {
 }
 
 func TestWindowsUninstallScriptRejectsLegacyHelperBeforeChangingState(t *testing.T) {
-	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	repoRoot, parent := newSyntheticPurgeRepo(t, true)
 	binPath := filepath.Join(t.TempDir(), "sshpic.exe")
 	copyCurrentTestBinary(t, binPath)
-	result := runWindowsUninstallScript(t, repoRoot, []string{"--yes", "--binary", binPath}, map[string]string{
+	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes", "--binary", binPath}, sourcePurgeTestEnv(t, map[string]string{
 		"SSHPIC_TEST_LEGACY_UNINSTALL_HELPER": "1",
 		"SSHPIC_TEST_DELETE_PATH":             binPath,
-	})
+	}))
 	if result.err == nil || !strings.Contains(result.output, "unknown flag --uninstall-protocol") || !strings.Contains(result.output, "during preflight") {
 		t.Fatalf("legacy helper result: %v\n%s", result.err, result.output)
 	}
@@ -304,10 +308,7 @@ func TestWindowsUninstallScriptRejectsLegacyHelperBeforeChangingState(t *testing
 }
 
 func TestWindowsUninstallScriptAbsoluteInvocationBuildsFromCheckout(t *testing.T) {
-	repoRoot, err := filepath.Abs(filepath.Clean(filepath.Join("..", "..")))
-	if err != nil {
-		t.Fatal(err)
-	}
+	repoRoot, _ := newSyntheticPurgeRepo(t, true)
 	result := runWindowsUninstallScriptInvocation(t, t.TempDir(), filepath.Join(repoRoot, "uninstall.sh"), []string{"--dry-run"}, nil)
 	if result.err != nil {
 		t.Fatalf("absolute invocation failed: %v\n%s", result.err, result.output)
@@ -347,7 +348,8 @@ func TestWindowsUninstallScriptHasOwnedDeletionContract(t *testing.T) {
 		`go_cmd" build -o`,
 		`uninstall wezterm --uninstall-protocol 2 --source-root`,
 		`remove only artifacts validated as sshpic-owned by the helper`,
-		`Go, WezTerm, SSH configuration, remote images, and the source checkout will not be removed`,
+		`permanently remove the exact source checkout last`,
+		`Windows uninstall must be started with the shell working directory outside the checkout`,
 		`Validating the complete uninstall plan before confirmation`,
 	} {
 		if !strings.Contains(text, want) {
@@ -361,17 +363,14 @@ func TestWindowsUninstallScriptHasOwnedDeletionContract(t *testing.T) {
 	}
 }
 
-func TestWindowsUninstallScriptRealLifecycleUsesManifestBinaryAndReinstalls(t *testing.T) {
+func TestWindowsUninstallScriptRealLifecycleUsesManifestBinaryAndRemovesSource(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("real Git Bash lifecycle is Windows-only")
 	}
 	t.Setenv("SSHPIC_WEZTERM_EXE", "")
 	t.Setenv("WEZTERM_CONFIG_FILE", "")
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := t.TempDir()
+	repoRoot, _ := newFullSyntheticPurgeRepo(t)
+	root := newShortWindowsTempDir(t)
 	binaryA := filepath.Join(root, "custom GOBIN A", "sshpic.exe")
 	binaryB := filepath.Join(root, "changed GOBIN B", "sshpic.exe")
 	for _, path := range []string{binaryA, binaryB} {
@@ -406,11 +405,6 @@ func TestWindowsUninstallScriptRealLifecycleUsesManifestBinaryAndReinstalls(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	goModBefore, err := os.ReadFile(filepath.Join(repoRoot, "go.mod"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	result := runRealWindowsUninstallScript(t, repoRoot, []string{"--yes"}, map[string]string{
 		"WEZTERM_CONFIG_FILE": configPath,
 		"SSHPIC_WEZTERM_EXE":  weztermPath,
@@ -431,22 +425,8 @@ func TestWindowsUninstallScriptRealLifecycleUsesManifestBinaryAndReinstalls(t *t
 	if _, err := os.Stat(binaryB); err != nil {
 		t.Fatalf("changed-GOBIN binary was removed: %v", err)
 	}
-	goModAfter, err := os.ReadFile(filepath.Join(repoRoot, "go.mod"))
-	if err != nil || string(goModAfter) != string(goModBefore) {
-		t.Fatalf("source checkout changed: err=%v", err)
-	}
-
-	if err := os.WriteFile(binaryA, []byte("reinstalled"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	reinstalled, err := wezterm.Install(context.Background(), wezterm.InstallOptions{
-		BinaryPath:      binaryA,
-		ConfigPath:      configPath,
-		WezTermPath:     weztermPath,
-		ConfigValidator: func(context.Context, string, string, []byte) error { return nil },
-	})
-	if err != nil || reinstalled.AlreadyInstalled || !reinstalled.ConfigPatched {
-		t.Fatalf("reinstall result=%+v err=%v", reinstalled, err)
+	if _, err := os.Lstat(repoRoot); !os.IsNotExist(err) {
+		t.Fatalf("source checkout remains after real uninstall: %v", err)
 	}
 }
 
@@ -456,11 +436,8 @@ func TestWindowsUninstallScriptRealLifecycleRestoresWhenBinaryAlreadyMissing(t *
 	}
 	t.Setenv("SSHPIC_WEZTERM_EXE", "")
 	t.Setenv("WEZTERM_CONFIG_FILE", "")
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := t.TempDir()
+	repoRoot, _ := newFullSyntheticPurgeRepo(t)
+	root := newShortWindowsTempDir(t)
 	binaryPath := filepath.Join(root, "removed before uninstall", "sshpic.exe")
 	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -515,6 +492,9 @@ func TestWindowsUninstallScriptRealLifecycleRestoresWhenBinaryAlreadyMissing(t *
 			t.Fatalf("owned artifact remains %s: %v", path, err)
 		}
 	}
+	if _, err := os.Lstat(repoRoot); !os.IsNotExist(err) {
+		t.Fatalf("source checkout remains after missing-binary uninstall: %v", err)
+	}
 }
 
 func TestWindowsUninstallScriptWrongConfigPreservesInstalledState(t *testing.T) {
@@ -523,11 +503,8 @@ func TestWindowsUninstallScriptWrongConfigPreservesInstalledState(t *testing.T) 
 	}
 	t.Setenv("SSHPIC_WEZTERM_EXE", "")
 	t.Setenv("WEZTERM_CONFIG_FILE", "")
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := t.TempDir()
+	repoRoot, _ := newFullSyntheticPurgeRepo(t)
+	root := newShortWindowsTempDir(t)
 	binaryPath := filepath.Join(root, "bin", "sshpic.exe")
 	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -570,10 +547,10 @@ func TestWindowsUninstallScriptWrongConfigPreservesInstalledState(t *testing.T) 
 		"WEZTERM_CONFIG_FILE": configB,
 		"SSHPIC_WEZTERM_EXE":  weztermPath,
 	})
-	if result.err != nil {
-		t.Fatalf("wrong-config safe no-op failed: %v\n%s", result.err, result.output)
+	if result.err == nil {
+		t.Fatalf("wrong-config uninstall unexpectedly succeeded: %s", result.output)
 	}
-	for _, want := range []string{"no owned WezTerm manifest found", "set the same WEZTERM_CONFIG_FILE"} {
+	for _, want := range []string{"no owned WezTerm manifest found", "no owned WezTerm install manifest"} {
 		if !strings.Contains(result.output, want) {
 			t.Fatalf("wrong-config output missing %q:\n%s", want, result.output)
 		}
@@ -587,72 +564,11 @@ func TestWindowsUninstallScriptWrongConfigPreservesInstalledState(t *testing.T) 
 	if err != nil || string(gotConfig) != string(installedConfig) {
 		t.Fatalf("wrong-config attempt changed installed config: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(repoRoot, ".git")); err != nil {
+		t.Fatalf("wrong-config refusal changed source checkout: %v", err)
+	}
 	if _, err := wezterm.Restore(context.Background(), wezterm.RestoreOptions{ConfigPath: configA}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestWindowsUninstallScriptNoGoUsesManifestMatchedBinaryHelper(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("real Git Bash lifecycle is Windows-only")
-	}
-	t.Setenv("SSHPIC_WEZTERM_EXE", "")
-	t.Setenv("WEZTERM_CONFIG_FILE", "")
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := t.TempDir()
-	binaryPath := filepath.Join(root, "installed", "sshpic.exe")
-	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	goExe := filepath.Join(runtime.GOROOT(), "bin", "go.exe")
-	build := exec.Command(goExe, "build", "-o", binaryPath, "./cmd/sshpic")
-	build.Dir = repoRoot
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Skipf("cannot build fallback fixture: %v\n%s", err, out)
-	}
-	configPath := filepath.Join(root, "config", "wezterm.lua")
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	original := []byte("local config = {}\nreturn config\n")
-	if err := os.WriteFile(configPath, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	weztermPath := filepath.Join(root, "wezterm", "wezterm.exe")
-	if err := os.MkdirAll(filepath.Dir(weztermPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(weztermPath, []byte("wezterm"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	installed, err := wezterm.Install(context.Background(), wezterm.InstallOptions{
-		BinaryPath:      binaryPath,
-		ConfigPath:      configPath,
-		WezTermPath:     weztermPath,
-		ConfigValidator: func(context.Context, string, string, []byte) error { return nil },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	noGoPath := `C:\Program Files\Git\usr\bin;C:\Windows\System32`
-	result := runRealWindowsUninstallScriptWithPath(t, repoRoot, []string{"--yes", "--binary", binaryPath}, map[string]string{
-		"WEZTERM_CONFIG_FILE": configPath,
-		"SSHPIC_WEZTERM_EXE":  weztermPath,
-	}, noGoPath)
-	if result.err != nil {
-		t.Fatalf("no-Go fallback failed: %v\n%s", result.err, result.output)
-	}
-	for _, path := range []string{binaryPath, installed.ModulePath, installed.ManifestPath, installed.BackupPath} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("no-Go fallback left %s: %v", path, err)
-		}
-	}
-	got, err := os.ReadFile(configPath)
-	if err != nil || string(got) != string(original) {
-		t.Fatalf("no-Go fallback config restore err=%v got=%q", err, got)
 	}
 }
 
@@ -701,9 +617,67 @@ func runWindowsUninstallScriptInvocation(t *testing.T, workingDir, scriptPath st
 	return uninstallScriptResult{output: output.String(), err: err}
 }
 
+func newFullSyntheticPurgeRepo(t *testing.T) (string, string) {
+	t.Helper()
+	currentRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := exec.Command("git", "ls-files", "-z")
+	listed.Dir = currentRoot
+	output, err := listed.Output()
+	if err != nil {
+		t.Fatalf("list tracked source fixture files: %v", err)
+	}
+	parent := newShortWindowsTempDir(t)
+	repoRoot := filepath.Join(parent, "repo")
+	for _, relative := range strings.Split(string(output), "\x00") {
+		if relative == "" {
+			continue
+		}
+		relative = filepath.FromSlash(relative)
+		if filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			t.Fatalf("unsafe tracked fixture path: %q", relative)
+		}
+		source := filepath.Join(currentRoot, relative)
+		info, err := os.Lstat(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.Mode().IsRegular() {
+			t.Fatalf("full source fixture refuses non-regular tracked path: %s", source)
+		}
+		data, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		destination := filepath.Join(repoRoot, relative)
+		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(destination, data, info.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGitForPurgeFixture(t, repoRoot, "init")
+	runGitForPurgeFixture(t, repoRoot, "config", "user.name", "sshpic full uninstall test")
+	runGitForPurgeFixture(t, repoRoot, "config", "user.email", "sshpic-full-uninstall@example.invalid")
+	runGitForPurgeFixture(t, repoRoot, "add", "-A")
+	runGitForPurgeFixture(t, repoRoot, "commit", "-m", "full synthetic uninstall fixture")
+	runGitForPurgeFixture(t, repoRoot, "branch", "-M", "main")
+	remoteRoot := filepath.Join(newShortWindowsTempDir(t), "remote.git")
+	runGitForPurgeFixture(t, "", "init", "--bare", remoteRoot)
+	runGitForPurgeFixture(t, repoRoot, "remote", "add", "origin", remoteRoot)
+	runGitForPurgeFixture(t, repoRoot, "push", "-u", "origin", "main")
+	return repoRoot, parent
+}
+
 func runRealWindowsUninstallScript(t *testing.T, repoRoot string, args []string, extraEnv map[string]string) uninstallScriptResult {
 	t.Helper()
-	goExe := filepath.Join(runtime.GOROOT(), "bin", "go.exe")
+	goExe := filepath.Join(os.TempDir(), "sshpic-go1.22.12-complete", "go", "bin", "go.exe")
+	if _, err := os.Stat(goExe); err != nil {
+		goExe = filepath.Join(runtime.GOROOT(), "bin", "go.exe")
+	}
 	if _, err := os.Stat(goExe); err != nil {
 		t.Skipf("Go toolchain unavailable: %v", err)
 	}
@@ -714,7 +688,7 @@ func runRealWindowsUninstallScript(t *testing.T, repoRoot string, args []string,
 func runRealWindowsUninstallScriptWithPath(t *testing.T, repoRoot string, args []string, extraEnv map[string]string, pathValue string) uninstallScriptResult {
 	t.Helper()
 	bash := testBashPath(t)
-	stateRoot := t.TempDir()
+	stateRoot := newShortWindowsTempDir(t)
 	homeDir := filepath.Join(stateRoot, "home")
 	cacheDir := filepath.Join(stateRoot, "local app data")
 	tempDir := filepath.Join(stateRoot, "temp")
@@ -723,8 +697,11 @@ func runRealWindowsUninstallScriptWithPath(t *testing.T, repoRoot string, args [
 			t.Fatal(err)
 		}
 	}
-	cmd := exec.Command(bash, append([]string{"./uninstall.sh"}, args...)...)
-	cmd.Dir = repoRoot
+	// Keep the drive-qualified path. A /tmp-prefixed cygpath result would be
+	// rebound when this child receives its isolated TEMP value.
+	script := filepath.ToSlash(filepath.Join(repoRoot, "uninstall.sh"))
+	cmd := exec.Command(bash, append([]string{script}, args...)...)
+	cmd.Dir = filepath.Dir(repoRoot)
 	overrides := map[string]string{
 		"PATH":            pathValue,
 		"HOME":            homeDir,
@@ -739,12 +716,31 @@ func runRealWindowsUninstallScriptWithPath(t *testing.T, repoRoot string, args [
 	for key, value := range extraEnv {
 		overrides[key] = value
 	}
+	writeSettledTestInstallGeneration(t, overrides["LOCALAPPDATA"])
 	cmd.Env = overrideEnvironment(os.Environ(), overrides)
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	err := cmd.Run()
-	return uninstallScriptResult{output: output.String(), err: err}
+	outputText := output.String()
+	if err != nil && strings.Contains(outputText, "sshpic-uninstall-helper.exe: Permission denied") {
+		t.Skipf("Windows Application Control blocked the freshly built isolated helper: %s", outputText)
+	}
+	return uninstallScriptResult{output: outputText, err: err}
+}
+
+func newShortWindowsTempDir(t *testing.T) string {
+	t.Helper()
+	directory, err := os.MkdirTemp(os.TempDir(), "sshpic-t-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(directory); err != nil {
+			t.Errorf("remove short Windows test directory %s: %v", directory, err)
+		}
+	})
+	return directory
 }
 
 func overrideEnvironment(base []string, overrides map[string]string) []string {

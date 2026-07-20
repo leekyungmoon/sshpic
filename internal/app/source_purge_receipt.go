@@ -76,7 +76,7 @@ func captureSourcePurgeReceipt(ctx context.Context, sourceRoot string) (sourcePu
 		return receipt, fmt.Errorf("source purge receipt refused: %w", err)
 	}
 	if runtime.GOOS == "windows" && installGeneration == installGenerationGenesis {
-		return receipt, errors.New("source purge receipt refused: no completed Windows sshpic installation generation exists; run ./install.sh successfully before --purge-source")
+		return receipt, errors.New("uninstall receipt refused: no completed Windows sshpic installation generation exists; run ./install.sh successfully before uninstall")
 	}
 	root, err := filepath.Abs(sourceRoot)
 	if err != nil {

@@ -9,24 +9,36 @@ import (
 	"testing"
 )
 
-func TestWindowsUninstallSourcePurgeIsExplicitAndDefaultKeepsSyntheticCheckout(t *testing.T) {
-	repoRoot, _ := newSyntheticPurgeRepo(t, true)
-	result := runWindowsUninstallScript(t, repoRoot, []string{"--yes"}, sourcePurgeTestEnv(t, nil))
+func TestWindowsUninstallHasOneDeletionEquivalentMode(t *testing.T) {
+	requireWindowsSourcePurge(t)
+	repoRoot, parent := newSyntheticPurgeRepo(t, true)
+	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes"}, sourcePurgeTestEnv(t, nil))
 	if result.err != nil {
-		t.Fatalf("default uninstall failed: %v\n%s", result.err, result.output)
+		t.Fatalf("single uninstall flow failed: %v\n%s", result.err, result.output)
+	}
+	if _, err := os.Lstat(repoRoot); !os.IsNotExist(err) {
+		t.Fatalf("single uninstall flow left the synthetic checkout: %v\n%s", err, result.output)
+	}
+	if strings.Contains(result.output, "keep the source checkout") {
+		t.Fatalf("single uninstall flow advertised a checkout-preserving mode:\n%s", result.output)
+	}
+}
+
+func TestWindowsUninstallRejectsRemovedPurgeSourceModeFlag(t *testing.T) {
+	repoRoot, _ := newSyntheticPurgeRepo(t, true)
+	result := runWindowsUninstallScript(t, repoRoot, []string{"--dry-run", "--purge-source"}, sourcePurgeTestEnv(t, nil))
+	if result.err == nil || !strings.Contains(result.output, "unknown option: --purge-source") {
+		t.Fatalf("removed mode flag was not rejected: %v\n%s", result.err, result.output)
 	}
 	if _, err := os.Stat(filepath.Join(repoRoot, ".git")); err != nil {
-		t.Fatalf("default uninstall removed synthetic checkout: %v\n%s", err, result.output)
-	}
-	if !strings.Contains(result.output, "keep the source checkout") {
-		t.Fatalf("default plan did not say the checkout is retained:\n%s", result.output)
+		t.Fatalf("removed mode flag changed the synthetic checkout: %v", err)
 	}
 }
 
 func TestWindowsUninstallSourcePurgeDryRunPrintsExactIntentAndKeepsCheckout(t *testing.T) {
 	requireWindowsSourcePurge(t)
 	repoRoot, _ := newSyntheticPurgeRepo(t, true)
-	result := runWindowsUninstallScript(t, repoRoot, []string{"--dry-run", "--purge-source"}, sourcePurgeTestEnv(t, nil))
+	result := runWindowsUninstallScript(t, repoRoot, []string{"--dry-run"}, sourcePurgeTestEnv(t, nil))
 	if result.err != nil {
 		t.Fatalf("source purge dry-run failed: %v\n%s", result.err, result.output)
 	}
@@ -39,20 +51,20 @@ func TestWindowsUninstallSourcePurgeDryRunPrintsExactIntentAndKeepsCheckout(t *t
 	}
 }
 
-func TestWindowsUninstallSourcePurgeRequiresGoEvenWithBinaryFallback(t *testing.T) {
+func TestWindowsUninstallDoesNotUseInstalledBinaryAsHelperFallback(t *testing.T) {
 	requireWindowsSourcePurge(t)
 	repoRoot, parent := newSyntheticPurgeRepo(t, true)
 	fallback := filepath.Join(parent, "installed", "sshpic.exe")
 	writePurgeFixtureFile(t, fallback, "must not run")
 	logPath := filepath.Join(parent, "helper-must-not-run.log")
 	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{
-		"--yes", "--purge-source", "--binary", fallback,
+		"--yes", "--binary", fallback,
 	}, sourcePurgeTestEnv(t, map[string]string{
 		"SSHPIC_TEST_GO_UNAVAILABLE": "1",
 		"SSHPIC_TEST_UNINSTALL_LOG":  logPath,
 	}))
-	if result.err == nil || !strings.Contains(result.output, "--purge-source requires Go") {
-		t.Fatalf("source purge did not require a rebuildable helper: %v\n%s", result.err, result.output)
+	if result.err == nil || (!strings.Contains(result.output, "Windows uninstall requires Go") && !strings.Contains(result.output, "Could not build the isolated uninstall helper")) {
+		t.Fatalf("uninstall did not require a freshly built helper: %v\n%s", result.err, result.output)
 	}
 	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
 		t.Fatalf("binary fallback ran during source purge: %v", err)
@@ -75,7 +87,7 @@ func TestWindowsUninstallSourcePurgeRejectsForgedDriverEnvironmentWithoutTouchin
 	writePurgeFixtureFile(t, noncePath, repoRoot+"\n")
 	writePurgeFixtureFile(t, helperPath, "must not be overwritten or removed")
 
-	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--dry-run", "--purge-source"}, sourcePurgeTestEnv(t, map[string]string{
+	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--dry-run"}, sourcePurgeTestEnv(t, map[string]string{
 		"SSHPIC_UNINSTALL_DRIVER_MODE":  "1",
 		"SSHPIC_UNINSTALL_SOURCE_ROOT":  repoRoot,
 		"SSHPIC_UNINSTALL_TEMP_DIR":     forgedTemp,
@@ -102,7 +114,7 @@ func TestWindowsUninstallSourcePurgeIgnoresCallerGitRepositoryAndConfigSelectors
 	requireWindowsSourcePurge(t)
 	repoRoot, parent := newSyntheticPurgeRepo(t, true)
 	poison := filepath.Join(t.TempDir(), "poison git selection")
-	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--dry-run", "--purge-source"}, sourcePurgeTestEnv(t, map[string]string{
+	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--dry-run"}, sourcePurgeTestEnv(t, map[string]string{
 		"GIT_DIR":             filepath.Join(poison, ".git"),
 		"GIT_WORK_TREE":       poison,
 		"GIT_INDEX_FILE":      filepath.Join(poison, "index"),
@@ -129,7 +141,7 @@ func TestWindowsUninstallSourcePurgeDeletesOnlyVerifiedSyntheticCheckoutLast(t *
 		t.Fatal(err)
 	}
 
-	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes", "--purge-source"}, sourcePurgeTestEnv(t, nil))
+	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes"}, sourcePurgeTestEnv(t, nil))
 	if result.err != nil {
 		t.Fatalf("source purge failed: %v\n%s", result.err, result.output)
 	}
@@ -154,7 +166,7 @@ func TestWindowsUninstallSourcePurgeReceiptPreservesRootPresentRetry(t *testing.
 		"SSHPIC_TEST_DELETE_PATH":          installed,
 		"SSHPIC_TEST_SOURCE_FINALIZE_FAIL": "1",
 	})
-	first := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes", "--purge-source"}, env)
+	first := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes"}, env)
 	if first.err == nil || !strings.Contains(first.output, "injected final source validation failure") {
 		t.Fatalf("injected finalization failure did not stop purge: %v\n%s", first.err, first.output)
 	}
@@ -170,7 +182,7 @@ func TestWindowsUninstallSourcePurgeReceiptPreservesRootPresentRetry(t *testing.
 	}
 
 	delete(env, "SSHPIC_TEST_SOURCE_FINALIZE_FAIL")
-	second := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes", "--purge-source"}, env)
+	second := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes"}, env)
 	if second.err == nil || !strings.Contains(second.output, "preserving it because a replacement cannot be distinguished") {
 		t.Fatalf("root-present receipt retry was not refused safely: %v\n%s", second.err, second.output)
 	}
@@ -191,7 +203,7 @@ func TestWindowsSourcePurgePreservesIsolatedRuntimeForRootMissingRetry(t *testin
 		"SSHPIC_TEST_DELETE_PATH":          installed,
 		"SSHPIC_TEST_SOURCE_LEAVE_PENDING": "1",
 	})
-	first := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes", "--purge-source"}, env)
+	first := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes"}, env)
 	if first.err == nil || !strings.Contains(first.output, "injected crash after source quarantine rename") {
 		t.Fatalf("injected post-rename crash did not stop purge: %v\n%s", first.err, first.output)
 	}
@@ -223,7 +235,7 @@ func TestWindowsSourcePurgePreservesIsolatedRuntimeForRootMissingRetry(t *testin
 	env["SSHPIC_UNINSTALL_TEMP_DIR"] = tempShell
 	env["SSHPIC_UNINSTALL_DRIVER_NONCE"] = nonce
 	env["SSHPIC_SOURCE_PURGE_RECEIPT_PATH"] = filepath.Join(env["LOCALAPPDATA"], sourcePurgeReceiptDir, sourcePurgeReceiptFile)
-	second := runWindowsUninstallScriptInvocation(t, parent, driverShell, []string{"--yes", "--purge-source"}, env)
+	second := runWindowsUninstallScriptInvocation(t, parent, driverShell, []string{"--yes"}, env)
 	if second.err != nil {
 		t.Fatalf("preserved isolated recovery command failed: %v\n%s", second.err, second.output)
 	}
@@ -268,11 +280,11 @@ func nativePathFromShellTest(t *testing.T, path string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func TestWindowsUninstallSourcePurgeRefusesLockedCheckoutWorkingDirectoryBeforeHelper(t *testing.T) {
+func TestWindowsUninstallRequiresParentShellOutsideCheckoutBeforeHelper(t *testing.T) {
 	requireWindowsSourcePurge(t)
 	repoRoot, _ := newSyntheticPurgeRepo(t, true)
 	logPath := filepath.Join(t.TempDir(), "helper-must-not-run.log")
-	result := runWindowsUninstallScript(t, repoRoot, []string{"--yes", "--purge-source"}, sourcePurgeTestEnv(t, map[string]string{
+	result := runWindowsUninstallScript(t, repoRoot, []string{"--yes"}, sourcePurgeTestEnv(t, map[string]string{
 		"SSHPIC_TEST_UNINSTALL_LOG": logPath,
 	}))
 	if result.err == nil || !strings.Contains(result.output, "working directory outside the checkout") {
@@ -317,7 +329,7 @@ func TestWindowsUninstallSourcePurgeRefusesDirtyUntrackedAndIgnoredStateBeforeHe
 			repoRoot, parent := newSyntheticPurgeRepo(t, true)
 			test.mutate(t, repoRoot)
 			logPath := filepath.Join(t.TempDir(), "helper-must-not-run.log")
-			result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes", "--purge-source"}, sourcePurgeTestEnv(t, map[string]string{
+			result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes"}, sourcePurgeTestEnv(t, map[string]string{
 				"SSHPIC_TEST_UNINSTALL_LOG": logPath,
 			}))
 			if result.err == nil || !strings.Contains(result.output, "tracked, untracked, or ignored files are present") {
@@ -337,7 +349,7 @@ func TestWindowsUninstallSourcePurgeRequiresUpstreamAndNoAheadCommits(t *testing
 	requireWindowsSourcePurge(t)
 	t.Run("no upstream", func(t *testing.T) {
 		repoRoot, parent := newSyntheticPurgeRepo(t, false)
-		result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes", "--purge-source"}, sourcePurgeTestEnv(t, nil))
+		result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes"}, sourcePurgeTestEnv(t, nil))
 		if result.err == nil || !strings.Contains(result.output, "no configured upstream") {
 			t.Fatalf("missing upstream was not refused: %v\n%s", result.err, result.output)
 		}
@@ -351,7 +363,7 @@ func TestWindowsUninstallSourcePurgeRequiresUpstreamAndNoAheadCommits(t *testing
 		writePurgeFixtureFile(t, filepath.Join(repoRoot, "ahead.txt"), "not pushed")
 		runGitForPurgeFixture(t, repoRoot, "add", "ahead.txt")
 		runGitForPurgeFixture(t, repoRoot, "commit", "-m", "local only")
-		result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes", "--purge-source"}, sourcePurgeTestEnv(t, nil))
+		result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes"}, sourcePurgeTestEnv(t, nil))
 		if result.err == nil || !strings.Contains(result.output, "local commit(s) are not present") {
 			t.Fatalf("unpushed commit was not refused: %v\n%s", result.err, result.output)
 		}
@@ -369,7 +381,7 @@ func TestWindowsUninstallSourcePurgeRejectsWrongModuleBeforeHelper(t *testing.T)
 	runGitForPurgeFixture(t, repoRoot, "commit", "-m", "wrong module fixture")
 	runGitForPurgeFixture(t, repoRoot, "push")
 	logPath := filepath.Join(t.TempDir(), "helper-must-not-run.log")
-	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes", "--purge-source"}, sourcePurgeTestEnv(t, map[string]string{
+	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes"}, sourcePurgeTestEnv(t, map[string]string{
 		"SSHPIC_TEST_UNINSTALL_LOG": logPath,
 	}))
 	if result.err == nil || !strings.Contains(result.output, "go.mod does not uniquely identify github.com/leekyungmoon/sshpic") {
@@ -436,7 +448,6 @@ func TestWindowsUninstallSourcePurgePinsRelativePathsBeforeTempDriver(t *testing
 	logPath := filepath.Join(t.TempDir(), "helper.log")
 	result := runWindowsUninstallScriptInvocation(t, parent, filepath.Join(repoRoot, "uninstall.sh"), []string{
 		"--dry-run",
-		"--purge-source",
 		"--binary", relativeBinary,
 		"--config", relativeConfig,
 		"--wezterm-config", relativeWezTermConfig,
@@ -478,9 +489,8 @@ func TestWindowsUninstallSourcePurgeScriptDelegatesDeletionToGuardedHelper(t *te
 	}
 	text := string(data)
 	for _, want := range []string{
-		"--purge-source",
 		"--source-purge-receipt",
-		"--purge-source requires Go",
+		"Windows uninstall requires Go",
 		"status --porcelain=v1 --untracked-files=all --ignored",
 		"@{upstream}",
 		"# sshpic-source-purge-marker:v1",
@@ -495,6 +505,7 @@ func TestWindowsUninstallSourcePurgeScriptDelegatesDeletionToGuardedHelper(t *te
 		"SSHPIC_CONFIG",
 		"WEZTERM_CONFIG_FILE",
 		"SSHPIC_WEZTERM_EXE",
+		"Windows uninstall must be started with the shell working directory outside the checkout",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("uninstall.sh missing source-purge contract %q", want)
@@ -505,12 +516,15 @@ func TestWindowsUninstallSourcePurgeScriptDelegatesDeletionToGuardedHelper(t *te
 			t.Fatalf("uninstall.sh must delegate source deletion to Go and not contain %q", forbidden)
 		}
 	}
+	if strings.Contains(text, "--purge-source") {
+		t.Fatal("uninstall.sh must expose one uninstall flow and reject the removed --purge-source mode flag")
+	}
 }
 
 func assertSourcePurgeRefusedBeforeHelper(t *testing.T, repoRoot, workingDir, want string) {
 	t.Helper()
 	logPath := filepath.Join(t.TempDir(), "helper-must-not-run.log")
-	result := runWindowsUninstallScriptInvocation(t, workingDir, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes", "--purge-source"}, sourcePurgeTestEnv(t, map[string]string{
+	result := runWindowsUninstallScriptInvocation(t, workingDir, filepath.Join(repoRoot, "uninstall.sh"), []string{"--yes"}, sourcePurgeTestEnv(t, map[string]string{
 		"SSHPIC_TEST_UNINSTALL_LOG": logPath,
 	}))
 	if result.err == nil || !strings.Contains(result.output, want) {

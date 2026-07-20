@@ -412,122 +412,101 @@ func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) 
 	if cacheErr != nil || strings.TrimSpace(cacheDir) == "" {
 		cacheDir = filepath.Join(homeDir, ".cache")
 	}
-	purgeSource := pa.Bools["purge-source"]
 	receiptPath := ""
 	var plannedReceipt sourcePurgeReceipt
 	receiptAuthorized := false
 	sourceRecoveryOnly := false
-	defaultUninstallGeneration := ""
-	if purgeSource {
-		expectedReceiptPath := filepath.Join(cacheDir, sourcePurgeReceiptDir, sourcePurgeReceiptFile)
-		receiptPath, err = resolveSourcePurgeReceiptPath(pa.Values["source_purge_receipt"], pa.Values["source_root"], helper)
-		if err != nil {
-			fmt.Fprintf(stderr, "cannot resolve source purge completion receipt: %v\n", err)
-			return 1
-		}
-		if !sameSourcePurgePath(receiptPath, expectedReceiptPath) {
-			fmt.Fprintf(stderr, "source purge completion receipt must use the dedicated local path: %s\n", expectedReceiptPath)
-			return 1
-		}
-		if existing, readErr := readSourcePurgeReceipt(receiptPath); readErr == nil {
-			plannedReceipt = existing
-			if _, sourceErr := os.Lstat(pa.Values["source_root"]); errors.Is(sourceErr, os.ErrNotExist) {
-				if _, err = readAndAuthorizeSourcePurgeRecovery(receiptPath, pa.Values["source_root"]); err != nil {
-					fmt.Fprintf(stderr, "cannot authorize interrupted source purge recovery: %v\n", err)
-					return 1
-				}
-				sourceRecoveryOnly = true
-			} else if sourceErr != nil {
-				fmt.Fprintf(stderr, "cannot inspect source checkout for purge retry: %v\n", sourceErr)
-				return 1
-			} else {
-				fmt.Fprintln(stderr, "source purge retry found a checkout at the original path; preserving it because a replacement cannot be distinguished after interruption")
-				fmt.Fprintln(stderr, "Run checkout-preserving ./uninstall.sh (or reinstall) to revoke the stale purge receipt, then start a new --purge-source operation.")
+	expectedReceiptPath := filepath.Join(cacheDir, sourcePurgeReceiptDir, sourcePurgeReceiptFile)
+	receiptPath, err = resolveSourcePurgeReceiptPath(pa.Values["source_purge_receipt"], pa.Values["source_root"], helper)
+	if err != nil {
+		fmt.Fprintf(stderr, "cannot resolve source purge completion receipt: %v\n", err)
+		return 1
+	}
+	if !sameSourcePurgePath(receiptPath, expectedReceiptPath) {
+		fmt.Fprintf(stderr, "source purge completion receipt must use the dedicated local path: %s\n", expectedReceiptPath)
+		return 1
+	}
+	if existing, readErr := readSourcePurgeReceipt(receiptPath); readErr == nil {
+		plannedReceipt = existing
+		if _, sourceErr := os.Lstat(pa.Values["source_root"]); errors.Is(sourceErr, os.ErrNotExist) {
+			if _, err = readAndAuthorizeSourcePurgeRecovery(receiptPath, pa.Values["source_root"]); err != nil {
+				fmt.Fprintf(stderr, "cannot authorize interrupted source purge recovery: %v\n", err)
 				return 1
 			}
-			receiptAuthorized = true
-		} else if !errors.Is(readErr, os.ErrNotExist) {
-			fmt.Fprintf(stderr, "cannot validate source purge completion receipt: %v\n", readErr)
+			sourceRecoveryOnly = true
+		} else if sourceErr != nil {
+			fmt.Fprintf(stderr, "cannot inspect source checkout for purge retry: %v\n", sourceErr)
 			return 1
 		} else {
-			pendingReceipt, pendingPath, pendingErr := readSourcePurgeReceiptCompletionPending(filepath.Dir(receiptPath))
-			if pendingErr == nil {
-				if _, sourceErr := os.Lstat(pa.Values["source_root"]); !errors.Is(sourceErr, os.ErrNotExist) {
-					fmt.Fprintln(stderr, "source purge completion is pending, but a fresh source path exists; preserving the replacement")
-					return 1
-				}
-				plannedReceipt = pendingReceipt
-				if pa.Bools["dry-run"] {
-					if _, err = readAndAuthorizeSourcePurgeRecovery(pendingPath, pa.Values["source_root"]); err != nil {
-						fmt.Fprintf(stderr, "cannot authorize strict completion-pending source purge recovery: %v\n", err)
-						return 1
-					}
-				} else {
-					if err = restoreSourcePurgeReceiptFromCompletionPending(receiptPath, pendingPath, pendingReceipt); err != nil {
-						fmt.Fprintf(stderr, "cannot restore source purge completion authority: %v\n", err)
-						return 1
-					}
-					if _, err = readAndAuthorizeSourcePurgeRecovery(receiptPath, pa.Values["source_root"]); err != nil {
-						fmt.Fprintf(stderr, "cannot authorize restored source purge recovery: %v\n", err)
-						return 1
-					}
-				}
-				receiptAuthorized = true
-				sourceRecoveryOnly = true
-			} else if !errors.Is(pendingErr, os.ErrNotExist) {
-				fmt.Fprintf(stderr, "cannot validate source purge completion pending state: %v\n", pendingErr)
-				return 1
-			}
-			if receiptAuthorized {
-				// Continue directly to the recovery-only finalization path.
-			} else {
-				if _, sourceErr := os.Lstat(pa.Values["source_root"]); errors.Is(sourceErr, os.ErrNotExist) {
-					cleanupOnly, cleanupErr := sourcePurgeCompletionCleanupOnlyPending()
-					if cleanupErr != nil {
-						fmt.Fprintf(stderr, "cannot validate final uninstall control-state retry: %v\n", cleanupErr)
-						return 1
-					}
-					if cleanupOnly {
-						if pa.Bools["dry-run"] {
-							fmt.Fprintln(stdout, "DRY RUN: final Windows uninstall lock and empty control-state directory would be removed")
-							return 0
-						}
-						if err := removeInstallGenerationLockAndDirectory(); err != nil {
-							fmt.Fprintf(stderr, "final uninstall control-state cleanup did not complete: %v\n", err)
-							return 1
-						}
-						fmt.Fprintln(stdout, "final Windows uninstall control state: removed")
-						return 0
-					}
-				} else if sourceErr != nil {
-					fmt.Fprintf(stderr, "cannot inspect missing-receipt source purge retry: %v\n", sourceErr)
-					return 1
-				}
-				plannedReceipt, err = captureSourcePurgeReceipt(ctx, pa.Values["source_root"])
-				if err != nil {
-					fmt.Fprintln(stderr, err)
-					return 1
-				}
-				if err = validateFreshSourcePurgeBoundPathsAbsent(receiptPath, plannedReceipt); err != nil {
-					fmt.Fprintln(stderr, err)
-					return 1
-				}
-			}
-		}
-	}
-	if !purgeSource {
-		if err := validateDefaultUninstallControlStateReadOnly(); err != nil {
-			fmt.Fprintf(stderr, "default uninstall control-state preflight refused before mutation: %v\n", err)
+			fmt.Fprintln(stderr, "source purge retry found a checkout at the original path; preserving it because a replacement cannot be distinguished after interruption")
+			fmt.Fprintln(stderr, "Reinstall from this exact checkout to revoke the stale uninstall receipt, then run the single uninstall flow again.")
 			return 1
 		}
-		if !pa.Bools["dry-run"] {
-			if err := prepareDefaultUninstallControlState(); err != nil {
-				fmt.Fprintf(stderr, "default uninstall control-state preflight refused before mutation: %v\n", err)
+		receiptAuthorized = true
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		fmt.Fprintf(stderr, "cannot validate source purge completion receipt: %v\n", readErr)
+		return 1
+	} else {
+		pendingReceipt, pendingPath, pendingErr := readSourcePurgeReceiptCompletionPending(filepath.Dir(receiptPath))
+		if pendingErr == nil {
+			if _, sourceErr := os.Lstat(pa.Values["source_root"]); !errors.Is(sourceErr, os.ErrNotExist) {
+				fmt.Fprintln(stderr, "source purge completion is pending, but a fresh source path exists; preserving the replacement")
 				return 1
 			}
-			defaultUninstallGeneration, err = settledInstallGeneration()
+			plannedReceipt = pendingReceipt
+			if pa.Bools["dry-run"] {
+				if _, err = readAndAuthorizeSourcePurgeRecovery(pendingPath, pa.Values["source_root"]); err != nil {
+					fmt.Fprintf(stderr, "cannot authorize strict completion-pending source purge recovery: %v\n", err)
+					return 1
+				}
+			} else {
+				if err = restoreSourcePurgeReceiptFromCompletionPending(receiptPath, pendingPath, pendingReceipt); err != nil {
+					fmt.Fprintf(stderr, "cannot restore source purge completion authority: %v\n", err)
+					return 1
+				}
+				if _, err = readAndAuthorizeSourcePurgeRecovery(receiptPath, pa.Values["source_root"]); err != nil {
+					fmt.Fprintf(stderr, "cannot authorize restored source purge recovery: %v\n", err)
+					return 1
+				}
+			}
+			receiptAuthorized = true
+			sourceRecoveryOnly = true
+		} else if !errors.Is(pendingErr, os.ErrNotExist) {
+			fmt.Fprintf(stderr, "cannot validate source purge completion pending state: %v\n", pendingErr)
+			return 1
+		}
+		if receiptAuthorized {
+			// Continue directly to the recovery-only finalization path.
+		} else {
+			if _, sourceErr := os.Lstat(pa.Values["source_root"]); errors.Is(sourceErr, os.ErrNotExist) {
+				cleanupOnly, cleanupErr := sourcePurgeCompletionCleanupOnlyPending()
+				if cleanupErr != nil {
+					fmt.Fprintf(stderr, "cannot validate final uninstall control-state retry: %v\n", cleanupErr)
+					return 1
+				}
+				if cleanupOnly {
+					if pa.Bools["dry-run"] {
+						fmt.Fprintln(stdout, "DRY RUN: final Windows uninstall lock and empty control-state directory would be removed")
+						return 0
+					}
+					if err := removeInstallGenerationLockAndDirectory(); err != nil {
+						fmt.Fprintf(stderr, "final uninstall control-state cleanup did not complete: %v\n", err)
+						return 1
+					}
+					fmt.Fprintln(stdout, "final Windows uninstall control state: removed")
+					return 0
+				}
+			} else if sourceErr != nil {
+				fmt.Fprintf(stderr, "cannot inspect missing-receipt source purge retry: %v\n", sourceErr)
+				return 1
+			}
+			plannedReceipt, err = captureSourcePurgeReceipt(ctx, pa.Values["source_root"])
 			if err != nil {
-				fmt.Fprintf(stderr, "cannot pin the Windows install generation before uninstall: %v\n", err)
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			if err = validateFreshSourcePurgeBoundPathsAbsent(receiptPath, plannedReceipt); err != nil {
+				fmt.Fprintln(stderr, err)
 				return 1
 			}
 		}
@@ -589,7 +568,7 @@ func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) 
 		return executeErr
 	}
 	writeCompletionReceipt := func() error {
-		if !purgeSource || pa.Bools["dry-run"] {
+		if pa.Bools["dry-run"] {
 			return nil
 		}
 		if receiptAuthorized {
@@ -623,7 +602,6 @@ func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) 
 			BeforeBinaryRemoval:  executeLocalPlan,
 			AfterBinaryRemoval:   writeCompletionReceipt,
 			DryRun:               pa.Bools["dry-run"],
-			PurgeSource:          purgeSource,
 			WezTermPath:          os.Getenv("SSHPIC_WEZTERM_EXE"),
 		})
 		if err != nil {
@@ -634,7 +612,7 @@ func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) 
 			return 1
 		}
 	}
-	if purgeSource && result.NothingToDo && !receiptAuthorized {
+	if result.NothingToDo && !receiptAuthorized {
 		fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
 		fmt.Fprintln(stderr, "source purge refused: no owned WezTerm install manifest or resumable uninstall journal was found; select the installed config with --wezterm-config (or WEZTERM_CONFIG_FILE) so installed state cannot be stranded")
 		return 1
@@ -647,7 +625,7 @@ func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) 
 		}
 	}
 	var sourceFinalizeResult localuninstall.SourceFinalizeResult
-	if purgeSource && !pa.Bools["dry-run"] {
+	if !pa.Bools["dry-run"] {
 		markerData, markerErr := sourcePurgeOwnershipMarkerData(plannedReceipt, receiptPath)
 		if markerErr != nil {
 			fmt.Fprintf(stderr, "cannot construct source quarantine ownership marker: %v\n", markerErr)
@@ -705,26 +683,13 @@ func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) 
 			fmt.Fprintf(stderr, "source checkout was removed, but uninstall control-state cleanup did not complete: %v\n", err)
 			return 1
 		}
-	} else if !purgeSource && !pa.Bools["dry-run"] {
-		if err := removeInstallGenerationAfterLocalUninstallExpected(defaultUninstallGeneration); err != nil {
-			fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
-			fprintNoExtraBlank(stdout, localuninstall.LocalSummary(localResult))
-			fmt.Fprintf(stderr, "Windows install generation cleanup did not complete: %v\n", err)
-			return 1
-		}
-		if err := removeInstallGenerationLockAndDirectory(); err != nil {
-			fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
-			fprintNoExtraBlank(stdout, localuninstall.LocalSummary(localResult))
-			fmt.Fprintf(stderr, "Windows uninstall control-state cleanup did not complete: %v\n", err)
-			return 1
-		}
 	}
 	fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
 	fprintNoExtraBlank(stdout, localuninstall.LocalSummary(localResult))
 	if sourceFinalizeResult.SourceRemoved && sourceFinalizeResult.ReceiptRemoved {
 		fmt.Fprintf(stdout, "source checkout: removed with identity-guarded quarantine: %s\n", sourceFinalizeResult.SourceRoot)
 		fmt.Fprintln(stdout, "source purge completion receipt: removed after source deletion succeeded")
-	} else if purgeSource && receiptAuthorized {
+	} else if receiptAuthorized {
 		fmt.Fprintf(stdout, "source purge completion receipt: authorized retry at %s\n", receiptPath)
 	}
 	return 0
@@ -1194,7 +1159,7 @@ func sourceFromConfig(cfg config.Config) provider.LocalImageSource {
 
 func parseArgs(args []string) (parsedArgs, error) {
 	pa := parsedArgs{Values: map[string]string{}, Bools: map[string]bool{}}
-	boolFlags := map[string]bool{"help": true, "debug": true, "json": true, "dry-run": true, "yes": true, "force": true, "no-copy": true, "insert-newline": true, "no-verify": true, "no-open": true, "purge-source": true}
+	boolFlags := map[string]bool{"help": true, "debug": true, "json": true, "dry-run": true, "yes": true, "force": true, "no-copy": true, "insert-newline": true, "no-verify": true, "no-open": true}
 	valueFlags := map[string]bool{"config": true, "wezterm-config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true, "term-program": true, "foreground-bundle-id": true, "action-file": true, "payload-file": true, "process-json": true, "pane-id": true, "result-file": true, "source-root": true, "binary": true, "uninstall-protocol": true, "source-purge-receipt": true, "install-receipt-protocol": true, "install-generation": true}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]

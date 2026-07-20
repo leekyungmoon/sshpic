@@ -252,7 +252,6 @@ func TestDifferentConfigReinstallInvalidatesStaleReceiptBeforeSourcePurgeRetry(t
 		"--wezterm-config", configA,
 		"--source-purge-receipt", receiptPath,
 		"--uninstall-protocol", "2",
-		"--purge-source",
 		"--dry-run",
 	}, BuildInfo{}, &stdout, &stderr)
 	if code == 0 || !strings.Contains(stderr.String(), "no owned WezTerm install manifest") {

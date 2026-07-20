@@ -34,7 +34,6 @@ type UninstallOptions struct {
 	// authority for a safe retry instead of stranding source-purge completion.
 	AfterBinaryRemoval func() error
 	DryRun             bool
-	PurgeSource        bool
 }
 
 // UninstallResult reports only state owned by the Windows WezTerm install.
@@ -51,7 +50,6 @@ type UninstallResult struct {
 	BinaryMissing       bool
 	NothingToDo         bool
 	DryRun              bool
-	PurgeSource         bool
 }
 
 // Uninstall restores manifest-owned WezTerm state and then removes exactly
@@ -65,7 +63,6 @@ func Uninstall(ctx context.Context, opts UninstallOptions) (UninstallResult, err
 	}
 	result.SourceRoot = root
 	result.DryRun = opts.DryRun
-	result.PurgeSource = opts.PurgeSource
 
 	configPath, err := resolveUninstallConfigPath(opts)
 	if err != nil {
@@ -719,14 +716,10 @@ func UninstallSummary(result UninstallResult) string {
 	if result.DryRun && result.BinaryPath != "" {
 		builder.WriteString("dry-run: no files changed\n")
 	}
-	if result.PurgeSource {
-		if result.DryRun {
-			builder.WriteString("source checkout: would be removed last by the guarded source finalizer\n")
-		} else {
-			builder.WriteString("source checkout: validated for final removal by the guarded source finalizer\n")
-		}
+	if result.DryRun {
+		builder.WriteString("source checkout: would be removed last by the guarded source finalizer\n")
 	} else {
-		builder.WriteString("source checkout kept: " + result.SourceRoot + "\n")
+		builder.WriteString("source checkout: validated for final removal by the guarded source finalizer\n")
 	}
 	return builder.String()
 }

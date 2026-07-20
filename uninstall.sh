@@ -7,30 +7,31 @@ usage() {
   cat <<'EOF'
 Usage: ./uninstall.sh [--dry-run] [--yes] [--binary <path>]
                       [--config <path>] [--wezterm-config <path>]
-                      [--purge-source]
 
-Safely restores the Windows WezTerm integration and removes only artifacts
-validated as sshpic-owned. By default the source checkout, Go, WezTerm, SSH
-configuration, and remote images are kept.
+Safely restores the Windows WezTerm integration, removes artifacts validated
+as sshpic-owned, and removes the exact source checkout last. A real uninstall
+must be launched from outside the checkout because Windows locks a parent
+Git Bash process's working directory:
+
+  cd ..
+  ./sshpic/uninstall.sh
+
+Go, WezTerm, SSH configuration, and remote images are kept.
 
 Options:
   --dry-run        inspect and print the exact plan without changing anything
   --yes            skip the confirmation prompt (all safety checks still run)
   --binary <path>  require the manifest to name this exact installed binary;
-                   supplies a helper fallback for checkout-preserving uninstall
+                   the isolated helper is still rebuilt from source
   --config <path>  remove this exact sshpic runtime config during uninstall
   --wezterm-config <path>
                    restore the integration in this exact WezTerm config
-  --purge-source   permanently remove this checkout after uninstall succeeds;
-                   requires Go and a clean, fully published checkout;
-                   non-dry runs must start with CWD outside the checkout
   --help           show this help
 EOF
 }
 
 assume_yes=false
 dry_run=false
-purge_source=false
 explicit_bin=""
 sshpic_config=""
 wezterm_config=""
@@ -39,7 +40,6 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=true ;;
     --yes) assume_yes=true ;;
-    --purge-source) purge_source=true ;;
     --config|--wezterm-config)
       option="$1"
       shift
@@ -106,7 +106,7 @@ if [ "$driver_mode" = 1 ]; then
   fi
   if repo_root="$(CDPATH= cd -P "$SSHPIC_UNINSTALL_SOURCE_ROOT" 2>/dev/null && pwd -P)"; then
     :
-  elif [ "$purge_source" = true ] && [ ! -e "$SSHPIC_UNINSTALL_SOURCE_ROOT" ] && [ ! -L "$SSHPIC_UNINSTALL_SOURCE_ROOT" ]; then
+  elif [ ! -e "$SSHPIC_UNINSTALL_SOURCE_ROOT" ] && [ ! -L "$SSHPIC_UNINSTALL_SOURCE_ROOT" ]; then
     recovery_parent="$(dirname "$SSHPIC_UNINSTALL_SOURCE_ROOT")"
     recovery_name="$(basename "$SSHPIC_UNINSTALL_SOURCE_ROOT")"
     if ! recovery_parent="$(CDPATH= cd -P "$recovery_parent" 2>/dev/null && pwd -P)" ||
@@ -163,12 +163,12 @@ if [ "$source_recovery_mode" != true ]; then
   done
 fi
 
-if [ "$purge_source" = true ] && [ "$dry_run" != true ] && [ "$driver_mode" != 1 ]; then
+if [ "$dry_run" != true ] && [ "$driver_mode" != 1 ]; then
   case "$initial_work_dir" in
     "$repo_root"|"$repo_root"/*)
-      echo "--purge-source must be started with the shell working directory outside the checkout." >&2
-      echo "Windows keeps a process working directory locked, so first run: cd \"$(dirname "$repo_root")\"" >&2
-      echo "Then invoke: ./$(basename "$repo_root")/uninstall.sh --purge-source" >&2
+      echo "Windows uninstall must be started with the shell working directory outside the checkout." >&2
+      echo "The parent Git Bash process keeps its working directory locked, so first run: cd \"$(dirname "$repo_root")\"" >&2
+      echo "Then invoke: ./$(basename "$repo_root")/uninstall.sh" >&2
       echo "No installed files were changed, and the source checkout was kept." >&2
       exit 1
       ;;
@@ -362,7 +362,7 @@ repo_native="$(to_native_path "$repo_root")"
 temp_native="$(to_native_path "$temp_dir")"
 helper_native="$(to_native_path "$helper")"
 
-if [ "$purge_source" = true ] && [ "$driver_mode" != 1 ]; then
+if [ "$driver_mode" != 1 ]; then
   # The isolated driver runs from the temp directory. Freeze every caller- or
   # environment-supplied path against the original CWD before changing it.
   if [ -n "$explicit_bin" ]; then
@@ -387,7 +387,7 @@ if [ "$purge_source" = true ] && [ "$driver_mode" != 1 ]; then
     export SSHPIC_WEZTERM_EXE
   fi
   if [ -z "${LOCALAPPDATA:-}" ]; then
-    echo "--purge-source requires LOCALAPPDATA for its dedicated completion receipt." >&2
+    echo "Windows uninstall requires LOCALAPPDATA for its dedicated completion receipt." >&2
     exit 1
   fi
   local_app_data_native="$(pin_path_from_initial_cwd "$LOCALAPPDATA")"
@@ -408,7 +408,7 @@ if [ "$purge_source" = true ] && [ "$driver_mode" != 1 ]; then
   fi
   driver_nonce_name="$(basename "$driver_nonce_file")"
 
-  set -- --purge-source
+  set --
   if [ "$dry_run" = true ]; then
     set -- "$@" --dry-run
   fi
@@ -437,7 +437,7 @@ if [ "$purge_source" = true ] && [ "$driver_mode" != 1 ]; then
 fi
 
 source_purge_receipt_native=${SSHPIC_SOURCE_PURGE_RECEIPT_PATH:-}
-if [ "$purge_source" = true ] && [ -z "$source_purge_receipt_native" ]; then
+if [ -z "$source_purge_receipt_native" ]; then
   echo "isolated source-purge driver is missing its completion receipt path" >&2
   exit 1
 fi
@@ -493,7 +493,7 @@ source_git() {
 
 preflight_source_purge() {
   if ! command -v git >/dev/null 2>&1; then
-    echo "--purge-source requires Git so the checkout can be proven clean and pushed." >&2
+    echo "Windows uninstall requires Git so the checkout can be proven clean and pushed." >&2
     return 1
   fi
 
@@ -507,21 +507,21 @@ preflight_source_purge() {
     }
   ' "$repo_root/go.mod" 2>/dev/null || true)"
   if [ "$module_check" != 1 ]; then
-    echo "--purge-source refused: go.mod does not uniquely identify github.com/leekyungmoon/sshpic." >&2
+    echo "Windows uninstall refused: go.mod does not uniquely identify github.com/leekyungmoon/sshpic." >&2
     return 1
   fi
   marker_count="$(grep -Fxc '# sshpic-source-purge-marker:v1' "$repo_root/uninstall.sh" 2>/dev/null || true)"
   if [ "$marker_count" != 1 ]; then
-    echo "--purge-source refused: uninstall.sh does not contain the exact source-purge ownership marker." >&2
+    echo "Windows uninstall refused: uninstall.sh does not contain the exact source-purge ownership marker." >&2
     return 1
   fi
 
   if ! source_top_level="$(source_git rev-parse --show-toplevel 2>/dev/null)" || [ -z "$source_top_level" ]; then
-    echo "--purge-source refused: Git could not identify the exact source checkout." >&2
+    echo "Windows uninstall refused: Git could not identify the exact source checkout." >&2
     return 1
   fi
   if ! source_top_level="$(CDPATH= cd -P "$source_top_level" 2>/dev/null && pwd -P)" || [ "$source_top_level" != "$repo_root" ]; then
-    echo "--purge-source refused: Git top-level is not the exact source checkout." >&2
+    echo "Windows uninstall refused: Git top-level is not the exact source checkout." >&2
     return 1
   fi
 
@@ -531,62 +531,62 @@ preflight_source_purge() {
     return 1
   fi
   if [ -n "$source_status" ]; then
-    echo "--purge-source refused: tracked, untracked, or ignored files are present:" >&2
+    echo "Windows uninstall refused: tracked, untracked, or ignored files are present:" >&2
     printf '%s\n' "$source_status" >&2
     return 1
   fi
 
   if ! source_worktrees="$(source_git worktree list --porcelain 2>/dev/null)"; then
-    echo "--purge-source refused: Git worktrees could not be inspected." >&2
+    echo "Windows uninstall refused: Git worktrees could not be inspected." >&2
     return 1
   fi
   source_worktree_count="$(printf '%s\n' "$source_worktrees" | awk '/^worktree / { count++ } END { print count + 0 }')"
   if [ "$source_worktree_count" -ne 1 ]; then
-    echo "--purge-source refused: linked or multiple Git worktrees exist ($source_worktree_count found)." >&2
+    echo "Windows uninstall refused: linked or multiple Git worktrees exist ($source_worktree_count found)." >&2
     return 1
   fi
 
   if ! source_upstream="$(source_git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" || [ -z "$source_upstream" ]; then
-    echo "--purge-source refused: the current branch has no configured upstream." >&2
+    echo "Windows uninstall refused: the current branch has no configured upstream." >&2
     return 1
   fi
   if ! source_head="$(source_git rev-parse HEAD 2>/dev/null)" || [ -z "$source_head" ]; then
-    echo "--purge-source refused: could not identify the current commit." >&2
+    echo "Windows uninstall refused: could not identify the current commit." >&2
     return 1
   fi
   if ! source_ahead="$(source_git rev-list --count "$source_upstream..HEAD" 2>/dev/null)"; then
-    echo "--purge-source refused: could not compare HEAD with $source_upstream." >&2
+    echo "Windows uninstall refused: could not compare HEAD with $source_upstream." >&2
     return 1
   fi
   case "$source_ahead" in
     ''|*[!0-9]*)
-      echo "--purge-source refused: Git returned an invalid ahead count: $source_ahead" >&2
+      echo "Windows uninstall refused: Git returned an invalid ahead count: $source_ahead" >&2
       return 1
       ;;
   esac
   if [ "$source_ahead" -ne 0 ]; then
-    echo "--purge-source refused: $source_ahead local commit(s) are not present in $source_upstream." >&2
+    echo "Windows uninstall refused: $source_ahead local commit(s) are not present in $source_upstream." >&2
     return 1
   fi
 
   if ! source_branch="$(source_git symbolic-ref --quiet --short HEAD 2>/dev/null)" || [ -z "$source_branch" ]; then
-    echo "--purge-source refused: detached HEAD cannot be proven against a live upstream branch." >&2
+    echo "Windows uninstall refused: detached HEAD cannot be proven against a live upstream branch." >&2
     return 1
   fi
   if ! source_remote="$(source_git config --get "branch.$source_branch.remote" 2>/dev/null)" || [ -z "$source_remote" ]; then
-    echo "--purge-source refused: the current branch has no upstream remote." >&2
+    echo "Windows uninstall refused: the current branch has no upstream remote." >&2
     return 1
   fi
   if [ "$source_remote" = "." ]; then
-    echo "--purge-source refused: the upstream remote points back into the checkout." >&2
+    echo "Windows uninstall refused: the upstream remote points back into the checkout." >&2
     return 1
   fi
   if ! source_merge_ref="$(source_git config --get "branch.$source_branch.merge" 2>/dev/null)" || [ -z "$source_merge_ref" ]; then
-    echo "--purge-source refused: the current branch has no upstream merge ref." >&2
+    echo "Windows uninstall refused: the current branch has no upstream merge ref." >&2
     return 1
   fi
   if ! source_remote_line="$(source_git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=15 ls-remote --exit-code "$source_remote" "$source_merge_ref" 2>/dev/null)" || [ -z "$source_remote_line" ]; then
-    echo "--purge-source refused: the live upstream could not be verified non-interactively." >&2
+    echo "Windows uninstall refused: the live upstream could not be verified non-interactively." >&2
     return 1
   fi
   IFS=' 	' read -r source_remote_head source_remote_ref <<EOF
@@ -594,25 +594,25 @@ $source_remote_line
 EOF
   case "$source_remote_head" in
     ''|*[!0-9a-fA-F]*)
-      echo "--purge-source refused: the live upstream returned an invalid commit ID." >&2
+      echo "Windows uninstall refused: the live upstream returned an invalid commit ID." >&2
       return 1
       ;;
   esac
   if [ "$source_remote_ref" != "$source_merge_ref" ]; then
-    echo "--purge-source refused: the live upstream returned an unexpected ref: $source_remote_ref" >&2
+    echo "Windows uninstall refused: the live upstream returned an unexpected ref: $source_remote_ref" >&2
     return 1
   fi
   if [ "$source_remote_head" != "$source_head" ]; then
-    echo "--purge-source refused: HEAD does not exactly match the live upstream head." >&2
+    echo "Windows uninstall refused: HEAD does not exactly match the live upstream head." >&2
     return 1
   fi
 
   if ! source_local_refs="$(source_git for-each-ref --format='%(refname)%09%(objectname)%09%(symref)' 2>/dev/null)"; then
-    echo "--purge-source refused: local Git refs could not be enumerated." >&2
+    echo "Windows uninstall refused: local Git refs could not be enumerated." >&2
     return 1
   fi
   if ! source_live_refs="$(source_git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=15 ls-remote --heads --tags "$source_remote" 2>/dev/null)"; then
-    echo "--purge-source refused: live upstream branches and tags could not be verified non-interactively." >&2
+    echo "Windows uninstall refused: live upstream branches and tags could not be verified non-interactively." >&2
     return 1
   fi
   unsafe_custom_ref=""
@@ -662,20 +662,20 @@ EOF
 $source_local_refs
 EOF
   if [ -n "$unsafe_custom_ref" ]; then
-    echo "--purge-source refused: stash or custom local ref exists: $unsafe_custom_ref" >&2
+    echo "Windows uninstall refused: stash or custom local ref exists: $unsafe_custom_ref" >&2
     return 1
   fi
   if [ -n "$unsafe_unpublished_ref" ]; then
-    echo "--purge-source refused: local branch, tag, or remote-tracking ref is not present at the same OID upstream: $unsafe_unpublished_ref" >&2
+    echo "Windows uninstall refused: local branch, tag, or remote-tracking ref is not present at the same OID upstream: $unsafe_unpublished_ref" >&2
     return 1
   fi
   if ! source_fsck="$(source_git fsck --no-reflogs --unreachable --no-progress 2>&1)"; then
-    echo "--purge-source refused: Git object reachability could not be verified:" >&2
+    echo "Windows uninstall refused: Git object reachability could not be verified:" >&2
     printf '%s\n' "$source_fsck" >&2
     return 1
   fi
   if printf '%s\n' "$source_fsck" | grep -Eq '^(unreachable|dangling) commit [0-9a-fA-F]+'; then
-    echo "--purge-source refused: reflog-only or unreachable commit data exists." >&2
+    echo "Windows uninstall refused: reflog-only or unreachable commit data exists." >&2
     printf '%s\n' "$source_fsck" >&2
     return 1
   fi
@@ -683,7 +683,7 @@ EOF
   return 0
 }
 
-if [ "$purge_source" = true ] && [ "$source_recovery_mode" != true ]; then
+if [ "$source_recovery_mode" != true ]; then
   if ! preflight_source_purge; then
     echo "No installed files were changed, and the source checkout was kept." >&2
     exit 1
@@ -697,30 +697,9 @@ elif find_go; then
     echo "Could not build the isolated uninstall helper; no installed files were changed." >&2
     exit 1
   fi
-elif [ "$purge_source" = true ]; then
-  echo "--purge-source requires Go so a fresh isolated helper can be rebuilt for every safe retry." >&2
-  echo "No files were changed. Reinstall Go, or rerun without --purge-source to keep this checkout." >&2
-  exit 1
-elif [ -n "$explicit_bin" ]; then
-  explicit_shell="$explicit_bin"
-  if command -v cygpath >/dev/null 2>&1; then
-    converted="$(cygpath -u "$explicit_bin" 2>/dev/null || true)"
-    if [ -n "$converted" ]; then
-      explicit_shell="$converted"
-    fi
-  fi
-  if [ -L "$explicit_shell" ] || [ ! -f "$explicit_shell" ]; then
-    echo "Go is unavailable and --binary is not a regular installed file: $explicit_bin" >&2
-    echo "No files were changed. Reinstall Go or provide the exact installed sshpic.exe." >&2
-    exit 1
-  fi
-  if ! cp -- "$explicit_shell" "$helper"; then
-    echo "Could not copy the isolated uninstall helper; no installed files were changed." >&2
-    exit 1
-  fi
 else
-  echo "Go is unavailable, so a separate Windows uninstall helper cannot be built." >&2
-  echo "No files were changed. Reinstall Go, or rerun with --binary pointing to the installed sshpic.exe." >&2
+  echo "Windows uninstall requires Go so a fresh isolated helper can be rebuilt for every safe retry." >&2
+  echo "No files were changed. Reinstall Go, then rerun this uninstall." >&2
   exit 1
 fi
 
@@ -734,9 +713,7 @@ fi
 if [ -n "$wezterm_config" ]; then
   set -- "$@" --wezterm-config "$(to_native_path "$wezterm_config")"
 fi
-if [ "$purge_source" = true ]; then
-  set -- "$@" --purge-source --source-purge-receipt "$source_purge_receipt_native"
-fi
+set -- "$@" --source-purge-receipt "$source_purge_receipt_native"
 
 shell_quote() {
   printf "'"
@@ -764,7 +741,7 @@ print_source_recovery_retry() {
   fi
   printf ' ' >&2
   shell_quote "$driver" >&2
-  printf ' --purge-source --yes' >&2
+  printf ' --yes' >&2
   if [ -n "$explicit_bin" ]; then
     printf ' --binary ' >&2
     shell_quote "$explicit_bin" >&2
@@ -784,29 +761,17 @@ cat <<EOF
 sshpic Windows uninstall plan:
   - restore only a validated, manifest-owned WezTerm integration
   - remove only artifacts validated as sshpic-owned by the helper
-EOF
-if [ "$purge_source" = true ]; then
-  cat <<EOF
   - permanently remove the exact source checkout last: $repo_native
 
 The source checkout is clean, has upstream $source_upstream, and has no unpushed commits.
 EOF
-else
-  cat <<EOF
-  - keep the source checkout: $repo_root
-
-Go, WezTerm, SSH configuration, remote images, and the source checkout will not be removed.
-EOF
-fi
 
 if [ "$dry_run" = true ]; then
   if ! "$helper" "$@" --dry-run; then
     echo "Uninstall dry-run stopped safely; no installed files were changed. The source checkout was kept." >&2
     exit 1
   fi
-  if [ "$purge_source" = true ]; then
-    echo "DRY RUN: source checkout would be removed last: $repo_native"
-  fi
+  echo "DRY RUN: source checkout would be removed last: $repo_native"
   if ! finish_runtime_cleanup false; then
     echo "Uninstall dry-run validation succeeded, but its isolated runtime cleanup failed." >&2
     exit 1
@@ -833,13 +798,13 @@ if [ "$assume_yes" != true ]; then
         echo "Cancellation succeeded, but isolated runtime cleanup failed." >&2
         exit 1
       fi
-      exit 0
+      exit 130
       ;;
   esac
 fi
 
 if ! "$helper" "$@"; then
-  if [ "$purge_source" = true ] && [ ! -e "$repo_root" ] && [ ! -L "$repo_root" ]; then
+  if [ ! -e "$repo_root" ] && [ ! -L "$repo_root" ]; then
     recovery_receipt_shell="$source_purge_receipt_native"
     if command -v cygpath >/dev/null 2>&1; then
       recovery_receipt_shell="$(cygpath -u "$source_purge_receipt_native" 2>/dev/null || printf '%s' "$source_purge_receipt_native")"
@@ -861,19 +826,6 @@ if ! "$helper" "$@"; then
     echo "Uninstall stopped safely; review the error above. The source checkout was kept." >&2
   fi
   exit 1
-fi
-
-if [ "$purge_source" != true ]; then
-  if [ ! -e "$repo_root/.git" ] || [ ! -e "$repo_root/go.mod" ]; then
-    echo "source checkout verification failed unexpectedly: $repo_root" >&2
-    exit 1
-  fi
-  if ! finish_runtime_cleanup true; then
-    echo "Installed state was removed, but isolated runtime cleanup did not complete." >&2
-    exit 1
-  fi
-  echo "You can reinstall later by running ./install.sh from this checkout."
-  exit 0
 fi
 
 if [ -e "$repo_root" ] || [ -L "$repo_root" ]; then

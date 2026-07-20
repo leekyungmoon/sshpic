@@ -90,7 +90,7 @@ func newUninstallFixture(t *testing.T, binaryInSource bool) uninstallFixture {
 	}
 }
 
-func TestUninstallRestoresExactConfigRemovesManifestBinaryAndKeepsCheckout(t *testing.T) {
+func TestUninstallRestoresExactConfigAndBinaryBeforeSourceFinalizer(t *testing.T) {
 	fixture := newUninstallFixture(t, false)
 	headBefore, err := os.ReadFile(filepath.Join(fixture.sourceRoot, ".git", "HEAD"))
 	if err != nil {
@@ -126,19 +126,6 @@ func TestUninstallRestoresExactConfigRemovesManifestBinaryAndKeepsCheckout(t *te
 		t.Fatalf("source checkout changed: err=%v before=%q after=%q", err, headBefore, headAfter)
 	}
 
-	writeTestFile(t, fixture.binaryPath, []byte("reinstalled sshpic"))
-	reinstalled, err := Install(context.Background(), InstallOptions{
-		BinaryPath:      fixture.binaryPath,
-		ConfigPath:      fixture.configPath,
-		WezTermPath:     fixture.wezterm,
-		ConfigValidator: func(context.Context, string, string, []byte) error { return nil },
-	})
-	if err != nil {
-		t.Fatalf("reinstall after uninstall: %v", err)
-	}
-	if reinstalled.AlreadyInstalled || !reinstalled.ConfigPatched {
-		t.Fatalf("reinstall result=%+v", reinstalled)
-	}
 }
 
 func TestUninstallWrongConfigDoesNotDeleteManifestBinary(t *testing.T) {

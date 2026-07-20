@@ -16,7 +16,7 @@ func TestWindowsSourcePurgeRefusesWrongWezTermConfigBeforeLocalCleanup(t *testin
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows uninstall helper is Windows-only")
 	}
-	root := t.TempDir()
+	root := newShortWindowsTempDir(t)
 	homeDir := filepath.Join(root, "home")
 	cacheDir := filepath.Join(root, "cache")
 	tempDir := filepath.Join(root, "temp")
@@ -75,7 +75,6 @@ func TestWindowsSourcePurgeRefusesWrongWezTermConfigBeforeLocalCleanup(t *testin
 		"--wezterm-config", configB,
 		"--uninstall-protocol", "2",
 		"--source-purge-receipt", filepath.Join(cacheDir, sourcePurgeReceiptDir, sourcePurgeReceiptFile),
-		"--purge-source",
 		"--dry-run",
 	}, BuildInfo{}, &stdout, &stderr)
 	if code == 0 || !strings.Contains(stderr.String(), "no owned WezTerm install manifest") {
@@ -107,17 +106,9 @@ func TestWindowsUninstallRefusesLocalCleanupOverlapBeforeMutation(t *testing.T) 
 			homeDir := filepath.Join(root, "home")
 			cacheDir := filepath.Join(root, "cache")
 			tempDir := filepath.Join(root, "temp")
-			sourceRoot := filepath.Join(root, "source")
-			for _, dir := range []string{homeDir, cacheDir, tempDir, filepath.Join(sourceRoot, ".git"), filepath.Join(sourceRoot, "cmd", "sshpic")} {
+			sourceRoot, _ := newSyntheticPurgeRepo(t, true)
+			for _, dir := range []string{homeDir, cacheDir, tempDir} {
 				if err := os.MkdirAll(dir, 0o700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			for path, data := range map[string][]byte{
-				filepath.Join(sourceRoot, "go.mod"):       []byte("module github.com/leekyungmoon/sshpic\n"),
-				filepath.Join(sourceRoot, "uninstall.sh"): []byte("#!/bin/sh\n"),
-			} {
-				if err := os.WriteFile(path, data, 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -160,13 +151,16 @@ func TestWindowsUninstallRefusesLocalCleanupOverlapBeforeMutation(t *testing.T) 
 
 			setTestHome(t, homeDir)
 			t.Setenv("LOCALAPPDATA", cacheDir)
+			writeSettledTestInstallGeneration(t, cacheDir)
 			t.Setenv("TEMP", tempDir)
 			t.Setenv("TMP", tempDir)
 			t.Setenv("SSHPIC_CONFIG", "")
 			t.Setenv("SSHPIC_WEZTERM_EXE", weztermPath)
 			args := []string{
 				"uninstall", "wezterm", "--source-root", sourceRoot,
-				"--wezterm-config", configPath, "--uninstall-protocol", "2", "--dry-run",
+				"--wezterm-config", configPath, "--uninstall-protocol", "2",
+				"--source-purge-receipt", filepath.Join(cacheDir, sourcePurgeReceiptDir, sourcePurgeReceiptFile),
+				"--dry-run",
 			}
 			switch testCase.configTarget {
 			case "binary":
@@ -263,7 +257,6 @@ func TestWindowsSourcePurgeRealCoreLifecycleRemovesInstalledLocalAndSourceState(
 		"--wezterm-config", configPath,
 		"--source-purge-receipt", receiptPath,
 		"--uninstall-protocol", "2",
-		"--purge-source",
 	}, BuildInfo{}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("real core source purge code=%d\nstdout=%s\nstderr=%s", code, stdout.String(), stderr.String())
@@ -287,11 +280,8 @@ func TestWindowsUninstallScriptRemovesFullLocalStateAndPreservesUnrelatedFiles(t
 	}
 	t.Setenv("SSHPIC_WEZTERM_EXE", "")
 	t.Setenv("WEZTERM_CONFIG_FILE", "")
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := t.TempDir()
+	repoRoot, _ := newFullSyntheticPurgeRepo(t)
+	root := newShortWindowsTempDir(t)
 	homeDir := filepath.Join(root, "home")
 	cacheDir := filepath.Join(root, "local app data")
 	tempDir := filepath.Join(root, "temp")
@@ -382,8 +372,8 @@ func TestWindowsUninstallScriptRemovesFullLocalStateAndPreservesUnrelatedFiles(t
 			t.Fatalf("unrelated path changed %s: err=%v data=%q", path, err, data)
 		}
 	}
-	if _, err := os.Stat(repoRoot); err != nil {
-		t.Fatalf("default uninstall removed source checkout: %v", err)
+	if _, err := os.Lstat(repoRoot); !os.IsNotExist(err) {
+		t.Fatalf("single uninstall flow left the source checkout: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(cacheDir, "sshpic-uninstall")); !os.IsNotExist(err) {
 		t.Fatalf("successful uninstall journal remains: %v", err)

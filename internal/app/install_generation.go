@@ -234,40 +234,6 @@ func requireSettledInstallGeneration(expected string) error {
 	return nil
 }
 
-func removeInstallGenerationForSourcePurge(expected string) error {
-	if !validInstallGenerationToken(expected) {
-		return errors.New("source purge receipt has an invalid install generation")
-	}
-	return withInstallGenerationLock(false, func(directory string) error {
-		ledger, err := readInstallGenerationLedgerUnlocked(directory)
-		if err != nil {
-			return err
-		}
-		if ledger.State != installGenerationStateDone || ledger.Token != expected {
-			return errors.New("Windows install generation changed before source purge completion")
-		}
-		path := filepath.Join(directory, installGenerationLedgerFile)
-		info, err := os.Lstat(path)
-		if errors.Is(err, os.ErrNotExist) && expected == installGenerationGenesis {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("Windows install generation ledger has an unsafe type during source purge")
-		}
-		current, err := os.Lstat(path)
-		if err != nil || !os.SameFile(info, current) {
-			return errors.New("Windows install generation ledger identity changed during source purge")
-		}
-		if err := os.Remove(path); err != nil {
-			return err
-		}
-		return nil
-	})
-}
-
 func completeSourcePurgeControlState(expected string, cleanupAuthority func() error) error {
 	if cleanupAuthority == nil || !validInstallGenerationToken(expected) {
 		return errors.New("source purge control-state completion is invalid")
@@ -305,51 +271,6 @@ func completeSourcePurgeControlState(expected string, cleanupAuthority func() er
 		// still-valid receipt authorizes only a completion retry against an
 		// absent (genesis) ledger; no install can cross this critical section.
 		return cleanupAuthority()
-	})
-}
-
-func removeInstallGenerationAfterLocalUninstall() error {
-	expected, err := settledInstallGeneration()
-	if err != nil {
-		return err
-	}
-	return removeInstallGenerationAfterLocalUninstallExpected(expected)
-}
-
-func removeInstallGenerationAfterLocalUninstallExpected(expected string) error {
-	if !validInstallGenerationToken(expected) {
-		return errors.New("Windows uninstall captured an invalid install generation")
-	}
-	return withInstallGenerationLock(false, func(directory string) error {
-		ledger, err := readInstallGenerationLedgerUnlocked(directory)
-		if err != nil {
-			return err
-		}
-		if ledger.State != installGenerationStateDone {
-			return errors.New("a Windows installation is in progress; preserving its generation ledger")
-		}
-		if ledger.Token != expected {
-			return errors.New("Windows install generation changed while uninstall was running; preserving the newer ledger")
-		}
-		receiptPath := filepath.Join(directory, sourcePurgeReceiptFile)
-		if _, err := os.Lstat(receiptPath); err == nil {
-			return errors.New("a source purge receipt is pending; preserving its generation ledger")
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		ledgerPath := filepath.Join(directory, installGenerationLedgerFile)
-		info, err := os.Lstat(ledgerPath)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("Windows install generation ledger has an unsafe type during local uninstall")
-		}
-		current, err := os.Lstat(ledgerPath)
-		if err != nil || !os.SameFile(info, current) {
-			return errors.New("Windows install generation ledger identity changed during local uninstall")
-		}
-		return os.Remove(ledgerPath)
 	})
 }
 
