@@ -98,7 +98,8 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		`"$go_cmd" version`,
 		`"$wezterm_cmd" --version`,
 		`prepare_windows_install_helper`,
-		`temp_root="${TMP:-${TEMP:-${USERPROFILE:-/tmp}}}"`,
+		`helper_bin_dir="$("$go_cmd" env GOBIN)"`,
+		`sshpic-install-helper`,
 		`"$go_cmd" build -o "$install_helper" ./cmd/sshpic`,
 		`$("$go_cmd" env GOEXE)`,
 		`"sshpic install helper ($install_helper)" "$install_helper" version`,
@@ -132,6 +133,9 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 	}
 	if strings.Contains(text, `"$go_cmd" run ./cmd/sshpic`) {
 		t.Fatal("Windows install generation must not execute through a one-shot go run temporary binary")
+	}
+	if strings.Contains(text, `sshpic-install.XXXXXX`) {
+		t.Fatal("Windows install helper must not execute from TEMP where Application Control can block fresh binaries")
 	}
 	if strings.Count(text, "SSHPIC_WINDOWS_INSTALL_VERIFIED") != 1 {
 		t.Fatal("Windows verified marker must have one success-only emission site")

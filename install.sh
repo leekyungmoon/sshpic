@@ -6,7 +6,6 @@ platform="$(uname -s 2>/dev/null || printf 'unknown')"
 kernel_release="$(uname -r 2>/dev/null || printf 'unknown')"
 go_cmd=""
 wezterm_cmd=""
-install_helper_dir=""
 install_helper=""
 windows_tool_probe_attempts=8
 windows_tool_probe_delay=2
@@ -69,24 +68,39 @@ wait_for_windows_tool() {
 }
 
 cleanup_windows_install_helper() {
+  cleanup_status=0
   if [ -n "$install_helper" ] && [ -f "$install_helper" ]; then
-    rm -f -- "$install_helper"
+    if ! rm -f -- "$install_helper"; then
+      cleanup_status=1
+    fi
   fi
-  if [ -n "$install_helper_dir" ] && [ -d "$install_helper_dir" ]; then
-    rmdir -- "$install_helper_dir" 2>/dev/null || true
-  fi
+  return "$cleanup_status"
 }
 
 prepare_windows_install_helper() {
-  # Match Go's Windows os.TempDir order so crash cleanup scans the exact
-  # producer root. TMPDIR is a Unix convention and may point elsewhere in
-  # Git Bash even though the native helper uses the Windows temp directory.
-  temp_root="${TMP:-${TEMP:-${USERPROFILE:-/tmp}}}"
-  if command -v cygpath >/dev/null 2>&1; then
-    temp_root="$(cygpath -u "$temp_root")"
+  # Windows Application Control can reject freshly built executables in TEMP
+  # even when the final Go binary is allowed. Build this short-lived helper
+  # beside the final Go binary, execute it once, and remove it before go install.
+  helper_bin_dir="$("$go_cmd" env GOBIN)"
+  if [ -z "$helper_bin_dir" ]; then
+    helper_bin_dir="$("$go_cmd" env GOPATH)/bin"
   fi
-  install_helper_dir="$(mktemp -d "$temp_root/sshpic-install.XXXXXX")"
-  install_helper="$install_helper_dir/sshpic-install-helper$("$go_cmd" env GOEXE)"
+  if command -v cygpath >/dev/null 2>&1; then
+    helper_bin_dir="$(cygpath -u "$helper_bin_dir")"
+  fi
+  if ! mkdir -p -- "$helper_bin_dir"; then
+    echo "could not create the Go binary directory for the Windows install helper: $helper_bin_dir" >&2
+    exit 1
+  fi
+  install_helper="$helper_bin_dir/sshpic-install-helper$("$go_cmd" env GOEXE)"
+  if [ -L "$install_helper" ] || { [ -e "$install_helper" ] && [ ! -f "$install_helper" ]; }; then
+    echo "refusing unsafe existing Windows install helper path: $install_helper" >&2
+    exit 1
+  fi
+  if [ -f "$install_helper" ] && ! rm -f -- "$install_helper"; then
+    echo "could not remove a stale sshpic Windows install helper: $install_helper" >&2
+    exit 1
+  fi
   trap cleanup_windows_install_helper 0
   trap 'cleanup_windows_install_helper; exit 1' 1 2 15
   "$go_cmd" build -o "$install_helper" ./cmd/sshpic
@@ -256,6 +270,11 @@ if [ -f ./cmd/sshpic/main.go ] && [ -f ./go.mod ]; then
       echo "Windows install generation helper returned an empty token" >&2
       exit 1
     fi
+    if ! cleanup_windows_install_helper; then
+      echo "could not remove the short-lived Windows install helper: $install_helper" >&2
+      exit 1
+    fi
+    install_helper=""
   fi
   "$go_cmd" install ./cmd/sshpic
 else

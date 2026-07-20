@@ -38,6 +38,13 @@ func runUninstallTestHelper() {
 			fmt.Fprintln(os.Stdout, "go version go1.22.12 windows/amd64")
 			os.Exit(0)
 		}
+		if len(os.Args) == 3 && os.Args[1] == "env" {
+			switch os.Args[2] {
+			case "GOBIN", "GOPATH":
+				fmt.Fprintln(os.Stdout, os.Getenv("SSHPIC_TEST_GOBIN"))
+				os.Exit(0)
+			}
+		}
 		if len(os.Args) < 4 || os.Args[1] != "build" || os.Args[2] != "-o" {
 			os.Exit(2)
 		}
@@ -101,7 +108,9 @@ func TestWindowsUninstallScriptHasOneSourcePreservingBehavior(t *testing.T) {
 		"uninstall.sh is the private Git Bash implementation",
 		"uninstall wezterm --uninstall-protocol 3 --source-root",
 		"will preserve the source checkout",
-		`temp_root="${TMP:-${TEMP:-${USERPROFILE:-/tmp}}}"`,
+		`bin_dir="$("$go_cmd" env GOBIN)"`,
+		`helper="$bin_dir/sshpic-uninstall-helper.exe"`,
+		`stale_install_helper="$bin_dir/sshpic-install-helper.exe"`,
 		"SSHPIC_WINDOWS_UNINSTALL_VERIFIED",
 	} {
 		if !strings.Contains(text, required) {
@@ -260,6 +269,10 @@ func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, ext
 	if err := os.MkdirAll(tempRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	helperBin := filepath.Join(t.TempDir(), "helper-bin")
+	if err := os.MkdirAll(helperBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	fakeShellBin := windowsPathForGitBash(fakeBin)
 	commandArgs := []string{
@@ -281,6 +294,7 @@ func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, ext
 		"TMP="+windowsPathForGitBash(tempRoot),
 		"TEMP="+windowsPathForGitBash(tempRoot),
 		"TMPDIR="+windowsPathForGitBash(filepath.Join(t.TempDir(), "must-not-be-used")),
+		"SSHPIC_TEST_GOBIN="+helperBin,
 	)
 	for key, value := range extraEnv {
 		if key == "SSHPIC_UNINSTALL_WRAPPER" {

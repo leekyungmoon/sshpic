@@ -86,17 +86,11 @@ to_native_path() {
   fi
 }
 
-helper_dir=""
 helper=""
 cleanup() {
   cleanup_status=0
   if [ -n "$helper" ] && [ -f "$helper" ]; then
     if ! rm -f -- "$helper"; then
-      cleanup_status=1
-    fi
-  fi
-  if [ -n "$helper_dir" ] && [ -d "$helper_dir" ]; then
-    if ! rmdir -- "$helper_dir" 2>/dev/null; then
       cleanup_status=1
     fi
   fi
@@ -107,14 +101,34 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Match Go's Windows os.TempDir order. The helper's local cleanup therefore
-# scans the same root that owns current and crash-left helper directories.
-temp_root="${TMP:-${TEMP:-${USERPROFILE:-/tmp}}}"
-if command -v cygpath >/dev/null 2>&1; then
-  temp_root="$(cygpath -u "$temp_root")"
+bin_dir="$("$go_cmd" env GOBIN)"
+if [ -z "$bin_dir" ]; then
+  bin_dir="$("$go_cmd" env GOPATH)/bin"
 fi
-helper_dir="$(mktemp -d "$temp_root/sshpic-uninstall.XXXXXX")"
-helper="$helper_dir/sshpic-uninstall-helper.exe"
+if command -v cygpath >/dev/null 2>&1; then
+  bin_dir="$(cygpath -u "$bin_dir")"
+fi
+if ! mkdir -p -- "$bin_dir"; then
+  echo "Could not create the Go binary directory for the isolated uninstall helper: $bin_dir" >&2
+  exit 1
+fi
+helper="$bin_dir/sshpic-uninstall-helper.exe"
+stale_install_helper="$bin_dir/sshpic-install-helper.exe"
+
+remove_owned_helper() {
+  owned_helper="$1"
+  if [ -L "$owned_helper" ] || { [ -e "$owned_helper" ] && [ ! -f "$owned_helper" ]; }; then
+    echo "refusing unsafe sshpic helper path: $owned_helper" >&2
+    return 1
+  fi
+  if [ -f "$owned_helper" ] && ! rm -f -- "$owned_helper"; then
+    echo "could not remove sshpic helper: $owned_helper" >&2
+    return 1
+  fi
+}
+
+remove_owned_helper "$helper"
+remove_owned_helper "$stale_install_helper"
 helper_native="$(to_native_path "$helper")"
 
 if ! (CDPATH= cd -P "$repo_root" && "$go_cmd" build -o "$helper_native" ./cmd/sshpic); then
@@ -164,10 +178,14 @@ done
 
 if ! cleanup; then
   echo "Installed sshpic state was removed, but the temporary uninstall helper could not be deleted." >&2
-  echo "Close processes using $helper and remove its private directory: $helper_dir" >&2
+  echo "Close processes using it and remove the private helper file: $helper" >&2
   exit 1
 fi
 helper=""
-helper_dir=""
+
+if [ -e "$stale_install_helper" ] || [ -L "$stale_install_helper" ]; then
+  echo "Uninstall removed installed state, but the stale Windows install helper remains: $stale_install_helper" >&2
+  exit 1
+fi
 
 echo "SSHPIC_WINDOWS_UNINSTALL_VERIFIED"
