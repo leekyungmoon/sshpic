@@ -15,8 +15,6 @@ bin_dir=""
 bin=""
 windows_tool_probe_attempts=8
 windows_tool_probe_delay=2
-windows_association_flag="--sshpic-windows-file-association"
-windows_association_launch=0
 
 detect_host_os() {
   detected_platform="$1"
@@ -40,101 +38,6 @@ if [ "${1:-}" = "--detect-os" ]; then
   printf '%s\n' "$host_os"
   exit 0
 fi
-
-if [ "${1:-}" = "$windows_association_flag" ]; then
-  windows_association_launch=1
-  shift
-fi
-
-is_windows_file_association_launch() {
-  candidate_host_os="$1"
-  candidate_shell_flags="$2"
-  [ "$candidate_host_os" = "windows" ] || return 1
-  case "$candidate_shell_flags" in
-    *i*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-run_windows_file_association_installer() {
-  candidate_host_os="$1"
-  candidate_shell_flags="$2"
-  shift 2
-  if ! is_windows_file_association_launch "$candidate_host_os" "$candidate_shell_flags"; then
-    return 0
-  fi
-
-  association_script="$0"
-  if command -v cygpath >/dev/null 2>&1; then
-    association_script_unix="$(cygpath -u "$association_script" 2>/dev/null || :)"
-    if [ -n "$association_script_unix" ]; then
-      association_script="$association_script_unix"
-    fi
-  fi
-  case "$association_script" in
-    */*) ;;
-    *) association_script="$(command -v "$association_script" 2>/dev/null || printf '%s' "$association_script")" ;;
-  esac
-  association_dir="$(CDPATH= cd -- "$(dirname -- "$association_script")" && pwd -P)"
-  association_script="$association_dir/$(basename -- "$association_script")"
-  association_bash="$(command -v bash 2>/dev/null || :)"
-  if [ -z "$association_bash" ]; then
-    printf '%s\n' 'sshpic installation failed: Git Bash could not locate bash.' >&2
-    return 69
-  fi
-
-  printf '%s\n' \
-    'sshpic: PowerShell ./install.sh launch detected.' \
-    '' \
-    'Windows opened this installer in Git Bash. Keep this window open until the' \
-    'verified completion message appears. A fresh PowerShell 7 tab will open when' \
-    'installation succeeds; use that new tab for ssh so the profile mapping is loaded.' >&2
-
-  association_status=0
-  if "$association_bash" --noprofile --norc "$association_script" "$windows_association_flag" "$@"; then
-    printf '%s\n' '' 'sshpic installation completed successfully.' >&2
-  else
-    association_status=$?
-    printf '%s\n' '' "sshpic installation failed with exit code $association_status." >&2
-  fi
-
-  if [ -t 0 ]; then
-    printf '\nPress Enter to close this installer window...' >&2
-    IFS= read -r _sshpic_acknowledgement || :
-  fi
-  return "$association_status"
-}
-
-if [ "$windows_association_launch" -eq 0 ] && is_windows_file_association_launch "$host_os" "$-"; then
-  if run_windows_file_association_installer "$host_os" "$-" "$@"; then
-    exit 0
-  else
-    association_status=$?
-    exit "$association_status"
-  fi
-fi
-
-open_windows_ready_powershell() {
-  [ "$windows_association_launch" -eq 1 ] || return 0
-  if [ -z "${WT_SESSION:-}" ]; then
-    printf '%s\n' \
-      '' \
-      'Installation is complete. Close the old PowerShell tab and open a new' \
-      'PowerShell 7 tab before running ssh so the managed profile is loaded.' >&2
-    return 0
-  fi
-  wt_command="$(command -v wt.exe 2>/dev/null || :)"
-  if [ -z "$wt_command" ]; then
-    printf '%s\n' 'Installation is complete, but Windows Terminal could not be asked to open a fresh PowerShell 7 tab.' >&2
-    return 0
-  fi
-  if "$wt_command" -w 0 new-tab --title "sshpic ready" pwsh.exe -NoExit -Command \
-    '$c=Get-Command ssh -ErrorAction Stop;if($c.CommandType -ne "Function"){throw "sshpic managed ssh function did not load"};Write-Host "sshpic ready: managed ssh is active; run ssh user@host in this new tab" -ForegroundColor Green' >/dev/null 2>&1; then
-    printf '%s\n' 'Opened a fresh Windows Terminal PowerShell 7 tab with the managed ssh mapping loaded.' >&2
-  else
-    printf '%s\n' 'Installation is complete, but a fresh tab could not be opened automatically; open one before running ssh.' >&2
-  fi
-}
 
 is_windows_shell() {
   [ "$host_os" = "windows" ]
@@ -198,13 +101,13 @@ wait_for_windows_tool() {
     fi
     probe_attempt=$((probe_attempt + 1))
   done
-  printf '%s exists but could not execute from Git Bash after %s attempts (last exit %s).\n' \
+  printf '%s exists but could not execute from Git for Windows sh after %s attempts (last exit %s).\n' \
     "$tool_label" "$windows_tool_probe_attempts" "$probe_status" >&2
   if [ -n "$probe_output" ]; then
     printf 'Last %s error: %s\n' "$tool_label" "$probe_output" >&2
   fi
   echo "Windows Code Integrity may still be applying trust after winget installation." >&2
-  echo 'Close this shell, open a new Git Bash, and rerun ./install.sh; sshpic was not reported as installed.' >&2
+  echo 'Close and reopen PowerShell if needed, then rerun: & "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh' >&2
   return 1
 }
 
@@ -349,7 +252,8 @@ need_go() {
     winget_status=0
     winget.exe install --id GoLang.Go --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
     if ! find_go; then
-      echo "winget finished with exit $winget_status, but Go could not be found; open a new Git Bash and rerun ./install.sh" >&2
+      echo "winget finished with exit $winget_status, but Go could not be found." >&2
+      echo 'Close and reopen PowerShell, then rerun: & "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh' >&2
       exit 1
     fi
     if ! wait_for_windows_tool "Go ($go_cmd)" "$go_cmd" version; then
@@ -398,7 +302,8 @@ install_wezterm_if_needed() {
   winget_status=0
   winget.exe install --id wez.wezterm --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
   if ! find_wezterm; then
-    echo "winget finished with exit $winget_status, but WezTerm could not be found; open a new Git Bash and rerun ./install.sh" >&2
+    echo "winget finished with exit $winget_status, but WezTerm could not be found." >&2
+    echo 'Close and reopen PowerShell, then rerun: & "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh' >&2
     exit 1
   fi
   if ! wait_for_windows_tool "WezTerm ($wezterm_cmd)" "$wezterm_cmd" --version; then
@@ -464,7 +369,8 @@ install_plink_if_needed() {
   winget_status=0
   winget.exe install --id PuTTY.PuTTY --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
   if ! find_plink; then
-    echo "winget finished with exit $winget_status, but Plink could not be found; open a new Git Bash and rerun ./install.sh" >&2
+    echo "winget finished with exit $winget_status, but Plink could not be found." >&2
+    echo 'Close and reopen PowerShell, then rerun: & "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh' >&2
     exit 1
   fi
   if ! wait_for_windows_tool "PuTTY Plink ($plink_cmd)" "$plink_cmd" -V; then
@@ -508,17 +414,14 @@ case "$host_os" in
     cd "$script_dir"
     echo "Detected OS: Windows (Git Bash/MSYS)"
     echo "Installer entry point: ./install.sh"
-    if [ "$windows_association_launch" -eq 1 ]; then
-      echo 'PowerShell file-association launch: running the same install.sh synchronously inside the opened Git Bash window.'
-    else
-      echo 'Running the same install.sh directly in Git Bash.'
-    fi
+    echo 'Running install.sh in the current terminal.'
     ;;
   macos) echo "Detected OS: macOS" ;;
   linux) echo "Detected OS: Linux" ;;
   wsl)
     echo "Detected OS: WSL" >&2
-    echo 'Windows direct-paste installation must run on native Windows, not WSL; open Git Bash and run ./install.sh.' >&2
+    echo 'Windows direct-paste installation must run on native Windows, not WSL.' >&2
+    echo 'From PowerShell, run: & "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh' >&2
     exit 1
     ;;
   *)
@@ -628,10 +531,7 @@ case "$host_os" in
     echo "Enter the server password once, start Codex, focus its input, and press Ctrl+V."
     echo "Native ssh.exe remains the explicit key/agent-authenticated recovery path."
     echo "Expected Codex UI: [Image #1]"
-    if [ -n "${WT_SESSION:-}" ] && [ -z "${WEZTERM_PANE:-}" ]; then
-      echo "This installer was started from Windows Terminal; the old PowerShell tab cannot load a profile change retroactively."
-    fi
-    open_windows_ready_powershell
+    echo "Open a fresh PowerShell 7 tab after this command returns; an already-running shell cannot reload a profile change retroactively."
     echo "SSHPIC_WINDOWS_INSTALL_VERIFIED"
     ;;
 esac

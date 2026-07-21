@@ -1,71 +1,11 @@
 #!/usr/bin/env sh
 set -eu
 
-windows_uninstall_association_flag="--sshpic-windows-file-association"
-windows_uninstall_association_launch=0
-
-if [ "${1:-}" = "$windows_uninstall_association_flag" ]; then
-  windows_uninstall_association_launch=1
-  shift
-fi
-
-is_windows_file_association_launch() {
-  case "$(uname -s 2>/dev/null || printf unknown):$-" in
-    MINGW*i*|MSYS*i*|CYGWIN*i*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-run_windows_file_association_uninstaller() {
-  association_script="$0"
-  if command -v cygpath >/dev/null 2>&1; then
-    association_script_unix="$(cygpath -u "$association_script" 2>/dev/null || :)"
-    if [ -n "$association_script_unix" ]; then
-      association_script="$association_script_unix"
-    fi
-  fi
-  case "$association_script" in
-    */*) ;;
-    *) association_script="$(command -v "$association_script" 2>/dev/null || printf '%s' "$association_script")" ;;
-  esac
-  association_dir="$(CDPATH= cd -- "$(dirname -- "$association_script")" && pwd -P)"
-  association_script="$association_dir/$(basename -- "$association_script")"
-  association_bash="$(command -v bash 2>/dev/null || :)"
-  if [ -z "$association_bash" ]; then
-    echo "sshpic uninstall failed: Git Bash could not locate bash." >&2
-    return 69
-  fi
-  printf '%s\n' \
-    'sshpic: PowerShell ./uninstall.sh launch detected.' \
-    '' \
-    'Windows opened the one uninstaller in Git Bash. Keep this window open until' \
-    'SSHPIC_WINDOWS_UNINSTALL_VERIFIED appears.' >&2
-  association_status=0
-  if "$association_bash" --noprofile --norc "$association_script" "$windows_uninstall_association_flag" "$@"; then
-    printf '%s\n' '' 'sshpic uninstall completed successfully.' >&2
-  else
-    association_status=$?
-    printf '%s\n' '' "sshpic uninstall failed with exit code $association_status." >&2
-  fi
-  if [ -t 0 ]; then
-    printf '\nPress Enter to close this uninstaller window...' >&2
-    IFS= read -r _sshpic_acknowledgement || :
-  fi
-  return "$association_status"
-}
-
-if [ "$windows_uninstall_association_launch" -eq 0 ] && is_windows_file_association_launch; then
-  if run_windows_file_association_uninstaller "$@"; then
-    exit 0
-  else
-    association_status=$?
-    exit "$association_status"
-  fi
-fi
-
 usage() {
   cat <<'EOF'
-Usage: ./uninstall.sh (from the cloned checkout)
+Usage: & "$env:ProgramFiles\Git\bin\sh.exe" ./uninstall.sh
+
+Run this command from PowerShell in the cloned checkout.
 
 Removes the Windows sshpic installation. This removes the managed PowerShell
 SSH command and PuTTY sessions, restores the manifest-owned WezTerm
@@ -85,7 +25,8 @@ platform="$(uname -s 2>/dev/null || printf 'unknown')"
 case "$platform" in
   MINGW*|MSYS*|CYGWIN*) ;;
   *)
-    echo "This uninstaller is for the Windows WezTerm installation and must run from Git Bash." >&2
+    echo "This uninstaller is for native Windows and must run through Git for Windows sh." >&2
+    echo 'From PowerShell, run: & "$env:ProgramFiles\Git\bin\sh.exe" ./uninstall.sh' >&2
     echo "No files were changed." >&2
     exit 1
     ;;
@@ -129,7 +70,7 @@ find_go() {
 
 if ! find_go; then
   echo "Go is required to build a separate uninstall helper from this checkout." >&2
-  echo "No installed files were changed. Install Go and rerun ./uninstall.sh from Git Bash." >&2
+  echo "No installed files were changed. Install Go, then rerun the supported PowerShell uninstall command." >&2
   exit 1
 fi
 
@@ -275,20 +216,20 @@ fi
 repo_native="$(to_native_path "$repo_root")"
 if ! "$helper" internal-remove-powershell-ssh-wrapper; then
   echo "The managed PowerShell ssh command mapping was not removed; no other installed state was changed." >&2
-  echo "Review the profile collision above, then rerun ./uninstall.sh from Git Bash." >&2
+  echo "Review the profile collision above, then rerun the supported PowerShell uninstall command." >&2
   echo "The source checkout was preserved." >&2
   exit 1
 fi
 
 if ! "$helper" uninstall wezterm --uninstall-protocol 3 --source-root "$repo_native"; then
-  echo "Uninstall did not complete; review the error above and rerun ./uninstall.sh from Git Bash." >&2
+  echo "Uninstall did not complete; review the error above and rerun the supported PowerShell uninstall command." >&2
   echo "The source checkout was preserved." >&2
   exit 1
 fi
 
 if ! "$helper" internal-remove-putty-sessions; then
   echo "The terminal integration and binary were removed, but the sshpic-owned PuTTY sessions remain." >&2
-  echo "Run ./install.sh once from Git Bash, then rerun ./uninstall.sh to finish removing that exact owned state." >&2
+  echo "Run the supported PowerShell install command once, then rerun the supported uninstall command to remove that exact owned state." >&2
   exit 1
 fi
 

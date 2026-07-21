@@ -104,6 +104,8 @@ func TestWindowsUninstallScriptHasOneSourcePreservingBehavior(t *testing.T) {
 	for _, forbidden := range []string{
 		"--dry-run", "--yes", "--binary", "--config", "--wezterm-config",
 		"--purge-source", "source-purge-receipt", "FinalizeSource", "git status",
+		"--sshpic-windows-file-association", "run_windows_file_association_uninstaller",
+		"PowerShell ./uninstall.sh launch detected", "Press Enter to close this uninstaller window",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("uninstall.sh still exposes obsolete behavior %q", forbidden)
@@ -111,10 +113,8 @@ func TestWindowsUninstallScriptHasOneSourcePreservingBehavior(t *testing.T) {
 	}
 	for _, required := range []string{
 		"uninstall has one behavior and accepts no options",
-		"Usage: ./uninstall.sh (from the cloned checkout)",
-		"PowerShell ./uninstall.sh launch detected",
-		`"$association_bash" --noprofile --norc "$association_script" "$windows_uninstall_association_flag" "$@"`,
-		`association_script_unix="$(cygpath -u "$association_script"`,
+		`Usage: & "$env:ProgramFiles\Git\bin\sh.exe" ./uninstall.sh`,
+		"Run this command from PowerShell in the cloned checkout.",
 		"internal-remove-powershell-ssh-wrapper",
 		"uninstall wezterm --uninstall-protocol 3 --source-root",
 		"internal-remove-putty-sessions",
@@ -129,52 +129,6 @@ func TestWindowsUninstallScriptHasOneSourcePreservingBehavior(t *testing.T) {
 		if !strings.Contains(text, required) {
 			t.Fatalf("uninstall.sh is missing %q", required)
 		}
-	}
-}
-
-func TestWindowsUninstallerAssociationRelaunchPropagatesStatus(t *testing.T) {
-	shell := installTestShell()
-	if shell == "" {
-		t.Skip("POSIX shell is unavailable")
-	}
-	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	text := readRepoFile(t, "uninstall.sh")
-	functionSource := installTestShellFunction(text, "run_windows_file_association_uninstaller")
-	invocationLog := filepath.Join(t.TempDir(), "uninstall-association-invocation")
-	script := functionSource + `
-windows_uninstall_association_flag=--sshpic-windows-file-association
-invocation_log=$1
-bash() {
-  printf '%s\n' "$*" >"$invocation_log"
-  case "$*" in
-    *"--sshpic-windows-file-association --unknown-option"*) return 43 ;;
-    *) return 99 ;;
-  esac
-}
-run_windows_file_association_uninstaller --unknown-option
-`
-	uninstallPath, err := filepath.Abs(filepath.Join(repoRoot, "uninstall.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(shell, "-c", script, uninstallPath, invocationLog)
-	out, runErr := cmd.CombinedOutput()
-	exitErr, ok := runErr.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 43 {
-		t.Fatalf("uninstall association child exit=%v want 43\n%s", runErr, out)
-	}
-	for _, want := range []string{"PowerShell ./uninstall.sh launch detected", "uninstall failed with exit code 43"} {
-		if !strings.Contains(string(out), want) {
-			t.Fatalf("uninstall association output missing %q:\n%s", want, out)
-		}
-	}
-	invocation, err := os.ReadFile(invocationLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantInvocation := "--noprofile --norc " + windowsPathForGitBash(uninstallPath) + " --sshpic-windows-file-association --unknown-option"
-	if got := strings.TrimSpace(string(invocation)); got != wantInvocation {
-		t.Fatalf("uninstall association relaunch=%q want %q", got, wantInvocation)
 	}
 }
 
@@ -303,7 +257,7 @@ func TestWindowsUninstallScriptRejectsNonWindowsBeforeBuild(t *testing.T) {
 		"SSHPIC_TEST_UNAME":         "Darwin",
 		"SSHPIC_TEST_UNINSTALL_LOG": logPath,
 	})
-	if result.err == nil || !strings.Contains(result.output, "Windows WezTerm installation") {
+	if result.err == nil || !strings.Contains(result.output, "This uninstaller is for native Windows") {
 		t.Fatalf("non-Windows invocation was not rejected: %v\n%s", result.err, result.output)
 	}
 	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
@@ -324,7 +278,7 @@ type uninstallScriptResult struct {
 
 func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, extraEnv map[string]string) uninstallScriptResult {
 	t.Helper()
-	bash := windowsGitBash(t)
+	shell := windowsGitSh(t)
 	fakeBin := filepath.Join(t.TempDir(), "fake-bin")
 	if err := os.MkdirAll(fakeBin, 0o700); err != nil {
 		t.Fatal(err)
@@ -348,12 +302,12 @@ func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, ext
 
 	fakeShellBin := windowsPathForGitBash(fakeBin)
 	commandArgs := []string{
-		"--noprofile", "--norc", "-c",
+		"-c",
 		`PATH="$1:$PATH"; export PATH; shift; exec "$@"`,
 		"sshpic-uninstall-test", fakeShellBin, "./uninstall.sh",
 	}
 	commandArgs = append(commandArgs, args...)
-	cmd := exec.Command(bash, commandArgs...)
+	cmd := exec.Command(shell, commandArgs...)
 	cmd.Dir = repoRoot
 	env := append([]string{}, os.Environ()...)
 	env = append(env,

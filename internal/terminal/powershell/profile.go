@@ -23,15 +23,16 @@ import (
 )
 
 const (
-	beginMarker        = "# BEGIN sshpic managed password-SSH command"
-	endMarker          = "# END sshpic managed password-SSH command"
-	versionMarker      = "# sshpic-managed-version: 2"
-	priorVersionMarker = "# sshpic-managed-version: 1"
-	functionMarker     = "# sshpic-managed-function-version: 2"
-	maxProfileSize     = 2 << 20
-	manifestVersion    = 2
-	manifestOwner      = "github.com/leekyungmoon/sshpic:powershell-profile:v2"
-	manifestName       = "powershell-profile-install-v2.json"
+	beginMarker            = "# BEGIN sshpic managed password-SSH command"
+	endMarker              = "# END sshpic managed password-SSH command"
+	versionMarker          = "# sshpic-managed-version: 2"
+	priorVersionMarker     = "# sshpic-managed-version: 1"
+	functionMarker         = "# sshpic-managed-function-version: 2"
+	maxProfileSize         = 2 << 20
+	manifestVersion        = 2
+	manifestOwner          = "github.com/leekyungmoon/sshpic:powershell-profile:v2"
+	manifestName           = "powershell-profile-install-v2.json"
+	powerShellUTF8Preamble = `$sshpicUtf8=[System.Text.UTF8Encoding]::new($false);[Console]::OutputEncoding=$sshpicUtf8;$OutputEncoding=$sshpicUtf8;`
 )
 
 // Result summarizes an operation without exposing profile contents.
@@ -434,7 +435,13 @@ func discoverShellTargets(ctx context.Context, home, binaryRelative string) (she
 		Policy  string `json:"policy"`
 	}
 	output, err := runPowerShell(ctx, pwsh, "", true, `$o=[ordered]@{major=$PSVersionTable.PSVersion.Major;profile=$PROFILE.CurrentUserAllHosts;policy=(Get-ExecutionPolicy).ToString()};[Console]::Out.Write(($o|ConvertTo-Json -Compress))`)
-	if err != nil || json.Unmarshal(output, &info) != nil || info.Major < 7 {
+	if err != nil {
+		return shellTargets{}, errors.New("could not inspect PowerShell 7 profile and execution policy")
+	}
+	if !utf8.Valid(output) {
+		return shellTargets{}, errors.New("PowerShell 7 profile query returned non-UTF-8 output")
+	}
+	if json.Unmarshal(output, &info) != nil || info.Major < 7 {
 		return shellTargets{}, errors.New("could not inspect PowerShell 7 profile and execution policy")
 	}
 	profile, err := validateProfilePath(home, strings.TrimSpace(info.Profile))
@@ -446,7 +453,7 @@ func discoverShellTargets(ctx context.Context, home, binaryRelative string) (she
 		legacyExe := filepath.Join(windir, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 		if _, err := os.Stat(legacyExe); err == nil {
 			out, queryErr := runPowerShell(ctx, legacyExe, "", true, `[Console]::Out.Write($PROFILE.CurrentUserAllHosts)`)
-			if queryErr == nil {
+			if queryErr == nil && utf8.Valid(out) {
 				if legacyProfile, pathErr := validateProfilePath(home, strings.TrimSpace(string(out))); pathErr == nil && !samePath(legacyProfile, profile) {
 					targets.cleanupProfiles = append(targets.cleanupProfiles, legacyProfile)
 				}
@@ -467,8 +474,12 @@ func probeSSHCommand(ctx context.Context, executable, terminalEnvironment string
 	if index < 0 {
 		return commandProbe{}, errors.New("PowerShell 7 command probe produced no result")
 	}
+	payload := output[index+len(marker):]
+	if !utf8.Valid(payload) {
+		return commandProbe{}, errors.New("PowerShell 7 command probe returned non-UTF-8 output")
+	}
 	var probe commandProbe
-	if err := json.Unmarshal(output[index+len(marker):], &probe); err != nil {
+	if err := json.Unmarshal(payload, &probe); err != nil {
 		return commandProbe{}, errors.New("PowerShell 7 command probe was invalid")
 	}
 	return probe, nil
@@ -481,13 +492,17 @@ func runPowerShell(ctx context.Context, executable, terminalEnvironment string, 
 	if noProfile {
 		args = append(args, "-NoProfile")
 	}
-	args = append(args, "-NonInteractive", "-Command", script)
+	args = append(args, "-NonInteractive", "-Command", powerShellScript(script))
 	cmd := exec.CommandContext(queryCtx, executable, args...)
 	cmd.Env = filteredEnvironment("WEZTERM_PANE", "WT_SESSION")
 	if terminalEnvironment != "" {
 		cmd.Env = append(cmd.Env, terminalEnvironment+"=sshpic-managed-verification")
 	}
 	return cmd.Output()
+}
+
+func powerShellScript(script string) string {
+	return powerShellUTF8Preamble + script
 }
 
 func filteredEnvironment(names ...string) []string {

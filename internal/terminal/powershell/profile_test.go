@@ -4,10 +4,42 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
+
+func TestPowerShellScriptForcesUTF8BeforePayload(t *testing.T) {
+	payload := `[Console]::Out.Write('ドキュメント')`
+	script := powerShellScript(payload)
+	if !strings.HasPrefix(script, powerShellUTF8Preamble) {
+		t.Fatalf("PowerShell script does not start with the UTF-8 preamble: %q", script)
+	}
+	if !strings.HasSuffix(script, payload) {
+		t.Fatalf("PowerShell payload changed: %q", script)
+	}
+}
+
+func TestRunPowerShellReturnsLocalizedOutputAsUTF8(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell encoding integration test is Windows-only")
+	}
+	pwsh, err := exec.LookPath("pwsh.exe")
+	if err != nil {
+		t.Skip("PowerShell 7 is not installed")
+	}
+	const want = "OneDrive\\ドキュメント\\PowerShell\\profile.ps1"
+	out, err := runPowerShell(context.Background(), pwsh, "", true, `[Console]::Out.Write('`+want+`')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.Valid(out) || string(out) != want {
+		t.Fatalf("localized PowerShell output=%q validUTF8=%v, want %q", out, utf8.Valid(out), want)
+	}
+}
 
 func TestManagedBlockInstallUpgradeAndRemove(t *testing.T) {
 	desired := testManagedBlock(t, filepath.Join("go", "bin", "sshpic.exe"))
