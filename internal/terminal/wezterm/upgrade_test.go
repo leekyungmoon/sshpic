@@ -30,7 +30,7 @@ func TestPriorPushedLuaIntegrationSourceGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantSHA256 = "cea8ae1b97010dc7b93477aa0824f82e289ab45c8f2cc5bedb795b4dbfac3e21"
+	const wantSHA256 = "fdbdfd82a93285e2627ec6729532df9c9b2404385a33eab224b4539b763ffcb1"
 	if got := sha256Hex([]byte(source)); got != wantSHA256 {
 		t.Fatalf("prior pushed Lua SHA-256=%s", got)
 	}

@@ -18,8 +18,10 @@ import (
 	"github.com/leekyungmoon/sshpic/internal/paste"
 	"github.com/leekyungmoon/sshpic/internal/pathfmt"
 	"github.com/leekyungmoon/sshpic/internal/provider"
+	"github.com/leekyungmoon/sshpic/internal/putty"
 	"github.com/leekyungmoon/sshpic/internal/terminal/dispatch"
 	"github.com/leekyungmoon/sshpic/internal/terminal/iterm2"
+	"github.com/leekyungmoon/sshpic/internal/terminal/powershell"
 	"github.com/leekyungmoon/sshpic/internal/terminal/terminalapp"
 	"github.com/leekyungmoon/sshpic/internal/terminal/wezterm"
 	localuninstall "github.com/leekyungmoon/sshpic/internal/uninstall"
@@ -40,8 +42,21 @@ type parsedArgs struct {
 
 var installWezTermForCommand = wezterm.Install
 var uninstallWezTermForCommand = wezterm.Uninstall
+var resolvePlinkForCommand = putty.ResolvePlink
+var runPuttyInteractiveForCommand = putty.RunInteractive
+var runPuttyInteractiveWithPasteForCommand = putty.RunInteractiveWithPaste
+var provisionPuttySessionsForCommand = putty.ProvisionManagedSessions
+var verifyPuttySessionsForCommand = putty.VerifyManagedSessions
+var installPowerShellSSHWrapperForCommand = powershell.Install
+var preflightPowerShellSSHWrapperForCommand = powershell.Preflight
 
 func Run(args []string, build BuildInfo, stdout, stderr io.Writer) int {
+	// Preserve SSH argv exactly as the user supplied it. The generic sshpic
+	// parser intentionally understands a different flag grammar and must not
+	// reinterpret connection options or a destination.
+	if len(args) > 0 && args[0] == "ssh" {
+		return runPuttySSH(args[1:], stderr)
+	}
 	pa, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -70,6 +85,18 @@ func Run(args []string, build BuildInfo, stdout, stderr io.Writer) int {
 		return runInstall(pa, stdout, stderr)
 	case "internal-begin-windows-install":
 		return runBeginWindowsInstall(pa, stdout, stderr)
+	case "internal-provision-putty-sessions":
+		return runProvisionPuttySessions(stdout, stderr)
+	case "internal-remove-putty-sessions":
+		return runRemovePuttySessions(stdout, stderr)
+	case "internal-install-powershell-ssh-wrapper":
+		return runInstallPowerShellSSHWrapper(ctx, stdout, stderr)
+	case "internal-preflight-powershell-ssh-wrapper":
+		return runPreflightPowerShellSSHWrapper(ctx, stdout, stderr)
+	case "internal-verify-powershell-ssh-wrapper":
+		return runVerifyPowerShellSSHWrapper(ctx, stdout, stderr)
+	case "internal-remove-powershell-ssh-wrapper":
+		return runRemovePowerShellSSHWrapper(ctx, stdout, stderr)
 	case "doctor":
 		return runDoctor(pa, stdout, stderr)
 	case "restore":
@@ -94,6 +121,185 @@ func Run(args []string, build BuildInfo, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unknown command %q\n", cmd)
 		usage(stderr)
 		return 2
+	}
+}
+
+func runProvisionPuttySessions(stdout, stderr io.Writer) int {
+	if runtime.GOOS != "windows" {
+		fmt.Fprintln(stderr, "managed PuTTY sessions are supported only on Windows")
+		return 1
+	}
+	plinkPath, err := resolvePlinkForCommand(os.Getenv("SSHPIC_PLINK_EXE"))
+	if err != nil {
+		fmt.Fprintln(stderr, "could not resolve PuTTY Plink")
+		return 1
+	}
+	if err := provisionPuttySessionsForCommand(plinkPath); err != nil {
+		fmt.Fprintf(stderr, "could not provision managed PuTTY sessions: %v\n", err)
+		return 1
+	}
+	if err := verifyPuttySessionsForCommand(plinkPath); err != nil {
+		fmt.Fprintf(stderr, "managed PuTTY session verification failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "managed PuTTY password sessions: ready")
+	return 0
+}
+
+func runRemovePuttySessions(stdout, stderr io.Writer) int {
+	if runtime.GOOS != "windows" {
+		fmt.Fprintln(stderr, "managed PuTTY sessions are supported only on Windows")
+		return 1
+	}
+	if err := putty.RemoveManagedSessions(); err != nil {
+		fmt.Fprintf(stderr, "could not remove managed PuTTY sessions: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "managed PuTTY password sessions: removed")
+	return 0
+}
+
+func runInstallPowerShellSSHWrapper(ctx context.Context, stdout, stderr io.Writer) int {
+	if runtime.GOOS != "windows" {
+		fmt.Fprintln(stderr, "managed PowerShell SSH mapping is supported only on Windows")
+		return 1
+	}
+	plinkPath, err := resolvePlinkForCommand(os.Getenv("SSHPIC_PLINK_EXE"))
+	if err != nil {
+		fmt.Fprintln(stderr, "could not install managed PowerShell SSH mapping: could not resolve installer-verified PuTTY Plink")
+		return 1
+	}
+	result, err := installPowerShellSSHWrapperForCommand(ctx, os.Getenv("SSHPIC_EXE"), plinkPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "could not install managed PowerShell SSH mapping: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "managed PowerShell password SSH mapping: ready (%d profile(s), %d changed)\n", len(result.Profiles), result.Changed)
+	return 0
+}
+
+func runPreflightPowerShellSSHWrapper(ctx context.Context, stdout, stderr io.Writer) int {
+	if runtime.GOOS != "windows" {
+		fmt.Fprintln(stderr, "managed PowerShell SSH mapping is supported only on Windows")
+		return 1
+	}
+	plinkPath, err := resolvePlinkForCommand(os.Getenv("SSHPIC_PLINK_EXE"))
+	if err != nil {
+		fmt.Fprintln(stderr, "managed PowerShell SSH mapping preflight failed: could not resolve installer-verified PuTTY Plink")
+		return 1
+	}
+	result, err := preflightPowerShellSSHWrapperForCommand(ctx, os.Getenv("SSHPIC_EXE"), plinkPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "managed PowerShell SSH mapping preflight failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "managed PowerShell password SSH mapping: preflight passed (%d profile(s))\n", len(result.Profiles))
+	return 0
+}
+
+func runVerifyPowerShellSSHWrapper(ctx context.Context, stdout, stderr io.Writer) int {
+	if runtime.GOOS != "windows" {
+		fmt.Fprintln(stderr, "managed PowerShell SSH mapping is supported only on Windows")
+		return 1
+	}
+	result, err := powershell.Verify(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "managed PowerShell SSH mapping verification failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "managed PowerShell password SSH mapping: verified (%d profile(s))\n", len(result.Profiles))
+	return 0
+}
+
+func runRemovePowerShellSSHWrapper(ctx context.Context, stdout, stderr io.Writer) int {
+	if runtime.GOOS != "windows" {
+		fmt.Fprintln(stderr, "managed PowerShell SSH mapping is supported only on Windows")
+		return 1
+	}
+	result, err := powershell.Remove(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "could not remove managed PowerShell SSH mapping: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "managed PowerShell password SSH mapping: removed (%d profile(s), %d changed)\n", len(result.Profiles), result.Changed)
+	return 0
+}
+
+func runPuttySSH(args []string, stderr io.Writer) int {
+	invocation, err := putty.ParseInvocation(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "sshpic ssh: %v\n", err)
+		fmt.Fprintln(stderr, "usage: sshpic ssh [-4|-6] [-C] [-v] [-p port] (user@host | -l user host)")
+		return 2
+	}
+	plinkPath, err := resolvePlinkForCommand(os.Getenv("SSHPIC_PLINK_EXE"))
+	if err != nil {
+		fmt.Fprintf(stderr, "sshpic ssh: %v\n", err)
+		return 1
+	}
+	ctx := context.Background()
+	var runErr error
+	if isWindowsTerminalSession() {
+		runErr = runPuttyInteractiveWithPasteForCommand(ctx, plinkPath, invocation, windowsTerminalEmptyPasteHandler(plinkPath, invocation))
+	} else {
+		runErr = runPuttyInteractiveForCommand(ctx, plinkPath, invocation)
+	}
+	if runErr != nil {
+		fmt.Fprintf(stderr, "sshpic ssh: %v\n", runErr)
+		return 1
+	}
+	return 0
+}
+
+func isWindowsTerminalSession() bool {
+	return runtime.GOOS == "windows" &&
+		strings.TrimSpace(os.Getenv("WT_SESSION")) != "" &&
+		strings.TrimSpace(os.Getenv("WEZTERM_PANE")) == ""
+}
+
+// windowsTerminalEmptyPasteHandler converts only Windows Terminal's empty
+// bracketed-paste image signal. The existing WezTerm dispatcher remains the
+// single policy implementation for clipboard detection, private remote-path
+// selection, shared-SFTP upload, SHA verification, and terminal-safe payloads.
+func windowsTerminalEmptyPasteHandler(plinkPath string, invocation putty.Invocation) putty.EmptyPasteHandler {
+	return func(parent context.Context) (string, error) {
+		ctx, cancel := context.WithTimeout(parent, 25*time.Second)
+		defer cancel()
+
+		cfg, _, err := config.Load(config.Overrides{})
+		if err != nil {
+			appendIntegrationLog("windows terminal paste config load failed: " + err.Error())
+			return "", err
+		}
+		args, err := putty.BuildInteractiveArgs(invocation)
+		if err != nil {
+			appendIntegrationLog("windows terminal paste invocation validation failed: " + err.Error())
+			return "", err
+		}
+		argv := append([]string{plinkPath}, args...)
+		result := wezterm.BuildDispatchWithDependencies(
+			ctx,
+			cfg,
+			sourceFromConfig(cfg),
+			wezterm.SessionContext{
+				PaneID: "windows-terminal-managed-ssh",
+				Process: wezterm.LocalProcessInfo{
+					Executable: plinkPath,
+					Argv:       argv,
+				},
+			},
+			wezterm.DispatchDependencies{
+				PuttyUploaderForInvocation: func(string, putty.Invocation) (wezterm.PuttySharedUploader, error) {
+					return putty.NewSharedUploader(plinkPath, invocation)
+				},
+				Log: appendIntegrationLog,
+			},
+		)
+		if result.Action == dispatch.ActionInsertRemoteImagePath && result.Payload != "" {
+			return result.Payload, nil
+		}
+		appendIntegrationLog("windows terminal empty paste preserved: " + result.Kind + " " + result.Reason)
+		return "", nil
 	}
 }
 
@@ -309,6 +515,7 @@ func runDoctor(pa parsedArgs, stdout, stderr io.Writer) int {
 		RequireInstalled:  requireInstalled,
 		WezTermConfigPath: pa.Values["wezterm_config"],
 		WezTermPath:       os.Getenv("SSHPIC_WEZTERM_EXE"),
+		PlinkPath:         os.Getenv("SSHPIC_PLINK_EXE"),
 	})
 	fmt.Fprintf(stdout, "config: %s\n", path)
 	for _, check := range checks {
@@ -416,7 +623,10 @@ func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) 
 		fmt.Fprintf(stderr, "cannot begin Windows uninstall while installation state is unsettled: %v\n", err)
 		return 1
 	}
-	configPath, err := config.ResolvePath(config.Overrides{ConfigPath: pa.Values["config"]})
+	// The one-shot uninstaller removes only sshpic's standard installed config.
+	// Do not honor SSHPIC_CONFIG here: an inherited environment variable must
+	// never turn an arbitrary user-selected file into a deletion target.
+	configPath, err := config.DefaultPath()
 	if err != nil {
 		fmt.Fprintf(stderr, "cannot resolve sshpic config for local state cleanup: %v\n", err)
 		return 1
@@ -1033,6 +1243,7 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `sshpic - paste local screenshots into remote SSH terminal agents
 
 Usage:
+  sshpic ssh [-4|-6] [-C] [-v] [-p port] (user@host | -l user host)
   sshpic init [--force]
   sshpic paste [--output=payload|json|text]
   sshpic clip [--debug]

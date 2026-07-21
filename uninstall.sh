@@ -1,12 +1,36 @@
 #!/usr/bin/env sh
 set -eu
 
+is_windows_file_association_launch() {
+  case "$(uname -s 2>/dev/null || printf unknown):$-" in
+    MINGW*i*|MSYS*i*|CYGWIN*i*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if is_windows_file_association_launch; then
+  printf '%s\n' \
+    'sshpic uninstall stopped before making any changes.' \
+    '' \
+    'Run it from an already-open Git Bash window:' \
+    '  ./uninstall.sh' \
+    '' \
+    'From PowerShell, run the same uninstall.sh implementation synchronously:' \
+    '  & "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./uninstall.sh' >&2
+  if [ -t 0 ]; then
+    printf '\nPress Enter to close this uninstaller window...' >&2
+    IFS= read -r _sshpic_acknowledgement || :
+  fi
+  exit 64
+fi
+
 usage() {
   cat <<'EOF'
 Usage: ./uninstall.sh (from Git Bash in the cloned checkout)
 
-Removes the Windows sshpic installation. This restores the manifest-owned
-WezTerm configuration, removes the installed sshpic.exe, and deletes sshpic
+Removes the Windows sshpic installation. This removes the managed PowerShell
+SSH command and PuTTY sessions, restores the manifest-owned WezTerm
+configuration, removes the installed sshpic.exe, and deletes sshpic
 configuration, cache, logs, and local images. The cloned source checkout is
 preserved.
 EOF
@@ -80,10 +104,18 @@ to_native_path() {
 }
 
 helper=""
+helper_owned=0
+helper_lock=""
+helper_lock_owned=0
 cleanup() {
   cleanup_status=0
-  if [ -n "$helper" ] && [ -f "$helper" ]; then
+  if [ "$helper_owned" -eq 1 ] && [ -n "$helper" ] && [ -f "$helper" ]; then
     if ! rm -f -- "$helper"; then
+      cleanup_status=1
+    fi
+  fi
+  if [ "$helper_lock_owned" -eq 1 ] && [ -n "$helper_lock" ] && [ -d "$helper_lock" ]; then
+    if ! rmdir -- "$helper_lock"; then
       cleanup_status=1
     fi
   fi
@@ -101,33 +133,79 @@ fi
 if command -v cygpath >/dev/null 2>&1; then
   bin_dir="$(cygpath -u "$bin_dir")"
 fi
+
+canonical_windows_path() {
+  candidate_path="$1"
+  realpath_cmd="$(command -v realpath 2>/dev/null || :)"
+  if [ -z "$realpath_cmd" ] && [ -x /usr/bin/realpath ]; then
+    realpath_cmd=/usr/bin/realpath
+  fi
+  if [ -z "$realpath_cmd" ]; then
+    echo "Git Bash realpath is required to validate Windows uninstall paths safely." >&2
+    return 1
+  fi
+  candidate_path="$("$realpath_cmd" -m -- "$candidate_path")" || return 1
+  if command -v cygpath >/dev/null 2>&1; then
+    candidate_path="$(cygpath -aw "$candidate_path")" || return 1
+  fi
+  tr_cmd="$(command -v tr 2>/dev/null || :)"
+  if [ -z "$tr_cmd" ] && [ -x /usr/bin/tr ]; then
+    tr_cmd=/usr/bin/tr
+  fi
+  if [ -z "$tr_cmd" ]; then
+    echo "Git Bash tr is required to validate Windows uninstall paths safely." >&2
+    return 1
+  fi
+  candidate_path="$(printf '%s' "$candidate_path" | "$tr_cmd" '\134' '/' | "$tr_cmd" '[:upper:]' '[:lower:]')"
+  while [ "${candidate_path%/}" != "$candidate_path" ]; do
+    candidate_path="${candidate_path%/}"
+  done
+  printf '%s\n' "$candidate_path"
+}
+
+windows_path_is_within() {
+  candidate_root="$(canonical_windows_path "$1")" || return 2
+  candidate_child="$(canonical_windows_path "$2")" || return 2
+  case "$candidate_child" in
+    "$candidate_root"|"$candidate_root"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+overlap_status=0
+windows_path_is_within "$repo_root" "$bin_dir" || overlap_status=$?
+if [ "$overlap_status" -eq 2 ]; then
+  echo "Could not safely compare the Go binary directory with the source checkout. No files were changed." >&2
+  exit 1
+fi
+if [ "$overlap_status" -eq 0 ]; then
+  echo "Refusing uninstall helper creation because GOBIN is inside the source checkout: $bin_dir" >&2
+  echo "Unset GOBIN or set it outside this checkout, then rerun ./uninstall.sh. No files were changed." >&2
+  exit 1
+fi
 if ! mkdir -p -- "$bin_dir"; then
   echo "Could not create the Go binary directory for the isolated uninstall helper: $bin_dir" >&2
   exit 1
 fi
 helper="$bin_dir/sshpic-uninstall-helper.exe"
-stale_install_helper="$bin_dir/sshpic-install-helper.exe"
-
-remove_owned_helper() {
-  owned_helper="$1"
-  if [ -L "$owned_helper" ] || { [ -e "$owned_helper" ] && [ ! -f "$owned_helper" ]; }; then
-    echo "refusing unsafe sshpic helper path: $owned_helper" >&2
-    return 1
-  fi
-  if [ -f "$owned_helper" ] && ! rm -f -- "$owned_helper"; then
-    echo "could not remove sshpic helper: $owned_helper" >&2
-    return 1
-  fi
-}
-
-remove_owned_helper "$helper"
-remove_owned_helper "$stale_install_helper"
+helper_lock="$bin_dir/.sshpic-uninstall-helper.lock"
+if ! mkdir -- "$helper_lock" 2>/dev/null; then
+  echo "Another sshpic uninstaller owns the helper lock: $helper_lock" >&2
+  exit 1
+fi
+helper_lock_owned=1
+if [ -e "$helper" ] || [ -L "$helper" ]; then
+  echo "Refusing to replace an existing uninstall helper path: $helper" >&2
+  echo "Close another sshpic uninstaller if one is running; no existing helper was removed." >&2
+  exit 1
+fi
 helper_native="$(to_native_path "$helper")"
 
 if ! (CDPATH= cd -P "$repo_root" && "$go_cmd" build -o "$helper_native" ./cmd/sshpic); then
   echo "Could not build the isolated uninstall helper; no installed files were changed." >&2
   exit 1
 fi
+helper_owned=1
 
 probe_attempt=1
 probe_status=1
@@ -156,9 +234,22 @@ if [ "$probe_status" -ne 0 ]; then
 fi
 
 repo_native="$(to_native_path "$repo_root")"
+if ! "$helper" internal-remove-powershell-ssh-wrapper; then
+  echo "The managed PowerShell ssh command mapping was not removed; no other installed state was changed." >&2
+  echo "Review the profile collision above, then rerun ./uninstall.sh from Git Bash." >&2
+  echo "The source checkout was preserved." >&2
+  exit 1
+fi
+
 if ! "$helper" uninstall wezterm --uninstall-protocol 3 --source-root "$repo_native"; then
   echo "Uninstall did not complete; review the error above and rerun ./uninstall.sh from Git Bash." >&2
   echo "The source checkout was preserved." >&2
+  exit 1
+fi
+
+if ! "$helper" internal-remove-putty-sessions; then
+  echo "The terminal integration and binary were removed, but the sshpic-owned PuTTY sessions remain." >&2
+  echo "Run ./install.sh once from Git Bash, then rerun ./uninstall.sh to finish removing that exact owned state." >&2
   exit 1
 fi
 
@@ -175,10 +266,8 @@ if ! cleanup; then
   exit 1
 fi
 helper=""
-
-if [ -e "$stale_install_helper" ] || [ -L "$stale_install_helper" ]; then
-  echo "Uninstall removed installed state, but the stale Windows install helper remains: $stale_install_helper" >&2
-  exit 1
-fi
+helper_owned=0
+helper_lock=""
+helper_lock_owned=0
 
 echo "SSHPIC_WINDOWS_UNINSTALL_VERIFIED"

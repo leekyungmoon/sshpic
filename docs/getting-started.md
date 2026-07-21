@@ -10,9 +10,15 @@ cd sshpic
 ./install.sh
 ```
 
-On Windows 10/11, open **Git Bash first**, then run those commands in that already-open Git Bash window. Do not enter `./install.sh` at a standalone PowerShell prompt: a Windows `.sh` file association may start a separate Git Bash process asynchronously and return control before installation finishes. Do not install from WSL. When Go or WezTerm is missing, the installer can use `winget`; if it asks for a rerun after provisioning a dependency, open a new Git Bash window and run `./install.sh` again.
+On Windows 10/11, either open **Git Bash first** and run `./install.sh`, or invoke that same script synchronously from PowerShell with Git for Windows' Bash:
 
-PowerShell remains supported as a runtime shell inside a WezTerm pane after installation. The Git Bash requirement applies to running the installer, not to the shell used for the later SSH/Codex session.
+```powershell
+& "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./install.sh
+```
+
+There is still only one installer implementation: `install.sh`. Do not enter a literal `./install.sh` at a PowerShell prompt. Windows resolves that through a detached `.sh` file association, so the installer detects that launch form and exits before making changes; the PowerShell command above names the interpreter explicitly and waits for its real exit status. Do not install from WSL. When Go, WezTerm, or PuTTY is newly provisioned and the installer asks for a rerun, open a new Git Bash window or repeat the explicit PowerShell command.
+
+PowerShell 7 (`pwsh`) is the managed runtime shell inside Windows Terminal 1.24.10921+ or WezTerm after installation. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the installer only cleans an exact recognized legacy sshpic block there. Wait for the install success message, then open a new PowerShell 7 tab or pane before testing.
 
 ## Install with the one-liner (macOS/Linux)
 
@@ -20,26 +26,27 @@ PowerShell remains supported as a runtime shell inside a WezTerm pane after inst
 curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh | bash
 ```
 
-Windows installation requires the cloned checkout shown above so the installer can publish and verify one coherent WezTerm installation generation.
+Windows installation requires the cloned checkout shown above so the installer can publish and verify one coherent Windows integration generation.
 
 ## Use
 
-### Windows + WezTerm (experimental)
+### Windows Terminal or WezTerm (experimental)
 
-Open WezTerm with a native PowerShell or Git Bash pane:
+Open a new PowerShell 7 (`pwsh`) tab or pane in Windows Terminal 1.24.10921+ or WezTerm:
 
 ```text
-ssh.exe -o BatchMode=yes -o ConnectTimeout=5 my-host true
-ssh.exe my-host
+ssh user@host
 codex
 copy image locally
 Ctrl+V
 expected Codex UI: [Image #1]
 ```
 
-`ssh` is also accepted when it resolves to native Windows `ssh.exe`. PowerShell and Git Bash are supported here only as shells inside a WezTerm pane; a standalone PowerShell window does not load the integration. This is an experimental candidate rather than a public support claim; `wsl ssh`, SSH inside a WSL shell, PuTTY/Plink, and Windows Terminal are outside even that candidate boundary.
+The Windows installer adds one exact managed block to the current user's PowerShell 7 `CurrentUserAllHosts` profile. In a Windows Terminal or WezTerm PowerShell 7 session, `ssh user@host` therefore routes to sshpic's Plink-backed password path. An explicit account is required. `ssh.exe` remains the native key/agent recovery path. In Git Bash or another shell hosted by one of those terminals that does not load the PowerShell 7 profile, use the equivalent `sshpic ssh user@host` command.
 
-Use an SSH `Host` alias that carries the intended user/key settings, set up key/agent authentication, and accept the target host key before testing image paste. A raw IP is discouraged and is usable only if the exact `BatchMode=yes` preflight above succeeds. sshpic uses short non-interactive SSH calls for remote-home lookup, upload, and verification, so it cannot answer an additional password prompt.
+The password path accepts a direct hostname or IP and reuses the one authenticated PuTTY connection for SFTP upload and SHA-256 verification. It does not require or install an SSH key. Saved-session aliases, jump/proxy options, forwarding, remote commands, and password command-line flags are rejected. In Windows Terminal, sshpic leaves Plink output attached to the terminal and connects Plink input through a private pipe so it can recognize Windows Terminal's image-paste signal without changing the usual `Ctrl+V`. Plink reads authentication prompts directly from the console; only after authenticated connection sharing is ready does sshpic begin forwarding terminal input. Windows Terminal 1.24.10921+ sends an empty bracketed-paste frame for an image clipboard, and sshpic replaces that frame with the verified remote image path. Non-empty text frames are forwarded byte-for-byte. If there is no image or image handling fails, sshpic forwards the original empty frame unchanged. Password and keyboard-interactive bytes never enter the sshpic proxy, logs, files, or process arguments.
+
+WezTerm keeps its focused-pane Lua dispatch and native text-paste behavior. Windows PowerShell 5.1, SSH inside WSL, and plain PuTTY terminals remain separate unsupported surfaces. Both native Windows terminal paths remain experimental candidates rather than public support claims until their real interactive evidence gates pass.
 
 The installer runs the equivalent of:
 
@@ -54,7 +61,7 @@ sshpic doctor wezterm
 sshpic restore wezterm
 ```
 
-See [Windows + WezTerm](windows-wezterm.md) for configuration backup behavior, troubleshooting, and the real E2E harness.
+See [Windows Terminal + WezTerm](windows-wezterm.md) for terminal-specific behavior, configuration backup, troubleshooting, and evidence requirements.
 
 ### macOS + iTerm2
 
@@ -69,11 +76,11 @@ Cmd+V
 
 After a successful install, `sshpic` uploads the local image over SSH and inserts the remote path into the focused Codex terminal input.
 
-Current direct-paste setup is terminal-specific: macOS+iTerm2 is supported, while Windows+WezTerm/native `ssh.exe` is an experimental release candidate pending a retained real interactive E2E PASS bundle. Windows Terminal, WSL, macOS Terminal.app, and Ubuntu terminal support remain `TBD` until their own adapters, restore paths, and real E2E evidence pass.
+Current direct-paste setup is terminal-specific: macOS+iTerm2 is supported, while Windows Terminal 1.24.10921+ and WezTerm with PowerShell 7 and PuTTY 0.84+ are experimental password-SSH release candidates pending retained real interactive E2E PASS bundles. WSL, macOS Terminal.app, and Ubuntu terminal support remain `TBD` until their own adapters, restore paths, and real E2E evidence pass.
 
 ## What sshpic does not do
 
-`sshpic` itself uploads the file and pastes its remote path rather than calling a terminal-agent attachment API. In the Windows+WezTerm Codex flow, Codex CLI recognizes that existing PNG path and must render exactly `[Image #1]`; a raw path left visible in Codex is a failed QA result. Other terminal agents may continue to show the path.
+`sshpic` itself uploads the file and pastes its remote path rather than calling a terminal-agent attachment API. In the Windows Terminal and WezTerm Codex flows, Codex CLI recognizes that existing PNG path and must render exactly `[Image #1]`; a raw path left visible in Codex is a failed QA result. Other terminal agents may continue to show the path.
 
 `sshpic` also does not treat a binary, clipboard provider, or generic doctor check as proof of direct-paste support on a terminal not listed as supported. See [platform support](platform-support.md) and [terminal support gates](terminal-support-gates.md).
 
@@ -94,7 +101,7 @@ sshpic doctor ubuntu-terminal
 # Run on macOS in iTerm2. The installer should auto-provision the Python RPC runtime or fail safely with no Cmd+V hook residue.
 scripts/verify-iterm2-e2e.sh
 
-# Run on Windows 10/11 with WezTerm and native ssh.exe. It restores sshpic-owned WezTerm changes by default.
+# Run the existing WezTerm evidence harness on Windows 10/11. It restores sshpic-owned WezTerm changes by default.
 powershell -ExecutionPolicy Bypass -File .\scripts\verify-windows-wezterm-codex-e2e.ps1
 
 # Run only with a real SSH host and disposable sshpic-specific dir.

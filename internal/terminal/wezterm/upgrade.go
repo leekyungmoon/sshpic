@@ -679,9 +679,9 @@ func priorPushedLuaIntegrationSource(opts LuaOptions) (string, error) {
 		return "", err
 	}
 	replacements := [][2]string{
-		{priorLocalCodexCurrent, ""},
-		{priorLocalForwardCurrent, ""},
-		{priorLocalCallbackCurrent, priorLocalCallbackPrevious},
+		{priorPuttyFunctionCurrent, ""},
+		{priorPuttyDiagnosticCurrent, ""},
+		{priorPuttyCallbackCurrent, priorPuttyCallbackPrevious},
 	}
 	for _, replacement := range replacements {
 		if strings.Count(source, replacement[0]) != 1 {
@@ -692,33 +692,49 @@ func priorPushedLuaIntegrationSource(opts LuaOptions) (string, error) {
 	return source, nil
 }
 
-const priorLocalCodexCurrent = `local function is_focused_codex(info)
+const priorPuttyFunctionCurrent = `local function is_focused_plink(info)
   if type(info) ~= 'table' or type(info.executable) ~= 'string' then
     return false
   end
   local executable = basename(info.executable)
-  if executable ~= 'codex' and executable ~= 'codex.exe' then
+  if executable ~= 'plink' and executable ~= 'plink.exe' then
     return false
   end
   if type(info.argv) ~= 'table' or type(info.argv[1]) ~= 'string' then
     return false
   end
   local argv0 = basename(info.argv[1])
-  return argv0 == 'codex' or argv0 == 'codex.exe'
+  if argv0 ~= 'plink' and argv0 ~= 'plink.exe' then
+    return false
+  end
+  return info.argv[2] == '-load'
+    and info.argv[3] == 'sshpic-managed-password-upstream-v1'
+    and info.argv[4] == '-ssh'
+    and info.argv[5] == '-share'
+    and info.argv[6] == '-t'
+    and info.argv[7] == '-x'
+    and info.argv[8] == '-a'
+    and info.argv[9] == '-noagent'
+    and info.argv[10] == '-no-trivial-auth'
 end
 
 `
 
-const priorLocalForwardCurrent = `      if result.action == 'forward_paste_key' and result.kind == 'local_image' then
-        if delayed_target_is_current(win, pane, pane_id, process) then
-          win:perform_action(wezterm.action.SendKey { key = 'v', mods = 'ALT' }, pane)
-        else
-          wezterm.log_warn('sshpic: focused pane or process changed; local image paste was discarded')
-        end
-        return
-      end
+const priorPuttyDiagnosticCurrent = `  if executable == 'plink' or executable == 'plink.exe' then
+    if type(info.argv) ~= 'table' or type(info.argv[1]) ~= 'string' then
+      return 'WezTerm reported plink/plink.exe without usable argv; password SSH image paste was not attempted'
+    end
+    local argv0 = basename(info.argv[1])
+    if argv0 ~= 'plink' and argv0 ~= 'plink.exe' then
+      return 'WezTerm Plink executable and argv disagree; password SSH image paste was not attempted'
+    end
+    if not is_focused_plink(info) then
+      return 'Focused Plink is not the managed password SSH upstream; using native paste'
+    end
+    return nil
+  end
 `
 
-const priorLocalCallbackCurrent = `      if not is_focused_ssh(info) and not is_focused_codex(info) then`
+const priorPuttyCallbackCurrent = `      if not is_focused_ssh(info) and not is_focused_plink(info) and not is_focused_codex(info) then`
 
-const priorLocalCallbackPrevious = `      if not is_focused_ssh(info) then`
+const priorPuttyCallbackPrevious = `      if not is_focused_ssh(info) and not is_focused_codex(info) then`

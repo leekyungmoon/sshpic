@@ -26,6 +26,7 @@ type TargetOptions struct {
 	RequireInstalled  bool
 	WezTermConfigPath string
 	WezTermPath       string
+	PlinkPath         string
 }
 
 func Run(cfg config.Config) []Check {
@@ -89,6 +90,7 @@ func RunWezTermWithOptions(opts TargetOptions) []Check {
 	return convertWezTermChecks(wezterm.DoctorChecks(ctx, wezterm.DoctorOptions{
 		ConfigPath:       opts.WezTermConfigPath,
 		WezTermPath:      opts.WezTermPath,
+		PlinkPath:        opts.PlinkPath,
 		RequireInstalled: opts.RequireInstalled,
 	}))
 }

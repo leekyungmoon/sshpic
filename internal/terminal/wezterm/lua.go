@@ -86,6 +86,32 @@ local function is_focused_ssh(info)
   return argv0 == 'ssh' or argv0 == 'ssh.exe'
 end
 
+local function is_focused_plink(info)
+  if type(info) ~= 'table' or type(info.executable) ~= 'string' then
+    return false
+  end
+  local executable = basename(info.executable)
+  if executable ~= 'plink' and executable ~= 'plink.exe' then
+    return false
+  end
+  if type(info.argv) ~= 'table' or type(info.argv[1]) ~= 'string' then
+    return false
+  end
+  local argv0 = basename(info.argv[1])
+  if argv0 ~= 'plink' and argv0 ~= 'plink.exe' then
+    return false
+  end
+  return info.argv[2] == '-load'
+    and info.argv[3] == 'sshpic-managed-password-upstream-v1'
+    and info.argv[4] == '-ssh'
+    and info.argv[5] == '-share'
+    and info.argv[6] == '-t'
+    and info.argv[7] == '-x'
+    and info.argv[8] == '-a'
+    and info.argv[9] == '-noagent'
+    and info.argv[10] == '-no-trivial-auth'
+end
+
 local function is_focused_codex(info)
   if type(info) ~= 'table' or type(info.executable) ~= 'string' then
     return false
@@ -109,6 +135,19 @@ local function focused_process_diagnostic(info)
     return 'WezTerm did not report the focused executable; using native paste'
   end
   local executable = basename(info.executable)
+  if executable == 'plink' or executable == 'plink.exe' then
+    if type(info.argv) ~= 'table' or type(info.argv[1]) ~= 'string' then
+      return 'WezTerm reported plink/plink.exe without usable argv; password SSH image paste was not attempted'
+    end
+    local argv0 = basename(info.argv[1])
+    if argv0 ~= 'plink' and argv0 ~= 'plink.exe' then
+      return 'WezTerm Plink executable and argv disagree; password SSH image paste was not attempted'
+    end
+    if not is_focused_plink(info) then
+      return 'Focused Plink is not the managed password SSH upstream; using native paste'
+    end
+    return nil
+  end
   if executable ~= 'ssh' and executable ~= 'ssh.exe' then
     return nil
   end
@@ -356,7 +395,7 @@ function module.apply_to_config(config)
         native_paste(win, pane, pane_id)
         return
       end
-      if not is_focused_ssh(info) and not is_focused_codex(info) then
+      if not is_focused_ssh(info) and not is_focused_plink(info) and not is_focused_codex(info) then
         local diagnostic = focused_process_diagnostic(info)
         if diagnostic ~= nil then
           notify_failure(win, { kind = 'process_info_unusable', reason = diagnostic })

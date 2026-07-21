@@ -12,9 +12,154 @@ import (
 	"github.com/leekyungmoon/sshpic/internal/config"
 	"github.com/leekyungmoon/sshpic/internal/paste"
 	"github.com/leekyungmoon/sshpic/internal/provider"
+	"github.com/leekyungmoon/sshpic/internal/putty"
 	"github.com/leekyungmoon/sshpic/internal/terminal/dispatch"
 	"github.com/leekyungmoon/sshpic/internal/upload"
 )
+
+func TestBuildDispatchPuttyNoImageIsImmediateNativePaste(t *testing.T) {
+	source := &fakeImageSource{imageErr: provider.ErrNoImage, text: "native text"}
+	result := BuildDispatchWithDependencies(context.Background(), config.Defaults(), source, plinkSession(), DispatchDependencies{
+		ResolveUser: func(context.Context, SSHInvocation) (string, error) {
+			t.Fatal("Plink text paste must not use OpenSSH user resolution")
+			return "", nil
+		},
+		ResolveHome: func(context.Context, SSHInvocation) (string, error) {
+			t.Fatal("Plink text paste must not query remote home")
+			return "", nil
+		},
+		PuttyUploaderForInvocation: func(string, putty.Invocation) (PuttySharedUploader, error) {
+			t.Fatal("Plink text paste must not inspect the sharing upstream")
+			return nil, nil
+		},
+	})
+	if result.Action != dispatch.ActionNativePaste || result.Kind != "non_image" || result.Payload != "" {
+		t.Fatalf("result=%+v", result)
+	}
+	if source.imageReads != 1 || source.textReads != 0 {
+		t.Fatalf("clipboard reads image=%d text=%d", source.imageReads, source.textReads)
+	}
+}
+
+func TestBuildDispatchPuttyImageUsesOnlySharedSFTP(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "clipboard.png")
+	if err := os.WriteFile(localPath, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := &fakeImageSource{image: provider.LocalImage{Path: localPath, Format: "png"}}
+	uploader := &fakePuttyUploader{recordingUploader: &recordingUploader{}, user: "alice", home: "/home/alice"}
+	result := BuildDispatchWithDependencies(context.Background(), config.Defaults(), source, plinkSession(), DispatchDependencies{
+		ResolveUser: func(context.Context, SSHInvocation) (string, error) {
+			t.Fatal("shared Plink image paste must not use ssh -G")
+			return "", nil
+		},
+		ResolveHome: func(context.Context, SSHInvocation) (string, error) {
+			t.Fatal("shared Plink image paste must not start OpenSSH")
+			return "", nil
+		},
+		UploaderForInvocation: func(SSHInvocation) paste.RemoteUploader {
+			t.Fatal("shared Plink image paste must not construct SSHCat")
+			return nil
+		},
+		PuttyUploaderForInvocation: func(executable string, invocation putty.Invocation) (PuttySharedUploader, error) {
+			if executable != `C:\Program Files\PuTTY\plink.exe` || invocation.User != "alice" || invocation.Host != "example.test" {
+				t.Fatalf("focused Plink evidence executable=%q invocation=%+v", executable, invocation)
+			}
+			return uploader, nil
+		},
+	})
+	wantPath := "/home/alice/.sshpic/images/clipboard.png"
+	if result.Action != dispatch.ActionInsertRemoteImagePath || result.Payload != wantPath {
+		t.Fatalf("result=%+v", result)
+	}
+	if uploader.uploadPath != wantPath || uploader.verifyPath != wantPath {
+		t.Fatalf("upload=%q verify=%q", uploader.uploadPath, uploader.verifyPath)
+	}
+}
+
+func TestBuildDispatchPuttyDomainUserImageUsesSharedSFTP(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "clipboard.png")
+	if err := os.WriteFile(localPath, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sess := plinkSession()
+	sess.Process.Argv[len(sess.Process.Argv)-2] = `DOMAIN\alice`
+	source := &fakeImageSource{image: provider.LocalImage{Path: localPath, Format: "png"}}
+	uploader := &fakePuttyUploader{
+		recordingUploader: &recordingUploader{},
+		user:              `DOMAIN\alice`,
+		home:              "/srv/accounts/alice",
+	}
+	result := BuildDispatchWithDependencies(context.Background(), config.Defaults(), source, sess, DispatchDependencies{
+		PuttyUploaderForInvocation: func(_ string, invocation putty.Invocation) (PuttySharedUploader, error) {
+			if invocation.User != `DOMAIN\alice` {
+				t.Fatalf("invocation user=%q", invocation.User)
+			}
+			return uploader, nil
+		},
+	})
+	wantPath := "/srv/accounts/alice/.sshpic/images/clipboard.png"
+	if result.Action != dispatch.ActionInsertRemoteImagePath || result.Payload != wantPath {
+		t.Fatalf("result=%+v", result)
+	}
+	if uploader.uploadPath != wantPath || uploader.verifyPath != wantPath {
+		t.Fatalf("upload=%q verify=%q", uploader.uploadPath, uploader.verifyPath)
+	}
+}
+
+func TestBuildDispatchPuttyRejectsInvalidUploaderUserBeforeUpload(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "clipboard.png")
+	if err := os.WriteFile(localPath, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := &fakeImageSource{image: provider.LocalImage{Path: localPath, Format: "png"}}
+	uploader := &fakePuttyUploader{
+		recordingUploader: &recordingUploader{},
+		user:              "alice\nroot",
+		home:              "/home/alice",
+	}
+	result := BuildDispatchWithDependencies(context.Background(), config.Defaults(), source, plinkSession(), DispatchDependencies{
+		PuttyUploaderForInvocation: func(string, putty.Invocation) (PuttySharedUploader, error) { return uploader, nil },
+	})
+	if result.Action != dispatch.ActionNativePaste || result.Kind != "putty_remote_user" || result.Payload != "" {
+		t.Fatalf("result=%+v", result)
+	}
+	if uploader.uploadPath != "" || uploader.verifyPath != "" {
+		t.Fatalf("unsafe user reached upload=%q verify=%q", uploader.uploadPath, uploader.verifyPath)
+	}
+}
+
+func TestBuildDispatchPuttyMissingShareNeverFallsBackOrForwardsAltV(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "clipboard.png")
+	if err := os.WriteFile(localPath, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := &fakeImageSource{image: provider.LocalImage{Path: localPath, Format: "png"}}
+	uploader := &fakePuttyUploader{recordingUploader: &recordingUploader{}, user: "alice", homeErr: putty.ErrNoSharedConnection}
+	result := BuildDispatchWithDependencies(context.Background(), config.Defaults(), source, plinkSession(), DispatchDependencies{
+		UploaderForInvocation: func(SSHInvocation) paste.RemoteUploader {
+			t.Fatal("missing PuTTY share must not fall back to a new OpenSSH login")
+			return nil
+		},
+		PuttyUploaderForInvocation: func(string, putty.Invocation) (PuttySharedUploader, error) { return uploader, nil },
+	})
+	if result.Action != dispatch.ActionNativePaste || result.Kind != "putty_share_unavailable" || result.Payload != "" {
+		t.Fatalf("result=%+v", result)
+	}
+	if uploader.uploadPath != "" {
+		t.Fatalf("unexpected upload %q", uploader.uploadPath)
+	}
+}
+
+func TestBuildDispatchMalformedPlinkDoesNotReadClipboard(t *testing.T) {
+	sess := plinkSession()
+	sess.Process.Argv = []string{sess.Process.Argv[0], "-ssh", "-t", "alice@example.test"}
+	source := &fakeImageSource{imageErr: provider.ErrNoImage}
+	result := BuildDispatchWithDependencies(context.Background(), config.Defaults(), source, sess, DispatchDependencies{})
+	if result.Action != dispatch.ActionNativePaste || result.Kind != "unusable_putty_process" || source.imageReads != 0 {
+		t.Fatalf("result=%+v imageReads=%d", result, source.imageReads)
+	}
+}
 
 func TestBuildDispatchNoImageIsImmediateNativePaste(t *testing.T) {
 	source := &fakeImageSource{imageErr: provider.ErrNoImage, text: "must remain native"}
@@ -489,6 +634,21 @@ func localCodexSession() SessionContext {
 	}
 }
 
+func plinkSession() SessionContext {
+	return SessionContext{
+		PaneID: "14",
+		Process: LocalProcessInfo{
+			Executable: `C:\Program Files\PuTTY\plink.exe`,
+			Argv: []string{
+				`C:\Program Files\PuTTY\plink.exe`,
+				"-load", putty.ManagedUpstreamSessionName, "-ssh", "-share", "-t", "-x", "-a", "-noagent", "-no-trivial-auth",
+				"-l", "alice", "example.test",
+			},
+			PID: 102,
+		},
+	}
+}
+
 type fakeImageSource struct {
 	image      provider.LocalImage
 	imageErr   error
@@ -522,6 +682,18 @@ type recordingUploader struct {
 	verifyPath string
 	uploadErr  error
 	verifyErr  error
+}
+
+type fakePuttyUploader struct {
+	*recordingUploader
+	user    string
+	home    string
+	homeErr error
+}
+
+func (uploader *fakePuttyUploader) User() string { return uploader.user }
+func (uploader *fakePuttyUploader) RemoteHome(context.Context) (string, error) {
+	return uploader.home, uploader.homeErr
 }
 
 func (uploader *recordingUploader) Upload(_ context.Context, _ string, remotePath string) error {

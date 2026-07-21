@@ -87,12 +87,18 @@ func TestWindowsUninstallRemovesInstalledStateAndPreservesCheckoutByteForByte(t 
 	if err := os.WriteFile(unrelated, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	environmentSelectedConfig := filepath.Join(stateRoot, "unrelated-env-selected-config.toml")
+	if err := os.WriteFile(environmentSelectedConfig, []byte("keep env-selected file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	setTestHome(t, homeDir)
 	t.Setenv("LOCALAPPDATA", cacheDir)
 	t.Setenv("TEMP", tempDir)
 	t.Setenv("TMP", tempDir)
-	t.Setenv("SSHPIC_CONFIG", sshpicConfig)
+	// Uninstall must remove the standard installed config and ignore an
+	// inherited SSHPIC_CONFIG that could point at unrelated user data.
+	t.Setenv("SSHPIC_CONFIG", environmentSelectedConfig)
 	t.Setenv("SSHPIC_WEZTERM_EXE", weztermPath)
 	t.Setenv("WEZTERM_CONFIG_FILE", configPath)
 	writeSettledTestInstallGeneration(t, cacheDir)
@@ -131,6 +137,9 @@ func TestWindowsUninstallRemovesInstalledStateAndPreservesCheckoutByteForByte(t 
 	}
 	if data, err := os.ReadFile(unrelated); err != nil || string(data) != "keep" {
 		t.Fatalf("unrelated file changed: data=%q err=%v", data, err)
+	}
+	if data, err := os.ReadFile(environmentSelectedConfig); err != nil || string(data) != "keep env-selected file" {
+		t.Fatalf("environment-selected config changed: data=%q err=%v", data, err)
 	}
 	for _, message := range []string{"installed binary: removed", "source checkout: preserved", "sshpic Windows uninstall complete"} {
 		if !strings.Contains(stdout.String(), message) {

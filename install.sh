@@ -6,7 +6,13 @@ platform="$(uname -s 2>/dev/null || printf 'unknown')"
 kernel_release="$(uname -r 2>/dev/null || printf 'unknown')"
 go_cmd=""
 wezterm_cmd=""
+plink_cmd=""
 install_helper=""
+install_helper_owned=0
+install_helper_lock=""
+install_helper_lock_owned=0
+bin_dir=""
+bin=""
 windows_tool_probe_attempts=8
 windows_tool_probe_delay=2
 
@@ -31,6 +37,47 @@ host_os="$(detect_host_os "$platform" "$kernel_release")"
 if [ "${1:-}" = "--detect-os" ]; then
   printf '%s\n' "$host_os"
   exit 0
+fi
+
+is_windows_file_association_launch() {
+  candidate_host_os="$1"
+  candidate_shell_flags="$2"
+  [ "$candidate_host_os" = "windows" ] || return 1
+  case "$candidate_shell_flags" in
+    *i*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+guard_windows_installer_entrypoint() {
+  candidate_host_os="$1"
+  candidate_shell_flags="$2"
+  if ! is_windows_file_association_launch "$candidate_host_os" "$candidate_shell_flags"; then
+    return 0
+  fi
+
+  printf '%s\n' \
+    'sshpic installation stopped before making any changes.' \
+    '' \
+    'This installer was launched as an interactive script. Windows .sh file' \
+    'associations use this detached mode, so PowerShell cannot wait for installation' \
+    'or receive its exit status.' \
+    '' \
+    'Use either reliable command instead:' \
+    '  Git Bash:   ./install.sh' \
+    '  PowerShell: & "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./install.sh' >&2
+  if [ -t 0 ]; then
+    printf '\nPress Enter to close this installer window...' >&2
+    IFS= read -r _sshpic_acknowledgement || :
+  fi
+  return 64
+}
+
+if guard_windows_installer_entrypoint "$host_os" "$-"; then
+  :
+else
+  guard_status=$?
+  exit "$guard_status"
 fi
 
 is_windows_shell() {
@@ -69,41 +116,105 @@ wait_for_windows_tool() {
 
 cleanup_windows_install_helper() {
   cleanup_status=0
-  if [ -n "$install_helper" ] && [ -f "$install_helper" ]; then
+  if [ "$install_helper_owned" -eq 1 ] && [ -n "$install_helper" ] && [ -f "$install_helper" ]; then
     if ! rm -f -- "$install_helper"; then
+      cleanup_status=1
+    fi
+  fi
+  if [ "$install_helper_lock_owned" -eq 1 ] && [ -n "$install_helper_lock" ] && [ -d "$install_helper_lock" ]; then
+    if ! rmdir -- "$install_helper_lock"; then
       cleanup_status=1
     fi
   fi
   return "$cleanup_status"
 }
 
+canonical_windows_path() {
+  candidate_path="$1"
+  realpath_cmd="$(command -v realpath 2>/dev/null || :)"
+  if [ -z "$realpath_cmd" ] && [ -x /usr/bin/realpath ]; then
+    realpath_cmd=/usr/bin/realpath
+  fi
+  if [ -z "$realpath_cmd" ]; then
+    echo "Git Bash realpath is required to validate Windows install paths safely." >&2
+    return 1
+  fi
+  candidate_path="$("$realpath_cmd" -m -- "$candidate_path")" || return 1
+  if command -v cygpath >/dev/null 2>&1; then
+    candidate_path="$(cygpath -aw "$candidate_path")" || return 1
+  fi
+  tr_cmd="$(command -v tr 2>/dev/null || :)"
+  if [ -z "$tr_cmd" ] && [ -x /usr/bin/tr ]; then
+    tr_cmd=/usr/bin/tr
+  fi
+  if [ -z "$tr_cmd" ]; then
+    echo "Git Bash tr is required to validate Windows install paths safely." >&2
+    return 1
+  fi
+  candidate_path="$(printf '%s' "$candidate_path" | "$tr_cmd" '\134' '/' | "$tr_cmd" '[:upper:]' '[:lower:]')"
+  while [ "${candidate_path%/}" != "$candidate_path" ]; do
+    candidate_path="${candidate_path%/}"
+  done
+  printf '%s\n' "$candidate_path"
+}
+
+windows_path_is_within() {
+  candidate_root="$(canonical_windows_path "$1")" || return 2
+  candidate_child="$(canonical_windows_path "$2")" || return 2
+  case "$candidate_child" in
+    "$candidate_root"|"$candidate_root"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prepare_windows_binary_paths() {
+  bin_dir="$("$go_cmd" env GOBIN)"
+  if [ -z "$bin_dir" ]; then
+    bin_dir="$("$go_cmd" env GOPATH)/bin"
+  fi
+  if command -v cygpath >/dev/null 2>&1; then
+    bin_dir="$(cygpath -u "$bin_dir")"
+  fi
+  bin="$bin_dir/sshpic$("$go_cmd" env GOEXE)"
+  source_root="$(pwd -P)"
+  overlap_status=0
+  windows_path_is_within "$source_root" "$bin_dir" || overlap_status=$?
+  if [ "$overlap_status" -eq 2 ]; then
+    echo "could not safely compare the Go binary directory with the source checkout" >&2
+    exit 1
+  fi
+  if [ "$overlap_status" -eq 0 ]; then
+    echo "refusing Windows installation because the Go binary directory is inside the source checkout: $bin_dir" >&2
+    echo "Unset GOBIN or set it outside this checkout, then rerun ./install.sh." >&2
+    exit 1
+  fi
+}
+
 prepare_windows_install_helper() {
   # Windows Application Control can reject freshly built executables in TEMP
   # even when the final Go binary is allowed. Build this short-lived helper
   # beside the final Go binary, execute it once, and remove it before go install.
-  helper_bin_dir="$("$go_cmd" env GOBIN)"
-  if [ -z "$helper_bin_dir" ]; then
-    helper_bin_dir="$("$go_cmd" env GOPATH)/bin"
-  fi
-  if command -v cygpath >/dev/null 2>&1; then
-    helper_bin_dir="$(cygpath -u "$helper_bin_dir")"
-  fi
+  helper_bin_dir="$bin_dir"
   if ! mkdir -p -- "$helper_bin_dir"; then
     echo "could not create the Go binary directory for the Windows install helper: $helper_bin_dir" >&2
     exit 1
   fi
   install_helper="$helper_bin_dir/sshpic-install-helper$("$go_cmd" env GOEXE)"
-  if [ -L "$install_helper" ] || { [ -e "$install_helper" ] && [ ! -f "$install_helper" ]; }; then
-    echo "refusing unsafe existing Windows install helper path: $install_helper" >&2
-    exit 1
-  fi
-  if [ -f "$install_helper" ] && ! rm -f -- "$install_helper"; then
-    echo "could not remove a stale sshpic Windows install helper: $install_helper" >&2
-    exit 1
-  fi
+  install_helper_lock="$helper_bin_dir/.sshpic-install-helper.lock"
   trap cleanup_windows_install_helper 0
   trap 'cleanup_windows_install_helper; exit 1' 1 2 15
+  if ! mkdir -- "$install_helper_lock" 2>/dev/null; then
+    echo "another sshpic installer owns the Windows install helper lock: $install_helper_lock" >&2
+    exit 1
+  fi
+  install_helper_lock_owned=1
+  if [ -e "$install_helper" ] || [ -L "$install_helper" ]; then
+    echo "refusing to replace an existing Windows install helper path: $install_helper" >&2
+    echo "Close another sshpic installer if one is running; no existing helper was removed." >&2
+    exit 1
+  fi
   "$go_cmd" build -o "$install_helper" ./cmd/sshpic
+  install_helper_owned=1
   if ! wait_for_windows_tool "sshpic install helper ($install_helper)" "$install_helper" version; then
     exit 1
   fi
@@ -201,6 +312,73 @@ install_wezterm_if_needed() {
   fi
 }
 
+find_plink() {
+  if command -v plink.exe >/dev/null 2>&1; then
+    plink_cmd="$(command -v plink.exe)"
+    return 0
+  fi
+  if command -v plink >/dev/null 2>&1; then
+    plink_cmd="$(command -v plink)"
+    return 0
+  fi
+  for candidate in \
+    "/c/Program Files/PuTTY/plink.exe" \
+    "/c/Program Files (x86)/PuTTY/plink.exe" \
+    "/c/Users/${USERNAME:-}/AppData/Local/Programs/PuTTY/plink.exe"
+  do
+    if [ -x "$candidate" ]; then
+      plink_cmd="$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+verify_plink_min_version() {
+  plink_version_output="$("$plink_cmd" -V 2>&1)" || return 1
+  plink_version="$(printf '%s\n' "$plink_version_output" | sed -n 's/.*Release \([0-9][0-9.]*\).*/\1/p' | sed -n '1p')"
+  plink_major="${plink_version%%.*}"
+  plink_rest="${plink_version#*.}"
+  plink_minor="${plink_rest%%.*}"
+  case "$plink_major:$plink_minor" in
+    ''|:*|*:|*[!0-9:]*)
+      echo "Could not verify the installed PuTTY Plink version; 0.84 or newer is required for password-session sharing." >&2
+      return 1
+      ;;
+  esac
+  if [ "$plink_major" -eq 0 ] && [ "$plink_minor" -lt 84 ]; then
+    echo "PuTTY Plink $plink_version is too old; install PuTTY 0.84 or newer and rerun ./install.sh." >&2
+    return 1
+  fi
+  printf 'PuTTY Plink compatibility: %s (minimum 0.84)\n' "$plink_version"
+}
+
+install_plink_if_needed() {
+  is_windows_shell || return 0
+  if find_plink; then
+    if ! wait_for_windows_tool "PuTTY Plink ($plink_cmd)" "$plink_cmd" -V; then
+      exit 1
+    fi
+    verify_plink_min_version || exit 1
+    return 0
+  fi
+  if ! command -v winget.exe >/dev/null 2>&1; then
+    echo "PuTTY Plink is required for password-authenticated shared SSH sessions; install PuTTY and rerun ./install.sh" >&2
+    exit 1
+  fi
+  echo "PuTTY Plink was not found; installing PuTTY with winget..."
+  winget_status=0
+  winget.exe install --id PuTTY.PuTTY --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
+  if ! find_plink; then
+    echo "winget finished with exit $winget_status, but Plink could not be found; open a new Git Bash and rerun ./install.sh" >&2
+    exit 1
+  fi
+  if ! wait_for_windows_tool "PuTTY Plink ($plink_cmd)" "$plink_cmd" -V; then
+    exit 1
+  fi
+  verify_plink_min_version || exit 1
+}
+
 install_pngpaste_if_possible() {
   [ "$host_os" = "macos" ] || return 0
   if command -v pngpaste >/dev/null 2>&1; then
@@ -252,7 +430,11 @@ case "$host_os" in
 esac
 
 need_go
+if is_windows_shell; then
+  prepare_windows_binary_paths
+fi
 install_wezterm_if_needed
+install_plink_if_needed
 install_pngpaste_if_possible
 install_python_if_possible
 
@@ -276,6 +458,9 @@ if [ -f ./cmd/sshpic/main.go ] && [ -f ./go.mod ]; then
       exit 1
     fi
     install_helper=""
+    install_helper_owned=0
+    install_helper_lock=""
+    install_helper_lock_owned=0
   fi
   "$go_cmd" install ./cmd/sshpic
 else
@@ -287,14 +472,13 @@ else
   "$go_cmd" install "$repo/cmd/sshpic@latest"
 fi
 
-bin_dir="$("$go_cmd" env GOBIN)"
-if [ -z "$bin_dir" ]; then
-  bin_dir="$("$go_cmd" env GOPATH)/bin"
+if ! is_windows_shell; then
+  bin_dir="$("$go_cmd" env GOBIN)"
+  if [ -z "$bin_dir" ]; then
+    bin_dir="$("$go_cmd" env GOPATH)/bin"
+  fi
+  bin="$bin_dir/sshpic$("$go_cmd" env GOEXE)"
 fi
-if is_windows_shell && command -v cygpath >/dev/null 2>&1; then
-  bin_dir="$(cygpath -u "$bin_dir")"
-fi
-bin="$bin_dir/sshpic$("$go_cmd" env GOEXE)"
 if [ ! -x "$bin" ] && command -v sshpic >/dev/null 2>&1; then
   bin="$(command -v sshpic)"
 fi
@@ -317,26 +501,36 @@ case "$host_os" in
     ;;
   windows)
     wezterm_native="$wezterm_cmd"
+    plink_native="$plink_cmd"
+    bin_native="$bin"
     if command -v cygpath >/dev/null 2>&1; then
       wezterm_native="$(cygpath -w "$wezterm_cmd")"
+      plink_native="$(cygpath -aw "$plink_cmd")"
+      bin_native="$(cygpath -aw "$bin")"
     fi
+    SSHPIC_EXE="$bin_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-preflight-powershell-ssh-wrapper
+    SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-provision-putty-sessions
     SSHPIC_WEZTERM_EXE="$wezterm_native" "$bin" install wezterm --install-generation "$install_generation"
+    SSHPIC_EXE="$bin_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-install-powershell-ssh-wrapper
+    "$bin" internal-verify-powershell-ssh-wrapper
     if [ ! -x "$bin" ]; then
       echo "installed sshpic executable disappeared before post-install verification: $bin" >&2
       exit 1
     fi
-    if ! SSHPIC_WEZTERM_EXE="$wezterm_native" "$bin" doctor wezterm --require-installed; then
-      echo "Windows install postcondition failed: strict doctor could not verify the manifest-owned binary and WezTerm artifacts." >&2
+    if ! SSHPIC_WEZTERM_EXE="$wezterm_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" doctor wezterm --require-installed; then
+      echo "Windows install postcondition failed: strict doctor could not verify the manifest-owned binary, WezTerm artifacts, and managed PowerShell 7 SSH wrapper." >&2
       exit 1
     fi
     echo "installed sshpic: $bin"
-    echo "Windows installation verified: the executable and manifest-owned WezTerm artifacts passed strict doctor."
-    echo "TEST IN WEZTERM ONLY: standalone PowerShell and Windows Terminal do not intercept Ctrl+V."
-    echo "PowerShell is supported only as the shell inside a WezTerm pane."
-    echo "Close or reload WezTerm, open a WezTerm pane, run native ssh.exe <host>, start codex, focus its input, and press Ctrl+V."
+    echo "Windows installation verified: the executable, manifest-owned WezTerm artifacts, and managed PowerShell 7 SSH wrapper passed strict doctor."
+    echo "TEST IN A NEW POWERSHELL 7 SESSION: use Windows Terminal 1.24.10921+ or WezTerm."
+    echo "The managed normal-ssh command is enabled only in PowerShell 7 (pwsh) inside Windows Terminal or WezTerm."
+    echo "For password login, open a new PowerShell 7 (pwsh) session and run: ssh user@host"
+    echo "Enter the server password once, start Codex, focus its input, and press Ctrl+V."
+    echo "Native ssh.exe remains the explicit key/agent-authenticated recovery path."
     echo "Expected Codex UI: [Image #1]"
     if [ -n "${WT_SESSION:-}" ] && [ -z "${WEZTERM_PANE:-}" ]; then
-      echo "WARNING: this installer was started from Windows Terminal; do not use that window for the paste test." >&2
+      echo "This installer was started from Windows Terminal; open a new PowerShell 7 tab so the installed profile mapping is loaded."
     fi
     echo "SSHPIC_WINDOWS_INSTALL_VERIFIED"
     ;;

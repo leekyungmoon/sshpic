@@ -7,9 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/leekyungmoon/sshpic/internal/putty"
+	"github.com/leekyungmoon/sshpic/internal/terminal/powershell"
 )
 
 type Check struct {
@@ -20,14 +25,19 @@ type Check struct {
 }
 
 type DoctorOptions struct {
-	HomeDir           string
-	ConfigPath        string
-	WezTermPath       string
-	WezTermProbe      func(context.Context, string) (string, error)
-	PowerShellPath    string
-	PowerShellProbe   func(context.Context, string) error
-	RequireInstalled  bool
-	RunningBinaryPath string
+	HomeDir             string
+	ConfigPath          string
+	WezTermPath         string
+	WezTermProbe        func(context.Context, string) (string, error)
+	PlinkPath           string
+	PlinkResolve        func(string) (string, error)
+	PlinkProbe          func(context.Context, string) (string, error)
+	PuttySessionVerify  func(string) error
+	PowerShellPath      string
+	PowerShellProbe     func(context.Context, string) error
+	PowerShellSSHVerify func(context.Context) error
+	RequireInstalled    bool
+	RunningBinaryPath   string
 }
 
 // Doctor is an alias for DoctorChecks for application-friendly command wiring.
@@ -76,7 +86,13 @@ func DoctorChecks(ctx context.Context, opts DoctorOptions) (checks []Check) {
 	} else {
 		checks = append(checks, Check{Name: "tool:ssh", Status: "error", Detail: "OpenSSH ssh/ssh.exe not found in PATH", Fatal: true})
 	}
+	if runtime.GOOS == "windows" {
+		checks = append(checks, plinkDoctorChecks(ctx, opts)...)
+	}
 	checks = append(checks, powershellDoctorCheck(ctx, opts))
+	if requiresPowerShellSSHWrapper(runtime.GOOS, opts.RequireInstalled) {
+		checks = append(checks, powerShellSSHWrapperDoctorCheck(ctx, opts))
+	}
 
 	configPath, err := ResolveConfigPathForExecutable(opts.HomeDir, opts.ConfigPath, weztermPath)
 	if err != nil {
@@ -168,9 +184,129 @@ func DoctorChecks(ctx context.Context, opts DoctorOptions) (checks []Check) {
 	checks = append(checks,
 		Check{Name: "wezterm_integration", Status: status, Detail: detail},
 		Check{Name: "restore_owner", Status: "ok", Detail: "manifest: " + manifestPath},
-		Check{Name: "native_paste", Status: "ok", Detail: "local Codex images forward to Codex; non-target panes and non-image/error results delegate to WezTerm PasteFrom Clipboard; sshpic never reads clipboard text"},
+		Check{Name: "native_paste", Status: "ok", Detail: "local Codex images forward to Codex; managed Plink password sessions reuse shared SFTP; non-target panes and non-image/error results delegate to WezTerm PasteFrom Clipboard"},
 	)
 	return checks
+}
+
+func requiresPowerShellSSHWrapper(goos string, requireInstalled bool) bool {
+	return goos == "windows" && requireInstalled
+}
+
+func powerShellSSHWrapperDoctorCheck(ctx context.Context, opts DoctorOptions) Check {
+	verify := opts.PowerShellSSHVerify
+	if verify == nil {
+		verify = func(ctx context.Context) error {
+			_, err := powershell.Verify(ctx)
+			return err
+		}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := verify(probeCtx); err != nil {
+		return Check{
+			Name:   "powershell_ssh_wrapper",
+			Status: "error",
+			Detail: "managed PowerShell 7 normal-ssh wrapper is not verified: " + err.Error(),
+			Fatal:  true,
+		}
+	}
+	return Check{
+		Name:   "powershell_ssh_wrapper",
+		Status: "ok",
+		Detail: "managed PowerShell 7 profile bytes and WezTerm/Windows Terminal ssh command resolution verified read-only",
+	}
+}
+
+var plinkReleasePattern = regexp.MustCompile(`(?i)\bRelease\s+(([0-9]+)\.([0-9]+)(?:\.[0-9]+)?)\b`)
+
+func plinkDoctorChecks(ctx context.Context, opts DoctorOptions) []Check {
+	resolve := opts.PlinkResolve
+	if resolve == nil {
+		resolve = putty.ResolvePlink
+	}
+	plinkPath, err := resolve(opts.PlinkPath)
+	if err != nil {
+		return []Check{
+			{Name: "tool:plink", Status: "error", Detail: "PuTTY Plink 0.84 or newer could not be resolved", Fatal: true},
+			{Name: "putty_sessions", Status: "error", Detail: "not verified because a compatible PuTTY Plink executable could not be resolved", Fatal: true},
+		}
+	}
+
+	probe := opts.PlinkProbe
+	if probe == nil {
+		probe = probePlinkVersion
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	output, err := probe(probeCtx, plinkPath)
+	if err != nil {
+		return []Check{
+			{Name: "tool:plink", Status: "error", Detail: "PuTTY Plink version probe failed", Fatal: true},
+			{Name: "putty_sessions", Status: "error", Detail: "not verified because the PuTTY Plink version probe failed", Fatal: true},
+		}
+	}
+	version, err := validatePlinkVersion(output)
+	if err != nil {
+		return []Check{
+			{Name: "tool:plink", Status: "error", Detail: "PuTTY Plink: " + err.Error(), Fatal: true},
+			{Name: "putty_sessions", Status: "error", Detail: "not verified because PuTTY Plink 0.84 or newer is required", Fatal: true},
+		}
+	}
+
+	checks := []Check{{
+		Name:   "tool:plink",
+		Status: "ok",
+		Detail: executableBaseName(plinkPath) + " (Release " + version + "; minimum 0.84)",
+	}}
+	verify := opts.PuttySessionVerify
+	if verify == nil {
+		verify = putty.VerifyManagedSessions
+	}
+	if err := verify(plinkPath); err != nil {
+		return append(checks, Check{Name: "putty_sessions", Status: "error", Detail: err.Error(), Fatal: true})
+	}
+	return append(checks, Check{
+		Name:   "putty_sessions",
+		Status: "ok",
+		Detail: putty.ManagedUpstreamSessionName + " and " + putty.ManagedDownstreamSessionName + " match the managed allowlist",
+	})
+}
+
+func executableBaseName(executablePath string) string {
+	return filepath.Base(strings.ReplaceAll(strings.TrimSpace(executablePath), `\`, "/"))
+}
+
+func probePlinkVersion(ctx context.Context, plinkPath string) (string, error) {
+	cmd := exec.CommandContext(ctx, plinkPath, "-V")
+	out, err := cmd.CombinedOutput()
+	detail := strings.TrimSpace(string(out))
+	if len(detail) > 1000 {
+		detail = detail[:1000]
+	}
+	if err != nil {
+		return "", fmt.Errorf("PuTTY Plink -V failed: %w: %s", err, detail)
+	}
+	if detail == "" {
+		return "", errors.New("PuTTY Plink -V returned empty output")
+	}
+	return detail, nil
+}
+
+func validatePlinkVersion(output string) (string, error) {
+	match := plinkReleasePattern.FindStringSubmatch(output)
+	if len(match) != 4 {
+		return "", errors.New("could not parse Plink release; PuTTY Plink 0.84 or newer is required")
+	}
+	major, majorErr := strconv.Atoi(match[2])
+	minor, minorErr := strconv.Atoi(match[3])
+	if majorErr != nil || minorErr != nil {
+		return "", errors.New("could not parse Plink release; PuTTY Plink 0.84 or newer is required")
+	}
+	if major == 0 && minor < 84 {
+		return "", fmt.Errorf("PuTTY Plink %s is too old; 0.84 or newer is required", match[1])
+	}
+	return match[1], nil
 }
 
 func runningBinaryOwnerCheck(runningPath, manifestPath string) Check {
@@ -332,7 +468,7 @@ func InstallSummary(result InstallResult) string {
 	if result.BackupPath != "" {
 		builder.WriteString("backup: " + result.BackupPath + "\n")
 	}
-	builder.WriteString("Ctrl+V: local Codex images forward to Codex; focused ssh/ssh.exe images upload; text and other panes stay native\n")
+	builder.WriteString("Ctrl+V: local Codex images forward to Codex; managed Plink password sessions reuse shared SFTP; native ssh/ssh.exe keeps the key path; text and other panes stay native\n")
 	return builder.String()
 }
 

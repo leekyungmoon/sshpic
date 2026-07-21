@@ -13,9 +13,215 @@ import (
 
 	"github.com/leekyungmoon/sshpic/internal/config"
 	"github.com/leekyungmoon/sshpic/internal/provider"
+	"github.com/leekyungmoon/sshpic/internal/putty"
 	"github.com/leekyungmoon/sshpic/internal/terminal/dispatch"
 	"github.com/leekyungmoon/sshpic/internal/terminal/iterm2"
+	"github.com/leekyungmoon/sshpic/internal/terminal/powershell"
 )
+
+func TestRunSSHPreservesConnectionArgumentsForPasswordUpstream(t *testing.T) {
+	oldResolve := resolvePlinkForCommand
+	oldRun := runPuttyInteractiveForCommand
+	oldRunWithPaste := runPuttyInteractiveWithPasteForCommand
+	t.Cleanup(func() {
+		resolvePlinkForCommand = oldResolve
+		runPuttyInteractiveForCommand = oldRun
+		runPuttyInteractiveWithPasteForCommand = oldRunWithPaste
+	})
+	t.Setenv("WT_SESSION", "")
+	t.Setenv("WEZTERM_PANE", "")
+	t.Setenv("SSHPIC_PLINK_EXE", `C:\Program Files\PuTTY\plink.exe`)
+
+	resolvePlinkForCommand = func(explicit string) (string, error) {
+		if explicit != `C:\Program Files\PuTTY\plink.exe` {
+			t.Fatalf("explicit Plink path=%q", explicit)
+		}
+		return explicit, nil
+	}
+	var got putty.Invocation
+	runPuttyInteractiveForCommand = func(_ context.Context, executable string, invocation putty.Invocation) error {
+		if executable != `C:\Program Files\PuTTY\plink.exe` {
+			t.Fatalf("Plink executable=%q", executable)
+		}
+		got = invocation
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"ssh", "-Cvv", "-p", "2222", "alice@example.test"}, BuildInfo{}, &stdout, &stderr)
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("Run code=%d stderr=%q", code, stderr.String())
+	}
+	want := putty.Invocation{Host: "example.test", User: "alice", Port: 2222, Compression: true, Verbose: 2}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("invocation=%+v want %+v", got, want)
+	}
+}
+
+func TestRunSSHUsesPasteAwareInputProxyOnlyInWindowsTerminal(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows Terminal routing")
+	}
+	oldResolve := resolvePlinkForCommand
+	oldRun := runPuttyInteractiveForCommand
+	oldRunWithPaste := runPuttyInteractiveWithPasteForCommand
+	t.Cleanup(func() {
+		resolvePlinkForCommand = oldResolve
+		runPuttyInteractiveForCommand = oldRun
+		runPuttyInteractiveWithPasteForCommand = oldRunWithPaste
+	})
+	t.Setenv("WT_SESSION", "managed-windows-terminal-session")
+	t.Setenv("WEZTERM_PANE", "")
+	t.Setenv("SSHPIC_PLINK_EXE", `C:\Program Files\PuTTY\plink.exe`)
+	resolvePlinkForCommand = func(explicit string) (string, error) { return explicit, nil }
+	runPuttyInteractiveForCommand = func(context.Context, string, putty.Invocation) error {
+		t.Fatal("Windows Terminal must use the paste-aware input-proxy path")
+		return nil
+	}
+	called := false
+	runPuttyInteractiveWithPasteForCommand = func(_ context.Context, executable string, invocation putty.Invocation, handler putty.EmptyPasteHandler) error {
+		called = true
+		if executable == "" || invocation.Host != "example.test" || invocation.User != "alice" || handler == nil {
+			t.Fatalf("paste-aware inputs executable=%q invocation=%+v handlerNil=%v", executable, invocation, handler == nil)
+		}
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"ssh", "alice@example.test"}, BuildInfo{}, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("Run code=%d stderr=%q", code, stderr.String())
+	}
+	if !called {
+		t.Fatal("paste-aware Windows Terminal runner was not called")
+	}
+}
+
+func TestRunSSHLeavesWezTermOnDirectForegroundPlinkPath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows terminal routing")
+	}
+	oldResolve := resolvePlinkForCommand
+	oldRun := runPuttyInteractiveForCommand
+	oldRunWithPaste := runPuttyInteractiveWithPasteForCommand
+	t.Cleanup(func() {
+		resolvePlinkForCommand = oldResolve
+		runPuttyInteractiveForCommand = oldRun
+		runPuttyInteractiveWithPasteForCommand = oldRunWithPaste
+	})
+	t.Setenv("WT_SESSION", "inherited-parent-session")
+	t.Setenv("WEZTERM_PANE", "wezterm-pane")
+	t.Setenv("SSHPIC_PLINK_EXE", `C:\Program Files\PuTTY\plink.exe`)
+	resolvePlinkForCommand = func(explicit string) (string, error) { return explicit, nil }
+	directCalled := false
+	runPuttyInteractiveForCommand = func(context.Context, string, putty.Invocation) error {
+		directCalled = true
+		return nil
+	}
+	runPuttyInteractiveWithPasteForCommand = func(context.Context, string, putty.Invocation, putty.EmptyPasteHandler) error {
+		t.Fatal("WezTerm must retain direct foreground Plink visibility")
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"ssh", "alice@example.test"}, BuildInfo{}, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("Run code=%d stderr=%q", code, stderr.String())
+	}
+	if !directCalled {
+		t.Fatal("direct WezTerm Plink runner was not called")
+	}
+}
+
+func TestRunSSHRejectsPasswordArgumentsBeforeResolvingPlink(t *testing.T) {
+	oldResolve := resolvePlinkForCommand
+	t.Cleanup(func() { resolvePlinkForCommand = oldResolve })
+	resolvePlinkForCommand = func(string) (string, error) {
+		t.Fatal("forbidden password argv must fail before resolving Plink")
+		return "", nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"ssh", "-pw", "secret", "alice@example.test"}, BuildInfo{}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "password arguments are forbidden") {
+		t.Fatalf("Run code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestInternalProvisionPuttySessionsResolvesProvisionsAndVerifies(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows PuTTY provisioning command")
+	}
+	oldResolve := resolvePlinkForCommand
+	oldProvision := provisionPuttySessionsForCommand
+	oldVerify := verifyPuttySessionsForCommand
+	t.Cleanup(func() {
+		resolvePlinkForCommand = oldResolve
+		provisionPuttySessionsForCommand = oldProvision
+		verifyPuttySessionsForCommand = oldVerify
+	})
+	t.Setenv("SSHPIC_PLINK_EXE", `C:\Program Files\PuTTY\plink.exe`)
+	var calls []string
+	resolvePlinkForCommand = func(explicit string) (string, error) {
+		calls = append(calls, "resolve")
+		return explicit, nil
+	}
+	provisionPuttySessionsForCommand = func(string) error {
+		calls = append(calls, "provision")
+		return nil
+	}
+	verifyPuttySessionsForCommand = func(string) error {
+		calls = append(calls, "verify")
+		return nil
+	}
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"internal-provision-putty-sessions"}, BuildInfo{}, &stdout, &stderr)
+	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "ready") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !reflect.DeepEqual(calls, []string{"resolve", "provision", "verify"}) {
+		t.Fatalf("calls=%q", calls)
+	}
+}
+
+func TestPowerShellWrapperCommandsPassCanonicalInstallerPlink(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows PowerShell wrapper command")
+	}
+	oldResolve := resolvePlinkForCommand
+	oldPreflight := preflightPowerShellSSHWrapperForCommand
+	oldInstall := installPowerShellSSHWrapperForCommand
+	t.Cleanup(func() {
+		resolvePlinkForCommand = oldResolve
+		preflightPowerShellSSHWrapperForCommand = oldPreflight
+		installPowerShellSSHWrapperForCommand = oldInstall
+	})
+
+	const requested = `C:\Program Files\PuTTY\..\PuTTY\plink.exe`
+	const canonical = `C:\Program Files\PuTTY\plink.exe`
+	const sshpic = `C:\Fixture\sshpic.exe`
+	t.Setenv("SSHPIC_PLINK_EXE", requested)
+	t.Setenv("SSHPIC_EXE", sshpic)
+	resolvePlinkForCommand = func(explicit string) (string, error) {
+		if explicit != requested {
+			t.Fatalf("explicit Plink path=%q want installer value", explicit)
+		}
+		return canonical, nil
+	}
+	assertInputs := func(_ context.Context, gotSSHpic, gotPlink string) (powershell.Result, error) {
+		if gotSSHpic != sshpic || gotPlink != canonical {
+			t.Fatalf("PowerShell inputs sshpic=%q plink=%q", gotSSHpic, gotPlink)
+		}
+		return powershell.Result{Profiles: []string{"profile"}}, nil
+	}
+	preflightPowerShellSSHWrapperForCommand = assertInputs
+	installPowerShellSSHWrapperForCommand = assertInputs
+
+	for _, command := range []string{"internal-preflight-powershell-ssh-wrapper", "internal-install-powershell-ssh-wrapper"} {
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{command}, BuildInfo{}, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+			t.Fatalf("%s code=%d stderr=%q", command, code, stderr.String())
+		}
+	}
+}
 
 func setTestHome(t *testing.T, home string) {
 	t.Helper()

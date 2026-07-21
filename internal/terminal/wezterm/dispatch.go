@@ -16,6 +16,7 @@ import (
 	"github.com/leekyungmoon/sshpic/internal/paste"
 	"github.com/leekyungmoon/sshpic/internal/pathfmt"
 	"github.com/leekyungmoon/sshpic/internal/provider"
+	"github.com/leekyungmoon/sshpic/internal/putty"
 	"github.com/leekyungmoon/sshpic/internal/terminal/dispatch"
 	"github.com/leekyungmoon/sshpic/internal/upload"
 )
@@ -28,13 +29,22 @@ type SessionContext struct {
 }
 
 // DispatchDependencies are injectable seams for process queries and upload.
-// Defaults are secure non-interactive OpenSSH operations using the exact
-// executable reported for the focused pane.
+// Native OpenSSH uses non-interactive helper connections; managed Plink uses
+// batch-only SFTP channels on the exact focused sharing upstream.
 type DispatchDependencies struct {
-	ResolveUser           UserResolver
-	ResolveHome           HomeResolver
-	UploaderForInvocation func(SSHInvocation) paste.RemoteUploader
-	Log                   func(string)
+	ResolveUser                UserResolver
+	ResolveHome                HomeResolver
+	UploaderForInvocation      func(SSHInvocation) paste.RemoteUploader
+	PuttyUploaderForInvocation func(string, putty.Invocation) (PuttySharedUploader, error)
+	Log                        func(string)
+}
+
+// PuttySharedUploader is the paste uploader bound to the authenticated
+// connection-sharing upstream owned by the focused Plink process.
+type PuttySharedUploader interface {
+	paste.RemoteUploader
+	User() string
+	RemoteHome(context.Context) (string, error)
 }
 
 // BuildDispatch classifies the focused pane and delegates the image decision to
@@ -61,9 +71,14 @@ func BuildDispatchWithDependencies(ctx context.Context, cfg config.Config, src p
 		return dispatch.Result{Action: dispatch.ActionSafeFail, Kind: "invalid_session", Reason: "focused WezTerm pane id is required"}
 	}
 	invocation, focusedSSH := ParseSSHInvocation(sess.Process)
-	if !focusedSSH {
+	puttyInvocation, puttyErr := putty.ParsePlinkProcess(sess.Process.Executable, sess.Process.Argv)
+	focusedPutty := puttyErr == nil
+	if !focusedSSH && !focusedPutty {
 		if IsSSHExecutable(sess.Process.Executable) {
 			return nativeResult("unusable_ssh_process", "focused process reports ssh/ssh.exe but its argv could not be verified; using native paste")
+		}
+		if isPlinkExecutable(sess.Process.Executable) {
+			return nativeResult("unusable_putty_process", "focused process reports plink/plink.exe but it is not the managed password SSH upstream; using native paste")
 		}
 		if !IsLocalCodexProcess(sess.Process) {
 			return nativeResult("no_focused_target", "focused process is neither verified ssh/ssh.exe nor local Codex")
@@ -88,7 +103,7 @@ func BuildDispatchWithDependencies(ctx context.Context, cfg config.Config, src p
 		}
 		return nativeResult("unknown", "image clipboard read failed")
 	}
-	if !focusedSSH {
+	if !focusedSSH && !focusedPutty {
 		if img.Cleanup != nil {
 			_ = img.Cleanup()
 		}
@@ -105,6 +120,9 @@ func BuildDispatchWithDependencies(ctx context.Context, cfg config.Config, src p
 		defer func() { _ = img.Cleanup() }()
 	}
 	cachedSource := cachedImageSource{LocalImageSource: src, image: img}
+	if focusedPutty {
+		return buildPuttyDispatch(ctx, cfg, cachedSource, sess, puttyInvocation, deps)
+	}
 
 	resolveUser := deps.ResolveUser
 	if resolveUser == nil {
@@ -157,6 +175,58 @@ func BuildDispatchWithDependencies(ctx context.Context, cfg config.Config, src p
 	cfg.RemoteDir = canonicalRemoteDir
 
 	return buildNeutralDispatch(ctx, cfg, cachedSource, sess, invocation, true, deps)
+}
+
+func buildPuttyDispatch(ctx context.Context, cfg config.Config, src provider.LocalImageSource, sess SessionContext, invocation putty.Invocation, deps DispatchDependencies) dispatch.Result {
+	factory := deps.PuttyUploaderForInvocation
+	if factory == nil {
+		factory = func(executable string, invocation putty.Invocation) (PuttySharedUploader, error) {
+			return putty.NewSharedUploader(executable, invocation)
+		}
+	}
+	uploader, err := factory(sess.Process.Executable, invocation)
+	if err != nil || uploader == nil {
+		if err == nil {
+			err = errors.New("shared PuTTY uploader is unavailable")
+		}
+		logDispatch(deps.Log, "wezterm PuTTY uploader initialization failed: "+err.Error())
+		return nativeResult("putty_share_unavailable", "could not use the authenticated password SSH session: "+sanitizeHelperDiagnostic(err.Error()))
+	}
+
+	home, err := uploader.RemoteHome(ctx)
+	if err != nil {
+		logDispatch(deps.Log, "wezterm PuTTY shared SFTP home resolution failed: "+err.Error())
+		return nativeResult("putty_share_unavailable", "could not open SFTP on the authenticated password SSH session: "+sanitizeHelperDiagnostic(err.Error()))
+	}
+	canonicalHome, err := canonicalizeShortcutPOSIXPath(home)
+	if err != nil {
+		return nativeResult("putty_remote_home", "SFTP returned an unsafe remote home directory")
+	}
+	remoteUser := uploader.User()
+	if !putty.ValidUser(remoteUser) {
+		return nativeResult("putty_remote_user", "focused password SSH user is unsafe")
+	}
+	expectedRemoteDir := path.Join(canonicalHome, ".sshpic", "images")
+	configuredRemoteDir := strings.TrimSpace(cfg.RemoteDir)
+	if configuredRemoteDir == config.Defaults().RemoteDir || configuredRemoteDir == "~/.sshpic/images" {
+		cfg.RemoteDir = expectedRemoteDir
+	} else {
+		expanded := pathfmt.ExpandRemoteDir(configuredRemoteDir, remoteUser, canonicalHome)
+		canonical, canonicalErr := canonicalizeShortcutPOSIXPath(expanded)
+		if canonicalErr != nil || canonical != expectedRemoteDir {
+			return nativeResult("putty_remote_dir", "password SSH image paste currently requires the private ~/.sshpic/images directory")
+		}
+		cfg.RemoteDir = canonical
+	}
+
+	puttyDeps := deps
+	puttyDeps.UploaderForInvocation = func(SSHInvocation) paste.RemoteUploader { return uploader }
+	return buildNeutralDispatch(ctx, cfg, src, sess, SSHInvocation{Host: invocation.Host, User: remoteUser}, true, puttyDeps)
+}
+
+func isPlinkExecutable(executable string) bool {
+	base := strings.ToLower(baseAnyPath(strings.TrimSpace(executable)))
+	return base == "plink" || base == "plink.exe"
 }
 
 type cachedImageSource struct {

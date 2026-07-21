@@ -2,42 +2,49 @@
 
 ## Windows `Ctrl+V` does not show `[Image #1]` in Codex
 
-First confirm that native PowerShell or Git Bash and the SSH/Codex session are inside a WezTerm pane on an interactive Windows 10/11 desktop. A standalone PowerShell window and Windows Terminal do not load the integration. Then inspect the target-specific checks:
+First confirm that PowerShell 7 (`pwsh`) and the SSH/Codex session are inside Windows Terminal 1.24.10921+ or a current WezTerm pane on an interactive Windows 10/11 desktop. Windows PowerShell 5.1 does not provide the managed normal-`ssh` path. Then inspect the target-specific checks:
 
 ```powershell
 sshpic doctor wezterm
 Get-Command ssh.exe
 ssh.exe -V
+plink.exe -V
 wezterm.exe --version
 ```
 
-Use current WezTerm and Windows OpenSSH releases. `doctor wezterm` checks executable and capability probes but does not yet reject every old version; some Windows 10 inbox OpenSSH builds lack safety options used by the upload invocation, and old WezTerm builds lack required Lua APIs.
+Use Windows Terminal 1.24.10921+ or current WezTerm, and PuTTY Plink 0.84 or newer. The strict doctor checks the managed PuTTY sessions; older WezTerm builds may still lack required Lua APIs because the installer does not yet enforce a semantic minimum WezTerm version.
 
-The focused WezTerm pane must have native Windows `ssh.exe` as its foreground process. A pane running `wsl ssh`, PuTTY/Plink, a global SSH process in another pane, or a wrapper that hides the foreground `ssh.exe` is outside the experimental candidate boundary. sshpic deliberately does not fall back to an unrelated process or `remote_host` for shortcut-driven upload. A successful Codex image paste renders exactly `[Image #1]`; no response or a raw remote path left visible is a failed result.
+Open a new PowerShell 7 tab or pane after installation and run `ssh user@host`. `Get-Command ssh` should report the managed function under Windows Terminal or WezTerm, while `Get-Command ssh.exe` remains the native OpenSSH application. Windows PowerShell 5.1 is unsupported for this mapping and is lifecycle cleanup-only. A pane running `wsl ssh`, a plain unmanaged PuTTY session, or an unsupported wrapper remains outside the experimental candidate boundary. sshpic deliberately does not fall back to an unrelated process or `remote_host` for upload. A successful Codex image paste renders exactly `[Image #1]`; no response or a raw remote path left visible is a failed result.
 
-The foreground session can be interactive, but sshpic's short home/upload/verify connections use `BatchMode=yes`. If `Ctrl+V` reports an authentication failure, first run a separate non-interactive check and resolve keys, `ssh-agent`, host-key acceptance, or jump-host configuration:
+On Windows Terminal, confirm `Get-AppxPackage Microsoft.WindowsTerminal | Select-Object Name, Version` reports at least `1.24.10921` (or check the application's About page for a non-Store build). The managed `ssh` command runs Plink with a paste-aware stdin proxy. With bracketed paste enabled by the remote Codex input, Windows Terminal reports an image clipboard as an empty `ESC[200~ESC[201~` frame; sshpic converts that frame to the bracketed remote image path after upload and SHA-256 verification. If the terminal is older, the frame never arrives and sshpic cannot infer that `Ctrl+V` was an image paste. Do not bind `Ctrl+V` to a script or manually type the control sequence.
+
+On WezTerm, the managed Lua callback still uses focused-pane process evidence. Reload the configuration or fully restart WezTerm after installation before testing.
+
+The foreground Plink session prompts for the password once. The upload helpers are batch-only and reuse that authenticated connection, so they never ask for a second password. If `Ctrl+V` reports that the shared session or SFTP is unavailable, keep the original SSH pane open, confirm the server exposes SFTP with POSIX paths/permissions and POSIX rename, and rerun the installer to repair the exact managed PuTTY policies. Do not add a key merely to work around this path.
+
+The initial password path intentionally accepts a direct hostname or IP with an explicit user. Saved aliases, jump/proxy options, forwarding, remote commands, and password command-line flags are rejected.
+
+If the installer just added Go, WezTerm, or PuTTY through `winget`, open a new Git Bash window and rerun `./install.sh`, or repeat this synchronous PowerShell invocation:
 
 ```powershell
-ssh.exe -o BatchMode=yes -o ConnectTimeout=5 my-host true
+& "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./install.sh
 ```
 
-Prefer an SSH `Host` alias containing the intended user/key settings. A raw IP is discouraged and works only if that exact preflight succeeds.
-
-If the installer just added Go or WezTerm through `winget`, open a new Git Bash window and rerun `./install.sh`. Do not run `./install.sh` directly from a standalone PowerShell prompt: its Windows file association may launch a separate Git Bash process asynchronously and return before installation finishes. After installation, PowerShell is still supported as the runtime shell inside WezTerm. Fully restart or reload WezTerm as directed by the install output.
+Do not run a literal `./install.sh` from PowerShell. Its detached Windows file association cannot provide a reliable completion or exit status, so the installer rejects that launch form before making changes. Wait for the explicit install success message, then open a new PowerShell 7 tab or pane. Fully restart or reload WezTerm as directed by the install output.
 
 ## Windows clipboard checks fail
 
 The Windows provider runs `powershell.exe` (or `pwsh.exe` when Windows PowerShell is unavailable) in non-interactive STA mode and uses `System.Windows.Forms.Clipboard`. It requires a normal signed-in interactive desktop session. Headless CI, services, session-isolated processes, and non-Windows PowerShell hosts cannot prove clipboard support.
 
-Copy an actual bitmap/image to the clipboard before pressing `Ctrl+V`; copying a filename or URL is text, so WezTerm native Paste handles it. `sshpic shot` and `sshpic full` screen capture are not currently implemented on Windows—the experimental Windows flow starts with an image already on the clipboard.
+Copy an actual bitmap/image to the clipboard before pressing `Ctrl+V`; copying a filename or URL is text. WezTerm delegates that text to native Paste, while the Windows Terminal proxy forwards its non-empty bracketed-paste frame byte-for-byte. `sshpic shot` and `sshpic full` screen capture are not currently implemented on Windows—the experimental Windows flow starts with an image already on the clipboard.
 
 Temporary clipboard contention is retried. A persistent `clipboard busy` or `System.Windows.Forms` error is a provider failure, not “no image”; include the exact `sshpic doctor wezterm` output in the report.
 
 ## Windows text paste is changed, duplicated, or uploaded
 
-This is release-blocking. With text on the clipboard, `Ctrl+V` must call WezTerm's native clipboard Paste exactly once. Text must not pass through an sshpic payload, upload command, shell command, or synthetic keystroke path.
+This is release-blocking. With text on the clipboard, `Ctrl+V` must call WezTerm's native clipboard Paste exactly once, or Windows Terminal must deliver one bracketed-paste frame whose payload sshpic forwards byte-for-byte. Text must not pass through an sshpic upload command, synthetic keystroke path, normalization step, or log. On Windows Terminal, a no-image or failed image-handler result must forward the original empty frame unchanged; any debug/error text inserted into Codex input is also release-blocking.
 
-Run the Windows E2E harness and retain its exact `[Image #1]`, local/remote PNG SHA-256 equality, native text-paste, and restore evidence:
+For WezTerm, run the Windows E2E harness and retain its exact `[Image #1]`, local/remote PNG SHA-256 equality, native text-paste, and restore evidence:
 
 ```powershell
 .\scripts\verify-windows-wezterm-codex-e2e.ps1
@@ -51,9 +58,11 @@ sshpic restore wezterm
 
 The restore command should remove only sshpic-owned WezTerm state and recover the installer's saved configuration. If restore reports a mismatch or missing backup, do not delete WezTerm configuration by hand; preserve the doctor/restore output and the configuration files for a bug report.
 
-## Windows Terminal or WSL does not work
+For Windows Terminal, retain an equivalent manual bundle from version 1.24.10921 or newer showing the stdin-proxy path, exact text bytes, the image empty-frame conversion, and the unchanged empty-frame fallback. The WezTerm harness alone is not Windows Terminal evidence.
 
-That is expected today. The Windows release candidate is limited to WezTerm on Windows 10/11, a native PowerShell or Git Bash pane, and Windows OpenSSH (`ssh.exe`); it remains experimental pending retained real interactive E2E PASS evidence. Windows Terminal and WSL are separate `TBD` targets.
+## WSL does not work
+
+That is expected today. The password release candidates are native Windows Terminal and WezTerm sessions using the managed PowerShell 7 command (or explicit `sshpic ssh` from another native shell hosted by one of those terminals) and PuTTY 0.84+. Windows PowerShell 5.1 is unsupported for that command. SSH launched inside WSL is a separate `TBD` target; neither native Windows adapter applies there.
 
 ## iTerm2 Python runtime is missing
 

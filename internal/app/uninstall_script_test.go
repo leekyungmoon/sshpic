@@ -25,15 +25,15 @@ func TestMain(m *testing.M) {
 
 func runUninstallTestHelper() {
 	name := strings.TrimSuffix(strings.ToLower(filepath.Base(os.Args[0])), ".exe")
-	switch name {
-	case "uname":
+	switch {
+	case name == "uname":
 		platform := os.Getenv("SSHPIC_TEST_UNAME")
 		if platform == "" {
 			platform = "MINGW64_NT-10.0-26100"
 		}
 		fmt.Fprintln(os.Stdout, platform)
 		os.Exit(0)
-	case "go":
+	case name == "go":
 		if len(os.Args) == 2 && os.Args[1] == "version" {
 			fmt.Fprintln(os.Stdout, "go version go1.22.12 windows/amd64")
 			os.Exit(0)
@@ -42,6 +42,9 @@ func runUninstallTestHelper() {
 			switch os.Args[2] {
 			case "GOBIN", "GOPATH":
 				fmt.Fprintln(os.Stdout, os.Getenv("SSHPIC_TEST_GOBIN"))
+				os.Exit(0)
+			case "GOEXE":
+				fmt.Fprintln(os.Stdout, ".exe")
 				os.Exit(0)
 			}
 		}
@@ -53,13 +56,16 @@ func runUninstallTestHelper() {
 			os.Exit(1)
 		}
 		os.Exit(0)
-	case "sshpic-uninstall-helper":
+	case name == "sshpic-uninstall-helper" || strings.HasPrefix(name, "sshpic-uninstall-helper."):
 		if len(os.Args) == 2 && os.Args[1] == "version" {
 			fmt.Fprintln(os.Stdout, "sshpic test")
 			os.Exit(0)
 		}
 		if logPath := os.Getenv("SSHPIC_TEST_UNINSTALL_LOG"); logPath != "" {
-			_ = os.WriteFile(logPath, []byte(strings.Join(os.Args[1:], "\n")+"\n"), 0o600)
+			if logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+				_, _ = fmt.Fprintln(logFile, strings.Join(os.Args[1:], "\t"))
+				_ = logFile.Close()
+			}
 		}
 		code, _ := strconv.Atoi(os.Getenv("SSHPIC_TEST_UNINSTALL_EXIT"))
 		os.Exit(code)
@@ -106,15 +112,46 @@ func TestWindowsUninstallScriptHasOneSourcePreservingBehavior(t *testing.T) {
 	for _, required := range []string{
 		"uninstall has one behavior and accepts no options",
 		"Usage: ./uninstall.sh (from Git Bash in the cloned checkout)",
+		"internal-remove-powershell-ssh-wrapper",
 		"uninstall wezterm --uninstall-protocol 3 --source-root",
+		"internal-remove-putty-sessions",
 		"will preserve the source checkout",
 		`bin_dir="$("$go_cmd" env GOBIN)"`,
-		`helper="$bin_dir/sshpic-uninstall-helper.exe"`,
-		`stale_install_helper="$bin_dir/sshpic-install-helper.exe"`,
+		`helper_lock="$bin_dir/.sshpic-uninstall-helper.lock"`,
+		`if ! mkdir -- "$helper_lock" 2>/dev/null; then`,
+		`if [ -e "$helper" ] || [ -L "$helper" ]; then`,
+		`helper_owned=1`,
 		"SSHPIC_WINDOWS_UNINSTALL_VERIFIED",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("uninstall.sh is missing %q", required)
+		}
+	}
+}
+
+func TestWindowsUninstallPreservesUnownedLegacyHelperNames(t *testing.T) {
+	requireWindowsGitBash(t)
+	repoRoot := repositoryRoot(t)
+	helperBin := t.TempDir()
+	legacyFiles := map[string]string{
+		"sshpic-install-helper.exe":   "unowned install sentinel",
+		"sshpic-uninstall-helper.exe": "unowned uninstall sentinel",
+	}
+	for name, content := range legacyFiles {
+		if err := os.WriteFile(filepath.Join(helperBin, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := runWindowsUninstallScript(t, repoRoot, nil, map[string]string{
+		"SSHPIC_TEST_GOBIN": helperBin,
+	})
+	if result.err == nil || !strings.Contains(result.output, "Refusing to replace an existing uninstall helper path") {
+		t.Fatalf("uninstaller did not reject the unowned helper collision: %v\n%s", result.err, result.output)
+	}
+	for name, content := range legacyFiles {
+		data, err := os.ReadFile(filepath.Join(helperBin, name))
+		if err != nil || string(data) != content {
+			t.Fatalf("unowned legacy helper %s changed: data=%q err=%v", name, data, err)
 		}
 	}
 }
@@ -133,7 +170,14 @@ func TestWindowsUninstallScriptInvokesOnlyProtocol3AndPreservesCheckout(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := strings.Fields(string(argsData))
+	calls := strings.Split(strings.TrimSpace(string(argsData)), "\n")
+	if len(calls) != 3 {
+		t.Fatalf("helper call count=%d want 3: %q", len(calls), argsData)
+	}
+	if calls[0] != "internal-remove-powershell-ssh-wrapper" {
+		t.Fatalf("first helper call=%q", calls[0])
+	}
+	args := strings.Split(calls[1], "\t")
 	wantPrefix := []string{"uninstall", "wezterm", "--uninstall-protocol", "3", "--source-root"}
 	if len(args) < len(wantPrefix)+1 {
 		t.Fatalf("helper args too short: %q", argsData)
@@ -145,6 +189,9 @@ func TestWindowsUninstallScriptInvokesOnlyProtocol3AndPreservesCheckout(t *testi
 	}
 	if len(args) != len(wantPrefix)+1 {
 		t.Fatalf("uninstaller passed optional behavior flags: %q", argsData)
+	}
+	if calls[2] != "internal-remove-putty-sessions" {
+		t.Fatalf("third helper call=%q", calls[2])
 	}
 	if _, err := os.Stat(filepath.Join(repoRoot, "go.mod")); err != nil {
 		t.Fatalf("source checkout was not preserved: %v", err)
@@ -166,6 +213,22 @@ func TestWindowsUninstallScriptRejectsEveryArgumentBeforeHelper(t *testing.T) {
 	}
 	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
 		t.Fatalf("helper ran despite rejected argument: %v", err)
+	}
+}
+
+func TestWindowsUninstallRejectsGOBINInsideCheckoutBeforeHelper(t *testing.T) {
+	requireWindowsGitBash(t)
+	repoRoot := repositoryRoot(t)
+	logPath := filepath.Join(t.TempDir(), "must-not-run.txt")
+	result := runWindowsUninstallScript(t, repoRoot, nil, map[string]string{
+		"SSHPIC_TEST_GOBIN":         repoRoot,
+		"SSHPIC_TEST_UNINSTALL_LOG": logPath,
+	})
+	if result.err == nil || !strings.Contains(result.output, "GOBIN is inside the source checkout") {
+		t.Fatalf("source-overlap uninstaller result=%v\n%s", result.err, result.output)
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("uninstall helper ran after source-overlap rejection: %v", err)
 	}
 }
 
@@ -226,7 +289,10 @@ func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, ext
 	if err := os.MkdirAll(tempRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	helperBin := filepath.Join(t.TempDir(), "helper-bin")
+	helperBin := extraEnv["SSHPIC_TEST_GOBIN"]
+	if helperBin == "" {
+		helperBin = filepath.Join(t.TempDir(), "helper-bin")
+	}
 	if err := os.MkdirAll(helperBin, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -249,6 +315,9 @@ func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, ext
 		"SSHPIC_TEST_GOBIN="+helperBin,
 	)
 	for key, value := range extraEnv {
+		if key == "SSHPIC_TEST_GOBIN" {
+			continue
+		}
 		env = append(env, key+"="+value)
 	}
 	cmd.Env = env

@@ -3,28 +3,28 @@
 | Platform / terminal | Status |
 |---|---|
 | macOS + iTerm2 | Supported direct paste (`Cmd+V`) |
-| Windows 10/11 + current WezTerm + current native Windows OpenSSH (`ssh.exe`) | Experimental release candidate; implementation/install available, but no public direct-paste support claim until a retained real interactive E2E PASS bundle is reviewed |
-| Windows Terminal | TBD; no support claim until a target-specific adapter and real E2E pass |
-| WSL terminal sessions and SSH launched inside WSL | TBD; native Windows WezTerm support does not imply WSL support |
+| Windows 10/11 + Windows Terminal 1.24.10921+ + PowerShell 7 + PuTTY Plink 0.84+ | Experimental password-SSH release candidate; paste-aware Plink stdin-proxy implementation/install available, but no public direct-paste support claim until a retained real interactive E2E PASS bundle is reviewed |
+| Windows 10/11 + current WezTerm + PowerShell 7 + PuTTY Plink 0.84+ | Experimental password-SSH release candidate; focused-pane implementation/install available, but no public direct-paste support claim until a retained real interactive E2E PASS bundle is reviewed |
+| WSL terminal sessions and SSH launched inside WSL | TBD; native Windows Terminal and WezTerm candidates do not imply WSL support |
 | Ubuntu GNOME Terminal on X11 | TBD; no support claim until real X11 E2E passes |
 | Ubuntu GNOME Terminal on Wayland | TBD; no support claim until real Wayland E2E passes |
 | macOS Terminal.app | TBD; no support claim until real Terminal.app E2E passes |
 
-`sshpic` uploads an image and pastes its remote path rather than calling a terminal-agent attachment API. In the Windows+WezTerm Codex flow, Codex CLI recognizes that path and the required UI result is exactly `[Image #1]`; other terminal agents may continue to display the path.
+`sshpic` uploads an image and pastes its remote path rather than calling a terminal-agent attachment API. In both native Windows Codex flows, Codex CLI recognizes that path and the required UI result is exactly `[Image #1]`; other terminal agents may continue to display the path.
 
-The Windows release-candidate row is intentionally narrow:
+The Windows release-candidate rows are intentionally narrow:
 
-- install with the cross-platform `./install.sh` command, using an already-open Git Bash window on Windows;
-- run WezTerm with native PowerShell or Git Bash as the pane shell;
-- start the connection with native Windows `ssh.exe` in the focused pane;
-- use current releases that provide the WezTerm Lua APIs and OpenSSH safety options used by the integration;
-- preconfigure non-interactive SSH authentication for the short `BatchMode=yes` home/upload/verify operations;
-- use `Ctrl+V` for both image handling and WezTerm-native text paste;
+- install with the cross-platform `install.sh`: run `./install.sh` in an already-open Git Bash window, or run `& "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./install.sh` from PowerShell;
+- run Windows Terminal 1.24.10921+ or WezTerm with PowerShell 7 (`pwsh`) for the normal `ssh user@host` command, or use `sshpic ssh user@host` explicitly from another native shell hosted by one of those terminals;
+- enter the server password only at Plink's interactive prompt; on the Windows Terminal route Plink reads it directly from the console before sshpic starts its post-authentication stdin proxy, so its bytes never enter sshpic memory, logs, files, or arguments;
+- use Windows Terminal 1.24.10921+ for its empty bracketed-paste image signal, or a current WezTerm release with the required Lua APIs, plus PuTTY 0.84 connection-sharing controls;
+- expose an SFTP private starting directory, POSIX paths and permissions, and the OpenSSH POSIX-rename extension;
+- use `Ctrl+V` for both image handling and ordinary text paste: Windows Terminal non-empty bracketed-paste frames are forwarded byte-for-byte, while WezTerm delegates text to its native Paste action;
 - manage the integration with `sshpic install wezterm`, `sshpic doctor wezterm`, and `sshpic restore wezterm`.
 
-PowerShell is supported as a runtime shell **inside a WezTerm pane**, but not as the installer shell. On Windows, open Git Bash first and run `./install.sh` there. Do not invoke it directly from a standalone PowerShell prompt: a `.sh` file association may launch Git Bash asynchronously and return before installation finishes. A standalone PowerShell terminal host, Windows Terminal, WSL, PuTTY/Plink, nested SSH hidden behind an unsupported wrapper, and arbitrary terminals are outside the candidate boundary.
+PowerShell 7 (`pwsh`) is the managed runtime shell inside either candidate terminal. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command and is touched only to clean an exact recognized legacy sshpic block. A literal `./install.sh` at a PowerShell prompt resolves through a detached `.sh` association and is rejected before changes; use the explicit Git Bash invocation above. WSL, plain unmanaged PuTTY terminals, nested SSH hidden behind an unsupported wrapper, and arbitrary terminals remain outside the candidate boundary.
 
-`TBD` means no direct-paste support claim exists yet. Windows Terminal, WSL, Terminal.app, and Ubuntu require target-specific restore proof and real E2E evidence before this matrix changes. Binary releases, clipboard-provider stubs, generic `sshpic doctor` output, or read-only `sshpic doctor terminalapp` / `sshpic doctor ubuntu-terminal` safe-fail probes are not direct-paste support evidence by themselves.
+`TBD` means no direct-paste support claim exists yet. WSL, Terminal.app, and Ubuntu require target-specific restore proof and real E2E evidence before this matrix changes. The two Windows rows are implemented but still experimental: binary releases, clipboard-provider stubs, generic `sshpic doctor` output, or preflight-only tests are not direct-paste support evidence by themselves.
 
 Terminal.app and Ubuntu harnesses exist only to collect conservative evidence:
 
@@ -46,3 +46,5 @@ Windows + WezTerm has its own Windows-only evidence harness:
 ```
 
 A Windows CI build and the harness's `-PreflightOnly` check prove portability and preflight behavior only. This repository does not retain a real interactive PASS bundle yet, so Windows + WezTerm remains experimental. A reviewed bundle must prove focused-pane `Ctrl+V` produces exactly `[Image #1]` in Codex, the locally materialized clipboard PNG matches the remote mode-`0600` PNG by SHA-256, native text paste is unchanged, and configuration restore succeeds before making a public support claim.
+
+Windows Terminal requires its own retained real interactive bundle on version 1.24.10921 or newer. That bundle must prove the managed PowerShell 7 `ssh` command launched Plink through sshpic's paste-aware stdin proxy, an image `Ctrl+V` arrived as an empty bracketed-paste frame and produced exactly `[Image #1]`, the local and remote PNG SHA-256 values match, non-empty text paste is byte-for-byte identical, and a no-image or handler-failure case forwards the original empty frame without debug text or a synthetic path. WezTerm evidence does not promote the Windows Terminal row, and vice versa.

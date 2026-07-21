@@ -25,7 +25,7 @@ export SSHPIC_REMOTE_DIR='/home/${USER}/.sshpic/images'
 
 The normal iTerm2 paste path detects the foreground `ssh` target at paste time, so dotfiles do not need to pin a host for everyday use.
 
-The Windows WezTerm path also does not need or allow a configured-host fallback for shortcut-driven target selection. It uses only the focused pane's native `ssh.exe` foreground-process `argv`.
+The Windows integrations do not need or allow configured-host fallback for shortcut-driven target selection. WezTerm uses only the focused pane's verified native `ssh.exe` or managed Plink `argv`; Windows Terminal uses only the explicit destination already parsed by the managed `sshpic ssh` proxy.
 
 Do not copy an installer-generated WezTerm backup between machines or hand-edit sshpic ownership markers as shared dotfiles. Use the lifecycle commands on each Windows machine so user configuration is backed up and restored locally:
 
