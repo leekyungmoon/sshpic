@@ -63,7 +63,7 @@ wait_for_windows_tool() {
     printf 'Last %s error: %s\n' "$tool_label" "$probe_output" >&2
   fi
   echo "Windows Code Integrity may still be applying trust after winget installation." >&2
-  echo 'Close this shell, open a new PowerShell, and rerun .\install.ps1; sshpic was not reported as installed.' >&2
+  echo 'Close this shell, open a new Git Bash, and rerun ./install.sh; sshpic was not reported as installed.' >&2
   return 1
 }
 
@@ -144,7 +144,7 @@ need_go() {
     winget_status=0
     winget.exe install --id GoLang.Go --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
     if ! find_go; then
-      echo "winget finished with exit $winget_status, but Go could not be found; open a new PowerShell and rerun .\install.ps1" >&2
+      echo "winget finished with exit $winget_status, but Go could not be found; open a new Git Bash and rerun ./install.sh" >&2
       exit 1
     fi
     if ! wait_for_windows_tool "Go ($go_cmd)" "$go_cmd" version; then
@@ -193,7 +193,7 @@ install_wezterm_if_needed() {
   winget_status=0
   winget.exe install --id wez.wezterm --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
   if ! find_wezterm; then
-    echo "winget finished with exit $winget_status, but WezTerm could not be found; open a new PowerShell and rerun .\install.ps1" >&2
+    echo "winget finished with exit $winget_status, but WezTerm could not be found; open a new Git Bash and rerun ./install.sh" >&2
     exit 1
   fi
   if ! wait_for_windows_tool "WezTerm ($wezterm_cmd)" "$wezterm_cmd" --version; then
@@ -235,13 +235,14 @@ case "$host_os" in
     script_dir="$(CDPATH= cd -- "$(dirname -- "$install_script")" && pwd -P)"
     cd "$script_dir"
     echo "Detected OS: Windows (Git Bash/MSYS)"
-    echo 'PowerShell users must run .\install.ps1; invoking .\install.sh through a PowerShell file association may return before installation finishes.'
+    echo "Installer entry point: ./install.sh"
+    echo 'Run it from an already-open Git Bash window; a PowerShell .sh file association does not report completion or an exit status.'
     ;;
   macos) echo "Detected OS: macOS" ;;
   linux) echo "Detected OS: Linux" ;;
   wsl)
     echo "Detected OS: WSL" >&2
-    echo 'Windows direct-paste installation must run on native Windows, not WSL; use .\install.ps1 in PowerShell or ./install.sh in Git Bash.' >&2
+    echo 'Windows direct-paste installation must run on native Windows, not WSL; open Git Bash and run ./install.sh.' >&2
     exit 1
     ;;
   *)

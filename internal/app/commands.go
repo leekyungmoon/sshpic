@@ -511,7 +511,7 @@ func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) 
 	if result.NothingToDo {
 		fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
 		fmt.Fprintln(stderr, "complete uninstall could not be proven because no owned WezTerm manifest or resumable uninstall journal was found")
-		fmt.Fprintln(stderr, "If sshpic may still be installed, run .\\install.ps1 once and then rerun .\\uninstall.ps1.")
+		fmt.Fprintln(stderr, "If sshpic may still be installed, run ./install.sh once from Git Bash and then rerun .\\uninstall.ps1.")
 		return 1
 	}
 	if !localExecuted {

@@ -23,7 +23,7 @@ ssh.exe -o BatchMode=yes -o ConnectTimeout=5 my-host true
 
 Prefer an SSH `Host` alias containing the intended user/key settings. A raw IP is discouraged and works only if that exact preflight succeeds.
 
-If the installer just added Go or WezTerm through `winget`, open a new PowerShell and rerun `.\install.ps1`, or open a new Git Bash and rerun `./install.sh`. Do not run `./install.sh` directly from PowerShell: its Windows file association may launch a separate Git Bash process asynchronously and return before installation finishes. Then fully restart or reload WezTerm as directed by the install output.
+If the installer just added Go or WezTerm through `winget`, open a new Git Bash window and rerun `./install.sh`. Do not run `./install.sh` directly from a standalone PowerShell prompt: its Windows file association may launch a separate Git Bash process asynchronously and return before installation finishes. After installation, PowerShell is still supported as the runtime shell inside WezTerm. Fully restart or reload WezTerm as directed by the install output.
 
 ## Windows clipboard checks fail
 

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,103 +8,6 @@ import (
 	"strings"
 	"testing"
 )
-
-func TestWindowsInstallPowerShellWaitsForGitBashAndReturnsExitCode(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("PowerShell wrapper execution is Windows-only")
-	}
-	powerShell := firstInstallTestCommand("powershell.exe", "pwsh.exe")
-	if powerShell == "" {
-		t.Skip("PowerShell is unavailable")
-	}
-
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	installer := filepath.Join(repoRoot, "install.ps1")
-	temp := t.TempDir()
-	fakeBash := filepath.Join(temp, "fake git bash.cmd")
-	workingLog := filepath.Join(temp, "working-directory.txt")
-	doneLog := filepath.Join(temp, "completed.txt")
-	fakeSource := "@echo off\r\n" +
-		"echo %CD%>\"%SSHPIC_INSTALL_TEST_WORKING_LOG%\"\r\n" +
-		"echo completed>\"%SSHPIC_INSTALL_TEST_DONE_LOG%\"\r\n" +
-		"exit /b %SSHPIC_INSTALL_TEST_EXIT%\r\n"
-	if err := os.WriteFile(fakeBash, []byte(fakeSource), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command(powerShell,
-		"-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", installer,
-	)
-	cmd.Dir = filepath.Join(temp, "unrelated working directory")
-	if err := os.MkdirAll(cmd.Dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	cmd.Env = installTestEnvironment(map[string]string{
-		"SSHPIC_GIT_BASH":                 fakeBash,
-		"SSHPIC_INSTALL_TEST_WORKING_LOG": workingLog,
-		"SSHPIC_INSTALL_TEST_DONE_LOG":    doneLog,
-		"SSHPIC_INSTALL_TEST_EXIT":        "37",
-	})
-	out, runErr := cmd.CombinedOutput()
-	var exitErr *exec.ExitError
-	if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != 37 {
-		t.Fatalf("install.ps1 error=%v output=%s", runErr, out)
-	}
-	if _, err := os.Stat(doneLog); err != nil {
-		t.Fatalf("PowerShell returned before fake Git Bash completed: %v", err)
-	}
-	workingData, err := os.ReadFile(workingLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gotWorking := filepath.Clean(strings.TrimSpace(string(workingData)))
-	if !strings.EqualFold(gotWorking, filepath.Clean(repoRoot)) {
-		t.Fatalf("Git Bash working directory=%q want=%q", gotWorking, repoRoot)
-	}
-	text := string(out)
-	for _, want := range []string{
-		`From PowerShell run .\install.ps1, not .\install.sh`,
-		`file associations may launch Git Bash asynchronously`,
-		`waiting for its exit status`,
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("install.ps1 output missing %q: %s", want, text)
-		}
-	}
-}
-
-func TestWindowsInstallPowerShellSyntaxParses(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("PowerShell parser check is Windows-only")
-	}
-	powerShell := firstInstallTestCommand("powershell.exe", "pwsh.exe")
-	if powerShell == "" {
-		t.Skip("PowerShell is unavailable")
-	}
-	installer, err := filepath.Abs(filepath.Join("..", "..", "install.ps1"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	parserSource := `$tokens = $null
-$parseErrors = $null
-[System.Management.Automation.Language.Parser]::ParseFile(
-  $env:SSHPIC_INSTALL_TEST_PARSE_PATH,
-  [ref]$tokens,
-  [ref]$parseErrors
-) | Out-Null
-if ($parseErrors.Count -ne 0) {
-  $parseErrors | ForEach-Object { [Console]::Error.WriteLine($_.Message) }
-  exit 1
-}`
-	cmd := exec.Command(powerShell, "-NoLogo", "-NoProfile", "-Command", parserSource)
-	cmd.Env = installTestEnvironment(map[string]string{"SSHPIC_INSTALL_TEST_PARSE_PATH": installer})
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("PowerShell parser rejected install.ps1: %v\n%s", err, out)
-	}
-}
 
 func TestWindowsToolProbeRetriesOnlyUntilExecutableRuns(t *testing.T) {
 	shell := installTestShell()
@@ -208,7 +110,7 @@ printf 'build ran\n' >"$build_sentinel"
 	for _, want := range []string{
 		"could not execute from Git Bash after 4 attempts",
 		"application control blocked attempt 4",
-		`rerun .\install.ps1`,
+		`rerun ./install.sh`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("permanent failure output missing %q: %s", want, text)
@@ -242,28 +144,4 @@ func installTestShell() string {
 	}
 	path, _ := exec.LookPath("sh")
 	return path
-}
-
-func firstInstallTestCommand(names ...string) string {
-	for _, name := range names {
-		if path, err := exec.LookPath(name); err == nil {
-			return path
-		}
-	}
-	return ""
-}
-
-func installTestEnvironment(overrides map[string]string) []string {
-	env := os.Environ()
-	for key, value := range overrides {
-		prefix := strings.ToUpper(key) + "="
-		filtered := env[:0]
-		for _, entry := range env {
-			if !strings.HasPrefix(strings.ToUpper(entry), prefix) {
-				filtered = append(filtered, entry)
-			}
-		}
-		env = append(filtered, key+"="+value)
-	}
-	return env
 }

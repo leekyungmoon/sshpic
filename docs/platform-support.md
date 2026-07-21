@@ -14,7 +14,7 @@
 
 The Windows release-candidate row is intentionally narrow:
 
-- install from PowerShell with `git clone`, `Set-Location sshpic`, `.\install.ps1`, or from Git Bash with `git clone`, `cd sshpic`, `./install.sh`;
+- install with the cross-platform `./install.sh` command, using an already-open Git Bash window on Windows;
 - run WezTerm with native PowerShell or Git Bash as the pane shell;
 - start the connection with native Windows `ssh.exe` in the focused pane;
 - use current releases that provide the WezTerm Lua APIs and OpenSSH safety options used by the integration;
@@ -22,7 +22,7 @@ The Windows release-candidate row is intentionally narrow:
 - use `Ctrl+V` for both image handling and WezTerm-native text paste;
 - manage the integration with `sshpic install wezterm`, `sshpic doctor wezterm`, and `sshpic restore wezterm`.
 
-PowerShell is supported as the installer shell through `.\install.ps1` and as a shell **inside a WezTerm pane**. Do not invoke `./install.sh` directly from PowerShell: a `.sh` file association may launch Git Bash asynchronously and return before installation finishes. A standalone PowerShell terminal host, Windows Terminal, WSL, PuTTY/Plink, nested SSH hidden behind an unsupported wrapper, and arbitrary terminals are outside the candidate boundary.
+PowerShell is supported as a runtime shell **inside a WezTerm pane**, but not as the installer shell. On Windows, open Git Bash first and run `./install.sh` there. Do not invoke it directly from a standalone PowerShell prompt: a `.sh` file association may launch Git Bash asynchronously and return before installation finishes. A standalone PowerShell terminal host, Windows Terminal, WSL, PuTTY/Plink, nested SSH hidden behind an unsupported wrapper, and arbitrary terminals are outside the candidate boundary.
 
 `TBD` means no direct-paste support claim exists yet. Windows Terminal, WSL, Terminal.app, and Ubuntu require target-specific restore proof and real E2E evidence before this matrix changes. Binary releases, clipboard-provider stubs, generic `sshpic doctor` output, or read-only `sshpic doctor terminalapp` / `sshpic doctor ubuntu-terminal` safe-fail probes are not direct-paste support evidence by themselves.
 

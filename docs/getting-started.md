@@ -2,7 +2,7 @@
 
 ## Install from a clone
 
-On macOS, keep using the existing installer:
+Use the same installer command on Windows, macOS, and Linux:
 
 ```sh
 git clone https://github.com/leekyungmoon/sshpic.git
@@ -10,29 +10,17 @@ cd sshpic
 ./install.sh
 ```
 
-On Windows 10/11, install from PowerShell:
+On Windows 10/11, open **Git Bash first**, then run those commands in that already-open Git Bash window. Do not enter `./install.sh` at a standalone PowerShell prompt: a Windows `.sh` file association may start a separate Git Bash process asynchronously and return control before installation finishes. Do not install from WSL. When Go or WezTerm is missing, the installer can use `winget`; if it asks for a rerun after provisioning a dependency, open a new Git Bash window and run `./install.sh` again.
 
-```powershell
-git clone https://github.com/leekyungmoon/sshpic.git
-Set-Location sshpic
-.\install.ps1
-```
+PowerShell remains supported as a runtime shell inside a WezTerm pane after installation. The Git Bash requirement applies to running the installer, not to the shell used for the later SSH/Codex session.
 
-Or install from Git Bash:
-
-```sh
-git clone https://github.com/leekyungmoon/sshpic.git
-cd sshpic
-./install.sh
-```
-
-Do not run `./install.sh` directly from PowerShell: its Windows file association may launch a separate Git Bash process asynchronously and return the prompt before installation finishes. Do not run either installer in WSL. When Go or WezTerm is missing, the installer can use `winget`; after installing a missing dependency, open a new shell and rerun the matching installer if directed.
-
-## Install with the one-liner
+## Install with the one-liner (macOS/Linux)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh | bash
 ```
+
+Windows installation requires the cloned checkout shown above so the installer can publish and verify one coherent WezTerm installation generation.
 
 ## Use
 

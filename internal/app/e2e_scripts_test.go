@@ -89,7 +89,8 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		`Linux`,
 		`*[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]*|*[Ww][Ss][Ll]*`,
 		`Windows direct-paste installation must run on native Windows, not WSL`,
-		`use .\install.ps1 in PowerShell or ./install.sh in Git Bash`,
+		`Installer entry point: ./install.sh`,
+		`already-open Git Bash window`,
 		`--detect-os`,
 		`internal-begin-windows-install windows-wezterm`,
 		`--install-generation-protocol 1`,
@@ -109,7 +110,6 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		`SSHPIC_WINDOWS_INSTALL_VERIFIED`,
 		`TEST IN WEZTERM ONLY`,
 		`Expected Codex UI: [Image #1]`,
-		`PowerShell users must run .\install.ps1`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("install.sh missing OS-detection contract %q", want)
@@ -141,29 +141,6 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		t.Fatal("Windows verified marker must have one success-only emission site")
 	}
 
-	powerShellPath := filepath.Join(repoRoot, "install.ps1")
-	powerShellData, err := os.ReadFile(powerShellPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	powerShellText := string(powerShellData)
-	for _, want := range []string{
-		`$PSScriptRoot`,
-		`SSHPIC_GIT_BASH`,
-		`Push-Location -LiteralPath $repoRoot`,
-		`"./install.sh"`,
-		`$exitCode = $LASTEXITCODE`,
-		`PowerShell .sh file associations may launch Git Bash asynchronously`,
-	} {
-		if !strings.Contains(powerShellText, want) {
-			t.Fatalf("install.ps1 missing synchronous wrapper contract %q", want)
-		}
-	}
-	for _, forbidden := range []string{"Start-Process", "Invoke-Item", "cmd /c start"} {
-		if strings.Contains(powerShellText, forbidden) {
-			t.Fatalf("install.ps1 must not use asynchronous file association path %q", forbidden)
-		}
-	}
 	if runtime.GOOS != "windows" {
 		cmd := exec.Command("sh", installPath, "--detect-os")
 		out, err := cmd.CombinedOutput()
@@ -233,6 +210,7 @@ func TestWindowsWezTermE2EHarnessUsesRunUniqueImageAndExactCodexGate(t *testing.
 		`$ShaEqualityResult`,
 		`[Image #1]`,
 		`BatchMode=yes`,
+		`Invoke-Logged $GitBash @("--noprofile", "--norc", "./install.sh")`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Windows E2E harness missing %q", want)

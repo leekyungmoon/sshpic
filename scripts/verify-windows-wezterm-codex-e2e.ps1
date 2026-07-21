@@ -42,7 +42,6 @@ function Resolve-WezTerm {
 function Assert-RepoContract {
     $required = @(
         (Join-Path $RepoRoot "install.sh"),
-        (Join-Path $RepoRoot "install.ps1"),
         (Join-Path $RepoRoot ".github\workflows\ci.yml"),
         (Join-Path $RepoRoot "internal\terminal\wezterm\lua.go"),
         (Join-Path $RepoRoot "internal\terminal\wezterm\install.go")
@@ -141,8 +140,7 @@ function Invoke-Logged {
         }
         # Windows PowerShell 5.1 turns successful native stderr into a
         # terminating NativeCommandError when ErrorActionPreference is Stop.
-        # install.ps1 and its synchronous install.sh child may print supported-
-        # surface notices to stderr.
+        # install.sh may print supported-surface notices to stderr.
         $ErrorActionPreference = "Continue"
         $output = & $FilePath @Arguments 2>&1 | Out-String
         $code = $LASTEXITCODE
@@ -519,9 +517,8 @@ try {
     $SshPreflightResult = "pass"
 
     $InstallAttempted = $true
-    $PowerShellInstaller = Join-Path $RepoRoot "install.ps1"
-    $installExit = Invoke-Logged $PowerShellExe @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PowerShellInstaller, "-GitBashPath", $GitBash) $InstallLog $RepoRoot
-    if ($installExit -ne 0) { throw "install.ps1 exited $installExit" }
+    $installExit = Invoke-Logged $GitBash @("--noprofile", "--norc", "./install.sh") $InstallLog $RepoRoot
+    if ($installExit -ne 0) { throw "install.sh exited $installExit" }
     $Sshpic = Resolve-Sshpic
     if (-not $Sshpic) { throw "sshpic.exe could not be resolved after install" }
 

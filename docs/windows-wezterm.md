@@ -15,7 +15,7 @@ All of the following are required:
 
 Windows Terminal, WSL terminals, SSH launched inside WSL, PuTTY/Plink, headless Windows sessions, Windows services, and wrappers that hide the focused `ssh.exe` process are outside this candidate. They remain `TBD`.
 
-For image-paste runtime, PowerShell is supported only as the shell **inside a WezTerm pane**. Standalone PowerShell is a supported installer shell through `.\install.ps1`, but starting SSH there does not load the WezTerm integration and is unsupported, just like Windows Terminal.
+For image-paste runtime, PowerShell is supported as the shell **inside a WezTerm pane**. Installation is performed from an already-open Git Bash window; starting SSH from a standalone PowerShell host does not load the WezTerm integration and is unsupported, just like Windows Terminal.
 
 The Windows provider reads an image already present on the clipboard. `sshpic shot` and `sshpic full` screen capture are not implemented on Windows.
 
@@ -23,15 +23,7 @@ The installer and doctor validate executable/config behavior but do not currentl
 
 ## Install
 
-From PowerShell:
-
-```powershell
-git clone https://github.com/leekyungmoon/sshpic.git
-Set-Location sshpic
-.\install.ps1
-```
-
-Or, from Git Bash:
+Open Git Bash, then run the same installation commands used on macOS and Linux:
 
 ```bash
 git clone https://github.com/leekyungmoon/sshpic.git
@@ -39,7 +31,7 @@ cd sshpic
 ./install.sh
 ```
 
-Do **not** invoke `./install.sh` directly from PowerShell. A Windows `.sh` file association may start a separate Git Bash process asynchronously and return the PowerShell prompt before installation finishes; `install.ps1` runs that installer synchronously and reports its real exit status.
+Do **not** invoke `./install.sh` directly from a standalone PowerShell prompt. A Windows `.sh` file association may start a separate Git Bash process asynchronously and return the PowerShell prompt before installation finishes. The canonical installer entry point on every platform is `./install.sh`; on Windows it must run inside the Git Bash window you opened explicitly.
 
 The installer:
 
@@ -49,9 +41,9 @@ The installer:
 4. builds `sshpic.exe`;
 5. runs `sshpic install wezterm`.
 
-If a newly installed executable is not visible to the current installer shell, open a new PowerShell or Git Bash window and rerun the matching installer.
+If a newly installed executable is not visible to the current installer shell, open a new Git Bash window and rerun `./install.sh`.
 
-Do not run either installer from WSL for this integration. After installation, run SSH from native PowerShell or Git Bash **inside WezTerm**, not from a standalone PowerShell host or Windows Terminal.
+Do not run the installer from WSL for this integration. After installation, run SSH from native PowerShell or Git Bash **inside WezTerm**, not from a standalone PowerShell host or Windows Terminal.
 
 ## WezTerm configuration safety
 
@@ -145,9 +137,9 @@ The uninstaller performs these operations in order:
 5. removes and verifies the exact manifest-owned `sshpic.exe`; and
 6. clears the settled Windows install transaction state and reports success only after the disabling postconditions hold.
 
-The cloned source checkout is never deleted or modified. Dirty, untracked, ignored, unpushed, or Codex-project files in it are outside the uninstall target and remain byte-for-byte available. You can reinstall from that same checkout with `.\install.ps1`.
+The cloned source checkout is never deleted or modified. Dirty, untracked, ignored, unpushed, or Codex-project files in it are outside the uninstall target and remain byte-for-byte available. You can reinstall from that same checkout by opening Git Bash there and running `./install.sh`.
 
-If `WEZTERM_CONFIG_FILE` or `SSHPIC_CONFIG` was set during installation, set the same environment variable when uninstalling. There are still no alternate uninstall modes: the environment only identifies the owned manifest/config created by the original install. With no manifest or resumable journal, uninstall fails closed instead of claiming that a possibly installed executable was removed. Reinstall once with `.\install.ps1` to recreate ownership evidence, then run `.\uninstall.ps1`.
+If `WEZTERM_CONFIG_FILE` or `SSHPIC_CONFIG` was set during installation, set the same environment variable when uninstalling. There are still no alternate uninstall modes: the environment only identifies the owned manifest/config created by the original install. With no manifest or resumable journal, uninstall fails closed instead of claiming that a possibly installed executable was removed. Reinstall once from an already-open Git Bash window with `./install.sh` to recreate ownership evidence, then run `.\uninstall.ps1`.
 
 Go is required to build the separate helper. If Windows keeps the installed executable locked, close the named process and rerun; the journal preserves the validated binary identity for that retry.
 

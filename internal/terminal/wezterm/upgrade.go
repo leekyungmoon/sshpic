@@ -670,7 +670,7 @@ func rejectPendingInstallUpgrade(configPath string) error {
 	if err != nil {
 		return err
 	}
-	return errors.New("a sshpic WezTerm upgrade is pending; rerun install.ps1 before restore or uninstall")
+	return errors.New("a sshpic WezTerm upgrade is pending; rerun ./install.sh from Git Bash before restore or uninstall")
 }
 
 func priorPushedLuaIntegrationSource(opts LuaOptions) (string, error) {
