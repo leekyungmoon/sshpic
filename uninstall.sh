@@ -1,6 +1,14 @@
 #!/usr/bin/env sh
 set -eu
 
+windows_uninstall_association_flag="--sshpic-windows-file-association"
+windows_uninstall_association_launch=0
+
+if [ "${1:-}" = "$windows_uninstall_association_flag" ]; then
+  windows_uninstall_association_launch=1
+  shift
+fi
+
 is_windows_file_association_launch() {
   case "$(uname -s 2>/dev/null || printf unknown):$-" in
     MINGW*i*|MSYS*i*|CYGWIN*i*) return 0 ;;
@@ -8,25 +16,56 @@ is_windows_file_association_launch() {
   esac
 }
 
-if is_windows_file_association_launch; then
+run_windows_file_association_uninstaller() {
+  association_script="$0"
+  if command -v cygpath >/dev/null 2>&1; then
+    association_script_unix="$(cygpath -u "$association_script" 2>/dev/null || :)"
+    if [ -n "$association_script_unix" ]; then
+      association_script="$association_script_unix"
+    fi
+  fi
+  case "$association_script" in
+    */*) ;;
+    *) association_script="$(command -v "$association_script" 2>/dev/null || printf '%s' "$association_script")" ;;
+  esac
+  association_dir="$(CDPATH= cd -- "$(dirname -- "$association_script")" && pwd -P)"
+  association_script="$association_dir/$(basename -- "$association_script")"
+  association_bash="$(command -v bash 2>/dev/null || :)"
+  if [ -z "$association_bash" ]; then
+    echo "sshpic uninstall failed: Git Bash could not locate bash." >&2
+    return 69
+  fi
   printf '%s\n' \
-    'sshpic uninstall stopped before making any changes.' \
+    'sshpic: PowerShell ./uninstall.sh launch detected.' \
     '' \
-    'Run it from an already-open Git Bash window:' \
-    '  ./uninstall.sh' \
-    '' \
-    'From PowerShell, run the same uninstall.sh implementation synchronously:' \
-    '  & "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./uninstall.sh' >&2
+    'Windows opened the one uninstaller in Git Bash. Keep this window open until' \
+    'SSHPIC_WINDOWS_UNINSTALL_VERIFIED appears.' >&2
+  association_status=0
+  if "$association_bash" --noprofile --norc "$association_script" "$windows_uninstall_association_flag" "$@"; then
+    printf '%s\n' '' 'sshpic uninstall completed successfully.' >&2
+  else
+    association_status=$?
+    printf '%s\n' '' "sshpic uninstall failed with exit code $association_status." >&2
+  fi
   if [ -t 0 ]; then
     printf '\nPress Enter to close this uninstaller window...' >&2
     IFS= read -r _sshpic_acknowledgement || :
   fi
-  exit 64
+  return "$association_status"
+}
+
+if [ "$windows_uninstall_association_launch" -eq 0 ] && is_windows_file_association_launch; then
+  if run_windows_file_association_uninstaller "$@"; then
+    exit 0
+  else
+    association_status=$?
+    exit "$association_status"
+  fi
 fi
 
 usage() {
   cat <<'EOF'
-Usage: ./uninstall.sh (from Git Bash in the cloned checkout)
+Usage: ./uninstall.sh (from the cloned checkout)
 
 Removes the Windows sshpic installation. This removes the managed PowerShell
 SSH command and PuTTY sessions, restores the manifest-owned WezTerm

@@ -24,13 +24,13 @@ The foreground Plink session prompts for the password once. The upload helpers a
 
 The initial password path intentionally accepts a direct hostname or IP with an explicit user. Saved aliases, jump/proxy options, forwarding, remote commands, and password command-line flags are rejected.
 
-If the installer just added Go, WezTerm, or PuTTY through `winget`, open a new Git Bash window and rerun `./install.sh`, or repeat this synchronous PowerShell invocation:
+If the installer just added Go, WezTerm, or PuTTY through `winget`, rerun `./install.sh`. For automation that needs the exit code in the calling PowerShell, use this equivalent synchronous invocation:
 
 ```powershell
 & "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./install.sh
 ```
 
-Do not run a literal `./install.sh` from PowerShell. Its detached Windows file association cannot provide a reliable completion or exit status, so the installer rejects that launch form before making changes. Wait for the explicit install success message, then open a new PowerShell 7 tab or pane. Fully restart or reload WezTerm as directed by the install output.
+A literal PowerShell `./install.sh` opens the same installer in a separate Git Bash window. Wait for its explicit success message and use the fresh PowerShell 7 tab that it opens; the old tab cannot see a profile function installed after that tab started. Fully restart or reload WezTerm as directed by the install output.
 
 ## Windows clipboard checks fail
 

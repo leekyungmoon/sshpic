@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestWindowsInstallerRejectsInteractiveFileAssociationBeforeMutation(t *testing.T) {
+func TestWindowsInstallerRelaunchesInteractiveFileAssociationSynchronously(t *testing.T) {
 	shell := installTestShell()
 	if shell == "" {
 		t.Skip("POSIX shell is unavailable")
@@ -21,39 +21,124 @@ func TestWindowsInstallerRejectsInteractiveFileAssociationBeforeMutation(t *test
 	}
 	scriptText := string(data)
 	functionSource := installTestShellFunction(scriptText, "is_windows_file_association_launch") +
-		installTestShellFunction(scriptText, "guard_windows_installer_entrypoint")
-	mutationSentinel := filepath.Join(t.TempDir(), "mutation-ran")
+		installTestShellFunction(scriptText, "run_windows_file_association_installer")
+	invocationLog := filepath.Join(t.TempDir(), "invocation")
 	script := functionSource + `
-mutation_sentinel=$1
-if guard_windows_installer_entrypoint windows himBH; then
-  printf 'mutation ran\n' >"$mutation_sentinel"
-  exit 0
-else
-  exit $?
-fi
+windows_association_flag=--sshpic-windows-file-association
+invocation_log=$1
+bash() {
+  printf '%s\n' "$*" >"$invocation_log"
+}
+run_windows_file_association_installer windows himBH
 `
-	cmd := exec.Command(shell, "-c", script, "guard-test", mutationSentinel)
-	out, runErr := cmd.CombinedOutput()
-	exitErr, ok := runErr.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 64 {
-		t.Fatalf("interactive Windows launch exit=%v want 64\n%s", runErr, out)
+	installPath, err := filepath.Abs(filepath.Join(repoRoot, "install.sh"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(mutationSentinel); !os.IsNotExist(err) {
-		t.Fatalf("mutation sentinel ran after rejected launch: %v", err)
+	cmd := exec.Command(shell, "-c", script, installPath, invocationLog)
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("interactive Windows launch was not bootstrapped: %v\n%s", runErr, out)
+	}
+	invocation, err := os.ReadFile(invocationLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInvocation := "--noprofile --norc " + windowsPathForGitBash(installPath) + " --sshpic-windows-file-association"
+	if got := strings.TrimSpace(string(invocation)); got != wantInvocation {
+		t.Fatalf("association relaunch=%q want %q", got, wantInvocation)
 	}
 	text := string(out)
 	for _, want := range []string{
-		"sshpic installation stopped before making any changes",
-		"Windows .sh file",
-		`Git Bash:   ./install.sh`,
-		`PowerShell: & "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./install.sh`,
+		"PowerShell ./install.sh launch detected",
+		"Keep this window open",
+		"fresh PowerShell 7 tab",
+		"installation completed successfully",
 	} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("detached-launch rejection missing %q:\n%s", want, text)
+			t.Fatalf("association bootstrap missing %q:\n%s", want, text)
 		}
 	}
 	if strings.Contains(text, "Press Enter") {
-		t.Fatalf("non-TTY rejection must not wait for acknowledgement:\n%s", text)
+		t.Fatalf("non-TTY bootstrap must not wait for acknowledgement:\n%s", text)
+	}
+}
+
+func TestWindowsInstallerAssociationRelaunchPropagatesFailure(t *testing.T) {
+	shell := installTestShell()
+	if shell == "" {
+		t.Skip("POSIX shell is unavailable")
+	}
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptText := string(data)
+	functionSource := installTestShellFunction(scriptText, "is_windows_file_association_launch") +
+		installTestShellFunction(scriptText, "run_windows_file_association_installer")
+	script := functionSource + `
+windows_association_flag=--sshpic-windows-file-association
+bash() { return 42; }
+run_windows_file_association_installer windows himBH
+`
+	installPath, err := filepath.Abs(filepath.Join(repoRoot, "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(shell, "-c", script, installPath)
+	out, runErr := cmd.CombinedOutput()
+	exitErr, ok := runErr.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 42 {
+		t.Fatalf("association child failure exit=%v want 42\n%s", runErr, out)
+	}
+	if !strings.Contains(string(out), "installation failed with exit code 42") {
+		t.Fatalf("association failure was not reported:\n%s", out)
+	}
+}
+
+func TestWindowsAssociationLaunchOpensFreshManagedPowerShellTab(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows Terminal association behavior")
+	}
+	shell := installTestShell()
+	if shell == "" {
+		t.Skip("Git Bash is unavailable")
+	}
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	functionSource := installTestShellFunction(string(data), "open_windows_ready_powershell")
+	invocationLog := filepath.Join(t.TempDir(), "wt-invocation")
+	script := functionSource + `
+windows_association_launch=1
+WT_SESSION=managed-session
+export WT_SESSION
+invocation_log=$1
+wt.exe() {
+  printf '%s\n' "$*" >"$invocation_log"
+}
+open_windows_ready_powershell
+`
+	cmd := exec.Command(shell, "-c", script, "association-tab-test", windowsPathForGitBash(invocationLog))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("fresh PowerShell tab launch failed: %v\n%s", err, out)
+	}
+	invocation, err := os.ReadFile(invocationLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.TrimSpace(string(invocation))
+	for _, want := range []string{"-w 0 new-tab", "--title sshpic ready", "pwsh.exe -NoExit -Command", "Get-Command ssh", `CommandType -ne "Function"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Windows Terminal invocation missing %q: %s", want, got)
+		}
+	}
+	if !strings.Contains(string(out), "Opened a fresh Windows Terminal PowerShell 7 tab") {
+		t.Fatalf("fresh-tab success was not reported:\n%s", out)
 	}
 }
 
@@ -69,10 +154,10 @@ func TestWindowsInstallerGuardAllowsSupportedNonInteractiveLaunches(t *testing.T
 	}
 	scriptText := string(data)
 	functionSource := installTestShellFunction(scriptText, "is_windows_file_association_launch") +
-		installTestShellFunction(scriptText, "guard_windows_installer_entrypoint")
+		installTestShellFunction(scriptText, "run_windows_file_association_installer")
 	script := functionSource + `
-guard_windows_installer_entrypoint windows hB
-guard_windows_installer_entrypoint linux hi
+run_windows_file_association_installer windows hB
+run_windows_file_association_installer linux hi
 printf 'supported launch\n'
 `
 	cmd := exec.Command(shell, "-c", script, "guard-test")

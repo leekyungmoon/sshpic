@@ -15,6 +15,8 @@ bin_dir=""
 bin=""
 windows_tool_probe_attempts=8
 windows_tool_probe_delay=2
+windows_association_flag="--sshpic-windows-file-association"
+windows_association_launch=0
 
 detect_host_os() {
   detected_platform="$1"
@@ -39,6 +41,11 @@ if [ "${1:-}" = "--detect-os" ]; then
   exit 0
 fi
 
+if [ "${1:-}" = "$windows_association_flag" ]; then
+  windows_association_launch=1
+  shift
+fi
+
 is_windows_file_association_launch() {
   candidate_host_os="$1"
   candidate_shell_flags="$2"
@@ -49,39 +56,126 @@ is_windows_file_association_launch() {
   esac
 }
 
-guard_windows_installer_entrypoint() {
+run_windows_file_association_installer() {
   candidate_host_os="$1"
   candidate_shell_flags="$2"
+  shift 2
   if ! is_windows_file_association_launch "$candidate_host_os" "$candidate_shell_flags"; then
     return 0
   fi
 
+  association_script="$0"
+  if command -v cygpath >/dev/null 2>&1; then
+    association_script_unix="$(cygpath -u "$association_script" 2>/dev/null || :)"
+    if [ -n "$association_script_unix" ]; then
+      association_script="$association_script_unix"
+    fi
+  fi
+  case "$association_script" in
+    */*) ;;
+    *) association_script="$(command -v "$association_script" 2>/dev/null || printf '%s' "$association_script")" ;;
+  esac
+  association_dir="$(CDPATH= cd -- "$(dirname -- "$association_script")" && pwd -P)"
+  association_script="$association_dir/$(basename -- "$association_script")"
+  association_bash="$(command -v bash 2>/dev/null || :)"
+  if [ -z "$association_bash" ]; then
+    printf '%s\n' 'sshpic installation failed: Git Bash could not locate bash.' >&2
+    return 69
+  fi
+
   printf '%s\n' \
-    'sshpic installation stopped before making any changes.' \
+    'sshpic: PowerShell ./install.sh launch detected.' \
     '' \
-    'This installer was launched as an interactive script. Windows .sh file' \
-    'associations use this detached mode, so PowerShell cannot wait for installation' \
-    'or receive its exit status.' \
-    '' \
-    'Use either reliable command instead:' \
-    '  Git Bash:   ./install.sh' \
-    '  PowerShell: & "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./install.sh' >&2
+    'Windows opened this installer in Git Bash. Keep this window open until the' \
+    'verified completion message appears. A fresh PowerShell 7 tab will open when' \
+    'installation succeeds; use that new tab for ssh so the profile mapping is loaded.' >&2
+
+  association_status=0
+  if "$association_bash" --noprofile --norc "$association_script" "$windows_association_flag" "$@"; then
+    printf '%s\n' '' 'sshpic installation completed successfully.' >&2
+  else
+    association_status=$?
+    printf '%s\n' '' "sshpic installation failed with exit code $association_status." >&2
+  fi
+
   if [ -t 0 ]; then
     printf '\nPress Enter to close this installer window...' >&2
     IFS= read -r _sshpic_acknowledgement || :
   fi
-  return 64
+  return "$association_status"
 }
 
-if guard_windows_installer_entrypoint "$host_os" "$-"; then
-  :
-else
-  guard_status=$?
-  exit "$guard_status"
+if [ "$windows_association_launch" -eq 0 ] && is_windows_file_association_launch "$host_os" "$-"; then
+  if run_windows_file_association_installer "$host_os" "$-" "$@"; then
+    exit 0
+  else
+    association_status=$?
+    exit "$association_status"
+  fi
 fi
+
+open_windows_ready_powershell() {
+  [ "$windows_association_launch" -eq 1 ] || return 0
+  if [ -z "${WT_SESSION:-}" ]; then
+    printf '%s\n' \
+      '' \
+      'Installation is complete. Close the old PowerShell tab and open a new' \
+      'PowerShell 7 tab before running ssh so the managed profile is loaded.' >&2
+    return 0
+  fi
+  wt_command="$(command -v wt.exe 2>/dev/null || :)"
+  if [ -z "$wt_command" ]; then
+    printf '%s\n' 'Installation is complete, but Windows Terminal could not be asked to open a fresh PowerShell 7 tab.' >&2
+    return 0
+  fi
+  if "$wt_command" -w 0 new-tab --title "sshpic ready" pwsh.exe -NoExit -Command \
+    '$c=Get-Command ssh -ErrorAction Stop;if($c.CommandType -ne "Function"){throw "sshpic managed ssh function did not load"};Write-Host "sshpic ready: managed ssh is active; run ssh user@host in this new tab" -ForegroundColor Green' >/dev/null 2>&1; then
+    printf '%s\n' 'Opened a fresh Windows Terminal PowerShell 7 tab with the managed ssh mapping loaded.' >&2
+  else
+    printf '%s\n' 'Installation is complete, but a fresh tab could not be opened automatically; open one before running ssh.' >&2
+  fi
+}
 
 is_windows_shell() {
   [ "$host_os" = "windows" ]
+}
+
+verify_windows_terminal_version() {
+  is_windows_shell || return 0
+  powershell_command="$(command -v powershell.exe 2>/dev/null || :)"
+  if [ -z "$powershell_command" ]; then
+    echo "Windows PowerShell is unavailable; Windows Terminal package version could not be verified." >&2
+    return 1
+  fi
+  terminal_probe_status=0
+  terminal_probe="$("$powershell_command" -NoLogo -NoProfile -NonInteractive -Command \
+    '$p=Get-AppxPackage -Name Microsoft.WindowsTerminal -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1;if($null -eq $p){[Console]::Out.Write("NOT_INSTALLED");exit 0};$v=[version]$p.Version;if($v -lt [version]"1.24.10921.0"){[Console]::Out.Write("UNSUPPORTED:"+$v.ToString());exit 3};[Console]::Out.Write("SUPPORTED:"+$v.ToString())' \
+    2>/dev/null)" || terminal_probe_status=$?
+  case "$terminal_probe" in
+    SUPPORTED:*)
+      printf 'Windows Terminal image-paste protocol ready: %s\n' "${terminal_probe#SUPPORTED:}"
+      return 0
+      ;;
+    NOT_INSTALLED)
+      echo "Windows Terminal Store package not found; the installed WezTerm adapter remains available." >&2
+      return 0
+      ;;
+    UNSUPPORTED:*)
+      if [ -n "${WT_SESSION:-}" ] && [ -z "${WEZTERM_PANE:-}" ]; then
+        printf 'Windows Terminal %s is too old for image-only Ctrl+V. Version 1.24.10921 or newer is required.\n' \
+          "${terminal_probe#UNSUPPORTED:}" >&2
+        echo "Update Windows Terminal, then rerun ./install.sh; no sshpic files were changed." >&2
+        return 1
+      fi
+      printf 'warning: installed Windows Terminal %s is too old for image-only Ctrl+V; continuing with the separate WezTerm adapter.\n' \
+        "${terminal_probe#UNSUPPORTED:}" >&2
+      return 0
+      ;;
+    *)
+      printf 'Windows Terminal package version probe failed (exit %s); no sshpic files were changed.\n' "$terminal_probe_status" >&2
+      return 1
+      ;;
+  esac
 }
 
 wait_for_windows_tool() {
@@ -414,7 +508,11 @@ case "$host_os" in
     cd "$script_dir"
     echo "Detected OS: Windows (Git Bash/MSYS)"
     echo "Installer entry point: ./install.sh"
-    echo 'Run it from an already-open Git Bash window; a PowerShell .sh file association does not report completion or an exit status.'
+    if [ "$windows_association_launch" -eq 1 ]; then
+      echo 'PowerShell file-association launch: running the same install.sh synchronously inside the opened Git Bash window.'
+    else
+      echo 'Running the same install.sh directly in Git Bash.'
+    fi
     ;;
   macos) echo "Detected OS: macOS" ;;
   linux) echo "Detected OS: Linux" ;;
@@ -429,6 +527,7 @@ case "$host_os" in
     ;;
 esac
 
+verify_windows_terminal_version
 need_go
 if is_windows_shell; then
   prepare_windows_binary_paths
@@ -530,8 +629,9 @@ case "$host_os" in
     echo "Native ssh.exe remains the explicit key/agent-authenticated recovery path."
     echo "Expected Codex UI: [Image #1]"
     if [ -n "${WT_SESSION:-}" ] && [ -z "${WEZTERM_PANE:-}" ]; then
-      echo "This installer was started from Windows Terminal; open a new PowerShell 7 tab so the installed profile mapping is loaded."
+      echo "This installer was started from Windows Terminal; the old PowerShell tab cannot load a profile change retroactively."
     fi
+    open_windows_ready_powershell
     echo "SSHPIC_WINDOWS_INSTALL_VERIFIED"
     ;;
 esac

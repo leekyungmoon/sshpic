@@ -90,11 +90,16 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		`*[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]*|*[Ww][Ss][Ll]*`,
 		`Windows direct-paste installation must run on native Windows, not WSL`,
 		`Installer entry point: ./install.sh`,
-		`already-open Git Bash window`,
 		`is_windows_file_association_launch`,
-		`guard_windows_installer_entrypoint "$host_os" "$-"`,
-		`sshpic installation stopped before making any changes`,
-		`& "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./install.sh`,
+		`run_windows_file_association_installer "$host_os" "$-"`,
+		`PowerShell ./install.sh launch detected`,
+		`"$association_bash" --noprofile --norc "$association_script" "$windows_association_flag" "$@"`,
+		`association_script_unix="$(cygpath -u "$association_script"`,
+		`open_windows_ready_powershell`,
+		`Opened a fresh Windows Terminal PowerShell 7 tab`,
+		`verify_windows_terminal_version`,
+		`1.24.10921.0`,
+		`Windows Terminal image-paste protocol ready`,
 		`if [ -t 0 ]; then`,
 		`Press Enter to close this installer window`,
 		`--detect-os`,
@@ -163,10 +168,10 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 	if strings.Count(text, "SSHPIC_WINDOWS_INSTALL_VERIFIED") != 1 {
 		t.Fatal("Windows verified marker must have one success-only emission site")
 	}
-	guardIndex := strings.Index(text, `guard_windows_installer_entrypoint "$host_os" "$-"`)
+	guardIndex := strings.Index(text, `run_windows_file_association_installer "$host_os" "$-" "$@"`)
 	firstMutationHelperIndex := strings.Index(text, "cleanup_windows_install_helper() {")
 	if guardIndex < 0 || firstMutationHelperIndex < 0 || guardIndex >= firstMutationHelperIndex {
-		t.Fatal("Windows detached-launch guard must run before installer mutation helpers are defined or invoked")
+		t.Fatal("Windows file-association bootstrap must run before installer mutation helpers are defined or invoked")
 	}
 	for _, command := range []string{
 		`SSHPIC_EXE="$bin_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-preflight-powershell-ssh-wrapper`,

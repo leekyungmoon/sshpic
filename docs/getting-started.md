@@ -10,15 +10,15 @@ cd sshpic
 ./install.sh
 ```
 
-On Windows 10/11, either open **Git Bash first** and run `./install.sh`, or invoke that same script synchronously from PowerShell with Git for Windows' Bash:
+On Windows 10/11, run the same literal `./install.sh` command from Git Bash or PowerShell. A PowerShell `.sh` association opens a Git Bash installer window; keep it open until verified completion. The installer then opens a fresh PowerShell 7 tab because an already-running shell cannot retroactively load a newly written profile function. For headless scripting that needs the exit code in the calling PowerShell, use:
 
 ```powershell
 & "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./install.sh
 ```
 
-There is still only one installer implementation: `install.sh`. Do not enter a literal `./install.sh` at a PowerShell prompt. Windows resolves that through a detached `.sh` file association, so the installer detects that launch form and exits before making changes; the PowerShell command above names the interpreter explicitly and waits for its real exit status. Do not install from WSL. When Go, WezTerm, or PuTTY is newly provisioned and the installer asks for a rerun, open a new Git Bash window or repeat the explicit PowerShell command.
+There is still only one installer implementation: `install.sh`; the explicit command above only supplies its interpreter. Do not install from WSL. When Go, WezTerm, or PuTTY is newly provisioned and the installer asks for a rerun, run `./install.sh` again.
 
-PowerShell 7 (`pwsh`) is the managed runtime shell inside Windows Terminal 1.24.10921+ or WezTerm after installation. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the installer only cleans an exact recognized legacy sshpic block there. Wait for the install success message, then open a new PowerShell 7 tab or pane before testing.
+PowerShell 7 (`pwsh`) is the managed runtime shell inside Windows Terminal 1.24.10921+ or WezTerm after installation. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the installer only cleans an exact recognized legacy sshpic block there. Wait for the install success message, then use the fresh PowerShell 7 tab opened by an association launch, or manually open a new tab after a direct Git Bash install.
 
 ## Install with the one-liner (macOS/Linux)
 

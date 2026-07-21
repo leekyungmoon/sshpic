@@ -14,7 +14,7 @@
 
 The Windows release-candidate rows are intentionally narrow:
 
-- install with the cross-platform `install.sh`: run `./install.sh` in an already-open Git Bash window, or run `& "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./install.sh` from PowerShell;
+- install with the same cross-platform `./install.sh` command from Git Bash or PowerShell; a PowerShell association launch completes in its Git Bash window and opens a fresh PowerShell 7 tab, while automation can explicitly invoke Git Bash to receive the exit code;
 - run Windows Terminal 1.24.10921+ or WezTerm with PowerShell 7 (`pwsh`) for the normal `ssh user@host` command, or use `sshpic ssh user@host` explicitly from another native shell hosted by one of those terminals;
 - enter the server password only at Plink's interactive prompt; on the Windows Terminal route Plink reads it directly from the console before sshpic starts its post-authentication stdin proxy, so its bytes never enter sshpic memory, logs, files, or arguments;
 - use Windows Terminal 1.24.10921+ for its empty bracketed-paste image signal, or a current WezTerm release with the required Lua APIs, plus PuTTY 0.84 connection-sharing controls;
@@ -22,7 +22,7 @@ The Windows release-candidate rows are intentionally narrow:
 - use `Ctrl+V` for both image handling and ordinary text paste: Windows Terminal non-empty bracketed-paste frames are forwarded byte-for-byte, while WezTerm delegates text to its native Paste action;
 - manage the integration with `sshpic install wezterm`, `sshpic doctor wezterm`, and `sshpic restore wezterm`.
 
-PowerShell 7 (`pwsh`) is the managed runtime shell inside either candidate terminal. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command and is touched only to clean an exact recognized legacy sshpic block. A literal `./install.sh` at a PowerShell prompt resolves through a detached `.sh` association and is rejected before changes; use the explicit Git Bash invocation above. WSL, plain unmanaged PuTTY terminals, nested SSH hidden behind an unsupported wrapper, and arbitrary terminals remain outside the candidate boundary.
+PowerShell 7 (`pwsh`) is the managed runtime shell inside either candidate terminal. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command and is touched only to clean an exact recognized legacy sshpic block. A PowerShell association launch returns the old prompt before its Git Bash installer window finishes, so testing must use the fresh tab opened after verified completion. WSL, plain unmanaged PuTTY terminals, nested SSH hidden behind an unsupported wrapper, and arbitrary terminals remain outside the candidate boundary.
 
 `TBD` means no direct-paste support claim exists yet. WSL, Terminal.app, and Ubuntu require target-specific restore proof and real E2E evidence before this matrix changes. The two Windows rows are implemented but still experimental: binary releases, clipboard-provider stubs, generic `sshpic doctor` output, or preflight-only tests are not direct-paste support evidence by themselves.
 

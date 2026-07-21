@@ -14,11 +14,11 @@ All of the following are required:
 
 WSL terminals, SSH launched inside WSL, plain unmanaged PuTTY sessions, headless Windows sessions, Windows services, and unsupported wrappers are outside these candidates. They remain `TBD`.
 
-For image-paste runtime, PowerShell 7 (`pwsh`) is the managed shell inside Windows Terminal or WezTerm. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the lifecycle code recognizes it only to remove an exact legacy sshpic block. The same `install.sh` implementation can run in an already-open Git Bash window or through an explicit synchronous Git Bash invocation from PowerShell.
+For image-paste runtime, PowerShell 7 (`pwsh`) is the managed shell inside Windows Terminal or WezTerm. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the lifecycle code recognizes it only to remove an exact legacy sshpic block. The same literal `./install.sh` command works from Git Bash or PowerShell; the PowerShell file association opens the installer in Git Bash and the installer opens a fresh PowerShell 7 tab after success.
 
 The Windows provider reads an image already present on the clipboard. `sshpic shot` and `sshpic full` screen capture are not implemented on Windows.
 
-The installer verifies WezTerm and Plink and rejects Plink releases older than 0.84. Windows Terminal must be 1.24.10921 or newer because that release introduced the empty bracketed-paste frame for an image clipboard; confirm the package version with `Get-AppxPackage Microsoft.WindowsTerminal | Select-Object Name, Version` (or the application's About page for a non-Store build). The installer does not currently enforce a semantic minimum WezTerm version. Record the Windows Terminal package/About version or `wezterm.exe --version`, `plink.exe -V`, and, when testing the legacy key path, `ssh.exe -V` in test evidence.
+The installer verifies WezTerm and Plink and rejects Plink releases older than 0.84. When installation is launched from Windows Terminal, an installed Microsoft Store package older than 1.24.10921 is rejected before sshpic changes because that release introduced the empty bracketed-paste frame for an image clipboard. Outside Windows Terminal, an old package produces a warning while the separate WezTerm adapter can still install. A non-Store build still requires manual About-page verification. The installer does not currently enforce a semantic minimum WezTerm version. Record the Windows Terminal package/About version or `wezterm.exe --version`, `plink.exe -V`, and, when testing the legacy key path, `ssh.exe -V` in test evidence.
 
 ## Install
 
@@ -30,13 +30,13 @@ cd sshpic
 ./install.sh
 ```
 
-From PowerShell, invoke that same script with Git for Windows' Bash:
+The literal `./install.sh` command also works from PowerShell. Its `.sh` association opens a Git Bash installer window; keep that window open through the verified completion message. For automation that must receive the exit code in the calling PowerShell, invoke the same script explicitly with Git for Windows' Bash:
 
 ```powershell
 & "$env:ProgramFiles\Git\bin\bash.exe" --noprofile --norc ./install.sh
 ```
 
-There is no separate PowerShell installer. Do **not** enter a literal `./install.sh` at a PowerShell prompt: Windows resolves it through a detached `.sh` file association that can return before installation finishes. sshpic detects that launch form and rejects it before making changes. The explicit command above names the interpreter, runs synchronously, and returns the installer's real status.
+There is no separate PowerShell installer. Because Windows returns the old PowerShell prompt while the associated Git Bash window is still installing, do not run `ssh` in that old tab. On success sshpic opens a fresh PowerShell 7 tab whose profile contains the managed `ssh` function. The explicit command above names the same interpreter directly and returns the installer's real status to automation.
 
 The installer:
 
@@ -49,7 +49,7 @@ The installer:
 7. runs `sshpic install wezterm`; and
 8. installs a bounded, marker-owned block in the current user's PowerShell 7 profile that maps normal `ssh` to the password path inside Windows Terminal or WezTerm.
 
-If a newly installed executable is not visible to the current installer shell, open a new Git Bash window and rerun `./install.sh`, or repeat the explicit PowerShell command. Do not begin the SSH test until the installer prints its completion message and returns success.
+If a newly installed executable is not visible to the current installer shell, rerun `./install.sh`. Do not begin the SSH test until the installer prints its completion message; use a new PowerShell 7 tab, never the pre-install tab.
 
 Do not run the installer from WSL for this integration. After installation, open a new PowerShell 7 tab or pane inside Windows Terminal 1.24.10921+ or WezTerm and use normal `ssh`. The explicit `sshpic ssh` equivalent remains available from another native Windows shell. Do not use Windows PowerShell 5.1 or SSH launched inside WSL for the managed path.
 
@@ -143,13 +143,13 @@ Preserve the output of `doctor wezterm` and `restore wezterm` before manually ch
 
 ## Uninstall
 
-From Git Bash inside the cloned checkout, run the one supported Windows uninstall command:
+Inside the cloned checkout, run the one supported Windows uninstall command from Git Bash or PowerShell:
 
 ```sh
 ./uninstall.sh
 ```
 
-There are no dry-run, purge, keep-source, binary-selection, or confirmation modes. `uninstall.sh` is the sole uninstall entry point and returns its actual exit code.
+There are no dry-run, purge, keep-source, binary-selection, or confirmation modes. `uninstall.sh` is the sole uninstall implementation. A literal PowerShell launch shows completion in its associated Git Bash window; an explicit Git Bash invocation can be used by automation that needs the exit code in the calling shell.
 
 The uninstaller performs these operations in order:
 
@@ -162,9 +162,9 @@ The uninstaller performs these operations in order:
 7. removes only the two PuTTY policy sessions carrying the exact sshpic ownership markers; and
 8. clears the settled Windows install transaction state and reports success only after the disabling postconditions hold.
 
-The cloned source checkout is never deleted or modified. Dirty, untracked, ignored, unpushed, or Codex-project files in it are outside the uninstall target and remain byte-for-byte available. You can reinstall from that same checkout by running `./install.sh` in Git Bash or using the explicit Git Bash invocation from PowerShell shown above.
+The cloned source checkout is never deleted or modified. Dirty, untracked, ignored, unpushed, or Codex-project files in it are outside the uninstall target and remain byte-for-byte available. You can reinstall from that same checkout by running the same `./install.sh` command.
 
-If `WEZTERM_CONFIG_FILE` was set during installation, set the same variable when uninstalling so the owned WezTerm manifest can be found. `SSHPIC_CONFIG` is deliberately ignored by uninstall: the standard sshpic config is removed, while an arbitrary environment-selected file is never treated as a deletion target. There are still no alternate uninstall modes. With no manifest or resumable journal, uninstall fails closed instead of claiming that a possibly installed executable was removed. Reinstall once from an already-open Git Bash window with `./install.sh` to recreate ownership evidence, then run `./uninstall.sh`.
+If `WEZTERM_CONFIG_FILE` was set during installation, set the same variable when uninstalling so the owned WezTerm manifest can be found. `SSHPIC_CONFIG` is deliberately ignored by uninstall: the standard sshpic config is removed, while an arbitrary environment-selected file is never treated as a deletion target. There are still no alternate uninstall modes. With no manifest or resumable journal, uninstall fails closed instead of claiming that a possibly installed executable was removed. Reinstall once with `./install.sh` to recreate ownership evidence, then run `./uninstall.sh`.
 
 Go is required to build the separate helper. If Windows keeps the installed executable locked, close the named process and rerun; the journal preserves the validated binary identity for that retry.
 
