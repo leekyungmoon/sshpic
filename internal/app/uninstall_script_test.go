@@ -105,7 +105,7 @@ func TestWindowsUninstallScriptHasOneSourcePreservingBehavior(t *testing.T) {
 	}
 	for _, required := range []string{
 		"uninstall has one behavior and accepts no options",
-		"uninstall.sh is the private Git Bash implementation",
+		"Usage: ./uninstall.sh (from Git Bash in the cloned checkout)",
 		"uninstall wezterm --uninstall-protocol 3 --source-root",
 		"will preserve the source checkout",
 		`bin_dir="$("$go_cmd" env GOBIN)"`,
@@ -116,16 +116,6 @@ func TestWindowsUninstallScriptHasOneSourcePreservingBehavior(t *testing.T) {
 		if !strings.Contains(text, required) {
 			t.Fatalf("uninstall.sh is missing %q", required)
 		}
-	}
-}
-
-func TestWindowsUninstallBackendRequiresPowerShellWrapper(t *testing.T) {
-	requireWindowsGitBash(t)
-	result := runWindowsUninstallScript(t, repositoryRoot(t), nil, map[string]string{
-		"SSHPIC_UNINSTALL_WRAPPER": "0",
-	})
-	if result.err == nil || !strings.Contains(result.output, "single public uninstall command") {
-		t.Fatalf("private backend accepted direct invocation: %v\n%s", result.err, result.output)
 	}
 }
 
@@ -209,42 +199,9 @@ func TestWindowsUninstallScriptRejectsNonWindowsBeforeBuild(t *testing.T) {
 	}
 }
 
-func TestWindowsUninstallPowerShellWrapperIsSynchronous(t *testing.T) {
-	text := readRepoFile(t, "uninstall.ps1")
-	for _, required := range []string{
-		"param()", "$args.Count -ne 0", "Push-Location -LiteralPath $repoRoot", "./uninstall.sh",
-		`$env:SSHPIC_UNINSTALL_WRAPPER = "1"`, "$exitCode = $LASTEXITCODE", "exit ([int]$exitCode)",
-	} {
-		if !strings.Contains(text, required) {
-			t.Fatalf("uninstall.ps1 is missing %q", required)
-		}
-	}
-	for _, forbidden := range []string{"Start-Process", "--dry-run", "--purge-source"} {
-		if strings.Contains(text, forbidden) {
-			t.Fatalf("uninstall.ps1 contains forbidden asynchronous/alternate behavior %q", forbidden)
-		}
-	}
-}
-
-func TestWindowsUninstallPowerShellWrapperRejectsArgumentsBeforeBackend(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("PowerShell wrapper behavior is Windows-specific")
-	}
-	script := filepath.Join(repositoryRoot(t), "uninstall.ps1")
-	cmd := exec.Command(
-		"powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-		"-File", script, "--dry-run",
-	)
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("uninstall.ps1 accepted an alternate behavior:\n%s", output)
-	}
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok || exitErr.ExitCode() != 2 {
-		t.Fatalf("uninstall.ps1 argument rejection exit mismatch: %v\n%s", err, output)
-	}
-	if !strings.Contains(string(output), "accepts no arguments") {
-		t.Fatalf("uninstall.ps1 argument rejection message mismatch:\n%s", output)
+func TestWindowsUninstallHasOnlyShellEntryPoint(t *testing.T) {
+	if _, err := os.Stat(filepath.Join(repositoryRoot(t), "uninstall.ps1")); !os.IsNotExist(err) {
+		t.Fatalf("uninstall.ps1 must not exist: %v", err)
 	}
 }
 
@@ -284,22 +241,14 @@ func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, ext
 	cmd := exec.Command(bash, commandArgs...)
 	cmd.Dir = repoRoot
 	env := append([]string{}, os.Environ()...)
-	wrapperHandshake := "1"
-	if value, ok := extraEnv["SSHPIC_UNINSTALL_WRAPPER"]; ok {
-		wrapperHandshake = value
-	}
 	env = append(env,
 		uninstallHelperEnv+"=1",
-		"SSHPIC_UNINSTALL_WRAPPER="+wrapperHandshake,
 		"TMP="+windowsPathForGitBash(tempRoot),
 		"TEMP="+windowsPathForGitBash(tempRoot),
 		"TMPDIR="+windowsPathForGitBash(filepath.Join(t.TempDir(), "must-not-be-used")),
 		"SSHPIC_TEST_GOBIN="+helperBin,
 	)
 	for key, value := range extraEnv {
-		if key == "SSHPIC_UNINSTALL_WRAPPER" {
-			continue
-		}
 		env = append(env, key+"="+value)
 	}
 	cmd.Env = env

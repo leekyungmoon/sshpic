@@ -451,7 +451,7 @@ func inspectUninstallBinary(sourceRoot, binaryPath, helperPath string) (os.FileI
 		return nil, false, fmt.Errorf("temporary uninstall helper is unavailable: %w", err)
 	}
 	if os.SameFile(info, helperInfo) {
-		return nil, false, errors.New("refusing Windows self-delete; run .\\uninstall.ps1 from PowerShell in the source checkout")
+		return nil, false, errors.New("refusing Windows self-delete; run ./uninstall.sh from Git Bash in the source checkout")
 	}
 	return info, false, nil
 }

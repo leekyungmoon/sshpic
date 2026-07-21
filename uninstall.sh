@@ -3,7 +3,7 @@ set -eu
 
 usage() {
   cat <<'EOF'
-Usage: .\uninstall.ps1 (from PowerShell in the cloned checkout)
+Usage: ./uninstall.sh (from Git Bash in the cloned checkout)
 
 Removes the Windows sshpic installation. This restores the manifest-owned
 WezTerm configuration, removes the installed sshpic.exe, and deletes sshpic
@@ -11,13 +11,6 @@ configuration, cache, logs, and local images. The cloned source checkout is
 preserved.
 EOF
 }
-
-if [ "${SSHPIC_UNINSTALL_WRAPPER:-}" != "1" ]; then
-  echo "uninstall.sh is the private Git Bash implementation." >&2
-  echo 'Run the single public uninstall command from PowerShell: .\uninstall.ps1' >&2
-  exit 2
-fi
-unset SSHPIC_UNINSTALL_WRAPPER
 
 if [ "$#" -ne 0 ]; then
   echo "uninstall has one behavior and accepts no options" >&2
@@ -73,7 +66,7 @@ find_go() {
 
 if ! find_go; then
   echo "Go is required to build a separate uninstall helper from this checkout." >&2
-  echo "No installed files were changed. Install Go and rerun .\uninstall.ps1." >&2
+  echo "No installed files were changed. Install Go and rerun ./uninstall.sh from Git Bash." >&2
   exit 1
 fi
 
@@ -164,7 +157,7 @@ fi
 
 repo_native="$(to_native_path "$repo_root")"
 if ! "$helper" uninstall wezterm --uninstall-protocol 3 --source-root "$repo_native"; then
-  echo "Uninstall did not complete; review the error above and rerun .\uninstall.ps1." >&2
+  echo "Uninstall did not complete; review the error above and rerun ./uninstall.sh from Git Bash." >&2
   echo "The source checkout was preserved." >&2
   exit 1
 fi

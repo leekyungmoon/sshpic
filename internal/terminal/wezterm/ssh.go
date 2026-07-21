@@ -133,6 +133,22 @@ func IsSSHExecutable(executable string) bool {
 	return base == "ssh" || base == "ssh.exe"
 }
 
+// IsLocalCodexProcess requires both of WezTerm's focused-process identity
+// fields to name the native Codex executable. Requiring the tokenized argv[0]
+// to agree with executable avoids treating an arbitrary process that merely
+// mentions Codex in a later argument as a trusted smart-paste target.
+func IsLocalCodexProcess(info LocalProcessInfo) bool {
+	if len(info.Argv) == 0 || hasNUL(info.Executable) || hasNUL(info.Argv[0]) {
+		return false
+	}
+	return isCodexExecutable(info.Executable) && isCodexExecutable(info.Argv[0])
+}
+
+func isCodexExecutable(executable string) bool {
+	base := strings.ToLower(baseAnyPath(strings.TrimSpace(executable)))
+	return base == "codex" || base == "codex.exe"
+}
+
 func baseAnyPath(value string) string {
 	return path.Base(strings.ReplaceAll(value, `\`, "/"))
 }

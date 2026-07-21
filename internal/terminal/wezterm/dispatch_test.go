@@ -285,6 +285,55 @@ func TestBuildDispatchNonSSHDoesNotReadClipboardOrUseConfiguredHost(t *testing.T
 	}
 }
 
+func TestBuildDispatchLocalCodexForwardsImagePasteKey(t *testing.T) {
+	cleanupCalls := 0
+	source := &fakeImageSource{image: provider.LocalImage{
+		Path: "captured-locally.png",
+		Cleanup: func() error {
+			cleanupCalls++
+			return nil
+		},
+	}}
+	result := BuildDispatchWithDependencies(context.Background(), config.Defaults(), source, localCodexSession(), DispatchDependencies{
+		ResolveUser: func(context.Context, SSHInvocation) (string, error) {
+			t.Fatal("local Codex must not run ssh user resolution")
+			return "", nil
+		},
+		ResolveHome: func(context.Context, SSHInvocation) (string, error) {
+			t.Fatal("local Codex must not run ssh home resolution")
+			return "", nil
+		},
+		UploaderForInvocation: func(SSHInvocation) paste.RemoteUploader {
+			t.Fatal("local Codex must not create an uploader")
+			return nil
+		},
+	})
+	if result.Action != dispatch.ActionForwardPasteKey || result.Kind != "local_image" || result.Payload != "" {
+		t.Fatalf("result=%+v", result)
+	}
+	if source.imageReads != 1 || source.textReads != 0 || cleanupCalls != 1 {
+		t.Fatalf("source=%+v cleanupCalls=%d", source, cleanupCalls)
+	}
+}
+
+func TestBuildDispatchLocalCodexDelegatesTextAndImageReadFailure(t *testing.T) {
+	for name, imageErr := range map[string]error{
+		"text":       provider.ErrNoImage,
+		"read-error": errors.New("clipboard unavailable"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			source := &fakeImageSource{imageErr: imageErr, text: "native text"}
+			result := BuildDispatchWithDependencies(context.Background(), config.Defaults(), source, localCodexSession(), DispatchDependencies{})
+			if result.Action != dispatch.ActionNativePaste || result.Payload != "" {
+				t.Fatalf("result=%+v", result)
+			}
+			if source.imageReads != 1 || source.textReads != 0 {
+				t.Fatalf("source=%+v", source)
+			}
+		})
+	}
+}
+
 func TestBuildDispatchSSHExecutableWithUnverifiableArgvIsDiagnosticNativePaste(t *testing.T) {
 	source := &fakeImageSource{image: provider.LocalImage{Path: "must-not-read"}}
 	session := SessionContext{
@@ -425,6 +474,17 @@ func sshSession(host string) SessionContext {
 			Executable: `C:\Windows\System32\OpenSSH\ssh.exe`,
 			Argv:       []string{`C:\Windows\System32\OpenSSH\ssh.exe`, host},
 			PID:        100,
+		},
+	}
+}
+
+func localCodexSession() SessionContext {
+	return SessionContext{
+		PaneID: "13",
+		Process: LocalProcessInfo{
+			Executable: `C:\Program Files\Codex\codex.exe`,
+			Argv:       []string{`C:\Program Files\Codex\codex.exe`},
+			PID:        101,
 		},
 	}
 }

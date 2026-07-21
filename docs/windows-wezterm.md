@@ -63,7 +63,15 @@ After a successful install, reload the WezTerm configuration or restart WezTerm 
 
 ## Use
 
-In a WezTerm PowerShell or Git Bash pane, first prove that the target works without any interactive authentication:
+For a local native Windows Codex session, start `codex` directly inside
+WezTerm. Copy either text or an image and press the same `Ctrl+V`. The managed
+callback keeps text on WezTerm's native paste path. When the focused executable
+and its tokenized `argv[0]` both identify `codex`/`codex.exe` and the clipboard
+contains an image, sshpic verifies the image locally and forwards an image-paste
+key to Codex. It does not read or retype clipboard text.
+
+For a remote Codex session, first prove that the target works without any
+interactive authentication:
 
 ```text
 ssh.exe -o BatchMode=yes -o ConnectTimeout=5 my-host true
@@ -84,7 +92,7 @@ Copy an image with a normal Windows application, focus the Codex input, and pres
 
 Underneath that UI, sshpic materializes the clipboard PNG at a private remote path such as `/home/alice/.sshpic/images/clipboard.png` and pastes that path without an automatic newline. Codex recognizes the existing image and converts the pasted path to `[Image #1]`; sshpic itself does not create Codex's attachment UI. A raw path left visible in the Codex input, any extra command/debug text, or no response is a failed Codex QA result. Other terminal agents may continue to show the path.
 
-For ordinary text, use the same `Ctrl+V`. The managed Lua callback delegates non-image clipboard content to `wezterm.action.PasteFrom("Clipboard")`; sshpic does not read and retype the text.
+For ordinary text, use the same `Ctrl+V`. The managed Lua callback delegates non-image clipboard content to `wezterm.action.PasteFrom("Clipboard")`; sshpic does not read and retype the text. Plain local shells and other non-Codex local applications also retain that native behavior.
 
 ## Focus and upload model
 
@@ -120,13 +128,13 @@ Preserve the output of `doctor wezterm` and `restore wezterm` before manually ch
 
 ## Uninstall
 
-From PowerShell inside the cloned checkout, run the one supported Windows uninstall command:
+From Git Bash inside the cloned checkout, run the one supported Windows uninstall command:
 
-```powershell
-.\uninstall.ps1
+```sh
+./uninstall.sh
 ```
 
-There are no dry-run, purge, keep-source, binary-selection, or confirmation modes. `uninstall.ps1` synchronously invokes the bundled Git Bash implementation and returns its actual exit code.
+There are no dry-run, purge, keep-source, binary-selection, or confirmation modes. `uninstall.sh` is the sole uninstall entry point and returns its actual exit code.
 
 The uninstaller performs these operations in order:
 
@@ -139,7 +147,7 @@ The uninstaller performs these operations in order:
 
 The cloned source checkout is never deleted or modified. Dirty, untracked, ignored, unpushed, or Codex-project files in it are outside the uninstall target and remain byte-for-byte available. You can reinstall from that same checkout by opening Git Bash there and running `./install.sh`.
 
-If `WEZTERM_CONFIG_FILE` or `SSHPIC_CONFIG` was set during installation, set the same environment variable when uninstalling. There are still no alternate uninstall modes: the environment only identifies the owned manifest/config created by the original install. With no manifest or resumable journal, uninstall fails closed instead of claiming that a possibly installed executable was removed. Reinstall once from an already-open Git Bash window with `./install.sh` to recreate ownership evidence, then run `.\uninstall.ps1`.
+If `WEZTERM_CONFIG_FILE` or `SSHPIC_CONFIG` was set during installation, set the same environment variable when uninstalling. There are still no alternate uninstall modes: the environment only identifies the owned manifest/config created by the original install. With no manifest or resumable journal, uninstall fails closed instead of claiming that a possibly installed executable was removed. Reinstall once from an already-open Git Bash window with `./install.sh` to recreate ownership evidence, then run `./uninstall.sh`.
 
 Go is required to build the separate helper. If Windows keeps the installed executable locked, close the named process and rerun; the journal preserves the validated binary identity for that retry.
 

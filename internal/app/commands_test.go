@@ -481,6 +481,7 @@ func TestWriteDispatchFilesUsesStableSharedActionNames(t *testing.T) {
 	for _, action := range []dispatch.Action{
 		dispatch.ActionInsertLocalImagePath,
 		dispatch.ActionInsertRemoteImagePath,
+		dispatch.ActionForwardPasteKey,
 		dispatch.ActionNativePaste,
 		dispatch.ActionSafeFail,
 		dispatch.ActionError,

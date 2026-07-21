@@ -168,7 +168,7 @@ func DoctorChecks(ctx context.Context, opts DoctorOptions) (checks []Check) {
 	checks = append(checks,
 		Check{Name: "wezterm_integration", Status: status, Detail: detail},
 		Check{Name: "restore_owner", Status: "ok", Detail: "manifest: " + manifestPath},
-		Check{Name: "native_paste", Status: "ok", Detail: "non-SSH panes and non-image/error results delegate to WezTerm PasteFrom Clipboard; sshpic never reads clipboard text"},
+		Check{Name: "native_paste", Status: "ok", Detail: "local Codex images forward to Codex; non-target panes and non-image/error results delegate to WezTerm PasteFrom Clipboard; sshpic never reads clipboard text"},
 	)
 	return checks
 }
@@ -332,7 +332,7 @@ func InstallSummary(result InstallResult) string {
 	if result.BackupPath != "" {
 		builder.WriteString("backup: " + result.BackupPath + "\n")
 	}
-	builder.WriteString("Ctrl+V: focused ssh/ssh.exe images upload; all other clipboard handling stays native\n")
+	builder.WriteString("Ctrl+V: local Codex images forward to Codex; focused ssh/ssh.exe images upload; text and other panes stay native\n")
 	return builder.String()
 }
 

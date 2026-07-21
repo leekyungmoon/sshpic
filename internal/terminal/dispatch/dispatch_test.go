@@ -18,6 +18,7 @@ func TestActionNamesAreStable(t *testing.T) {
 	cases := map[Action]string{
 		ActionInsertLocalImagePath:  "insert_local_image_path",
 		ActionInsertRemoteImagePath: "insert_remote_image_path",
+		ActionForwardPasteKey:       "forward_paste_key",
 		ActionNativePaste:           "native_paste",
 		ActionSafeFail:              "safe_fail",
 		ActionError:                 "error",
@@ -32,7 +33,7 @@ func TestActionNamesAreStable(t *testing.T) {
 			t.Fatalf("%s must be classified as insert", action)
 		}
 	}
-	for _, action := range []Action{ActionNativePaste, ActionSafeFail, ActionError} {
+	for _, action := range []Action{ActionForwardPasteKey, ActionNativePaste, ActionSafeFail, ActionError} {
 		if action.IsInsert() {
 			t.Fatalf("%s must not be classified as insert", action)
 		}

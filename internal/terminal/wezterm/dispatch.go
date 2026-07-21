@@ -65,7 +65,9 @@ func BuildDispatchWithDependencies(ctx context.Context, cfg config.Config, src p
 		if IsSSHExecutable(sess.Process.Executable) {
 			return nativeResult("unusable_ssh_process", "focused process reports ssh/ssh.exe but its argv could not be verified; using native paste")
 		}
-		return buildNeutralDispatch(ctx, cfg, src, sess, SSHInvocation{}, false, deps)
+		if !IsLocalCodexProcess(sess.Process) {
+			return nativeResult("no_focused_target", "focused process is neither verified ssh/ssh.exe nor local Codex")
+		}
 	}
 	if src == nil {
 		return dispatch.Result{Action: dispatch.ActionSafeFail, Kind: "missing_dependency", Reason: "missing clipboard source"}
@@ -85,6 +87,12 @@ func BuildDispatchWithDependencies(ctx context.Context, cfg config.Config, src p
 			_ = img.Cleanup()
 		}
 		return nativeResult("unknown", "image clipboard read failed")
+	}
+	if !focusedSSH {
+		if img.Cleanup != nil {
+			_ = img.Cleanup()
+		}
+		return dispatch.Result{Action: dispatch.ActionForwardPasteKey, Kind: "local_image", Reason: "forward image paste key to local Codex"}
 	}
 	originalCleanup := img.Cleanup
 	var cleanupOnce sync.Once

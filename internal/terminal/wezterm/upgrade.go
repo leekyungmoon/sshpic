@@ -679,11 +679,9 @@ func priorPushedLuaIntegrationSource(opts LuaOptions) (string, error) {
 		return "", err
 	}
 	replacements := [][2]string{
-		{priorTempResultCurrent, priorTempResultPrevious},
-		{priorDiagnosticCurrent, ""},
-		{priorEncodeCurrent, priorEncodePrevious},
-		{priorSpawnCurrent, priorSpawnPrevious},
-		{priorCallbackCurrent, priorCallbackPrevious},
+		{priorLocalCodexCurrent, ""},
+		{priorLocalForwardCurrent, ""},
+		{priorLocalCallbackCurrent, priorLocalCallbackPrevious},
 	}
 	for _, replacement := range replacements {
 		if strings.Count(source, replacement[0]) != 1 {
@@ -694,94 +692,33 @@ func priorPushedLuaIntegrationSource(opts LuaOptions) (string, error) {
 	return source, nil
 }
 
-const priorTempResultCurrent = `  local temp = nil
-  for _, name in ipairs({ 'TMP', 'TEMP', 'USERPROFILE', 'WINDIR' }) do
-    local candidate = os.getenv(name)
-    if type(candidate) == 'string' and candidate ~= '' then
-      temp = candidate
-      break
-    end
-  end
-  temp = temp or '.'`
-
-const priorTempResultPrevious = `  local temp = os.getenv('TEMP') or os.getenv('TMP') or '.'`
-
-const priorDiagnosticCurrent = `local function focused_process_diagnostic(info)
-  if type(info) ~= 'table' then
-    return 'WezTerm could not inspect the focused process; using native paste'
-  end
-  if type(info.executable) ~= 'string' or info.executable == '' then
-    return 'WezTerm did not report the focused executable; using native paste'
+const priorLocalCodexCurrent = `local function is_focused_codex(info)
+  if type(info) ~= 'table' or type(info.executable) ~= 'string' then
+    return false
   end
   local executable = basename(info.executable)
-  if executable ~= 'ssh' and executable ~= 'ssh.exe' then
-    return nil
+  if executable ~= 'codex' and executable ~= 'codex.exe' then
+    return false
   end
   if type(info.argv) ~= 'table' or type(info.argv[1]) ~= 'string' then
-    return 'WezTerm reported ssh/ssh.exe without usable argv; SSH image paste was not attempted'
+    return false
   end
   local argv0 = basename(info.argv[1])
-  if argv0 ~= 'ssh' and argv0 ~= 'ssh.exe' then
-    return 'WezTerm ssh executable and argv disagree; SSH image paste was not attempted'
-  end
-  return nil
+  return argv0 == 'codex' or argv0 == 'codex.exe'
 end
 
 `
 
-const priorEncodeCurrent = `  if not encoded_ok then
-    notify_failure(win, {
-      kind = 'process_encode_error',
-      reason = 'sshpic could not encode focused SSH process information; using native paste',
-    })
-    native_paste(win, pane, pane_id, process)
-    return
-  end`
-
-const priorEncodePrevious = `  if not encoded_ok then
-    native_paste(win, pane, pane_id, process)
-    return
-  end`
-
-const priorSpawnCurrent = `  if not spawned then
-    in_flight[pane_id] = nil
-    wezterm.log_error('sshpic: could not start dispatch: ' .. tostring(spawn_error))
-    notify_failure(win, {
-      kind = 'helper_start_error',
-      reason = 'sshpic helper could not start; using native paste (see WezTerm log)',
-    })
-    native_paste(win, pane, pane_id, process)
-    return
-  end`
-
-const priorSpawnPrevious = `  if not spawned then
-    in_flight[pane_id] = nil
-    wezterm.log_error('sshpic: could not start dispatch: ' .. tostring(spawn_error))
-    native_paste(win, pane, pane_id, process)
-    return
-  end`
-
-const priorCallbackCurrent = `      if not ok then
-        notify_failure(win, {
-          kind = 'process_info_unavailable',
-          reason = 'WezTerm could not inspect the focused process; using native paste',
-        })
-        local pane_id = tostring(pane:pane_id())
-        native_paste(win, pane, pane_id)
+const priorLocalForwardCurrent = `      if result.action == 'forward_paste_key' and result.kind == 'local_image' then
+        if delayed_target_is_current(win, pane, pane_id, process) then
+          win:perform_action(wezterm.action.SendKey { key = 'v', mods = 'ALT' }, pane)
+        else
+          wezterm.log_warn('sshpic: focused pane or process changed; local image paste was discarded')
+        end
         return
       end
-      if not is_focused_ssh(info) then
-        local diagnostic = focused_process_diagnostic(info)
-        if diagnostic ~= nil then
-          notify_failure(win, { kind = 'process_info_unusable', reason = diagnostic })
-        end
-        local pane_id = tostring(pane:pane_id())
-        native_paste(win, pane, pane_id)
-        return
-      end`
+`
 
-const priorCallbackPrevious = `      if not ok or not is_focused_ssh(info) then
-        local pane_id = tostring(pane:pane_id())
-        native_paste(win, pane, pane_id)
-        return
-      end`
+const priorLocalCallbackCurrent = `      if not is_focused_ssh(info) and not is_focused_codex(info) then`
+
+const priorLocalCallbackPrevious = `      if not is_focused_ssh(info) then`

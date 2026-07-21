@@ -86,6 +86,21 @@ local function is_focused_ssh(info)
   return argv0 == 'ssh' or argv0 == 'ssh.exe'
 end
 
+local function is_focused_codex(info)
+  if type(info) ~= 'table' or type(info.executable) ~= 'string' then
+    return false
+  end
+  local executable = basename(info.executable)
+  if executable ~= 'codex' and executable ~= 'codex.exe' then
+    return false
+  end
+  if type(info.argv) ~= 'table' or type(info.argv[1]) ~= 'string' then
+    return false
+  end
+  local argv0 = basename(info.argv[1])
+  return argv0 == 'codex' or argv0 == 'codex.exe'
+end
+
 local function focused_process_diagnostic(info)
   if type(info) ~= 'table' then
     return 'WezTerm could not inspect the focused process; using native paste'
@@ -299,6 +314,14 @@ local function start_dispatch(win, pane, info)
         end
         return
       end
+      if result.action == 'forward_paste_key' and result.kind == 'local_image' then
+        if delayed_target_is_current(win, pane, pane_id, process) then
+          win:perform_action(wezterm.action.SendKey { key = 'v', mods = 'ALT' }, pane)
+        else
+          wezterm.log_warn('sshpic: focused pane or process changed; local image paste was discarded')
+        end
+        return
+      end
       notify_failure(win, result)
       native_paste(win, pane, pane_id, process)
       return
@@ -333,7 +356,7 @@ function module.apply_to_config(config)
         native_paste(win, pane, pane_id)
         return
       end
-      if not is_focused_ssh(info) then
+      if not is_focused_ssh(info) and not is_focused_codex(info) then
         local diagnostic = focused_process_diagnostic(info)
         if diagnostic ~= nil then
           notify_failure(win, { kind = 'process_info_unusable', reason = diagnostic })

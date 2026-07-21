@@ -138,6 +138,28 @@ func TestParseSSHInvocationRequiresExactSSHInExecutableAndArgv(t *testing.T) {
 	}
 }
 
+func TestIsLocalCodexProcessRequiresExactExecutableAndArgvAgreement(t *testing.T) {
+	for _, info := range []LocalProcessInfo{
+		{Executable: `C:\Program Files\Codex\codex.exe`, Argv: []string{`C:\Program Files\Codex\codex.exe`}},
+		{Executable: `C:\Program Files\Codex\CODEX.EXE`, Argv: []string{"codex"}},
+	} {
+		if !IsLocalCodexProcess(info) {
+			t.Fatalf("expected verified local Codex process: %#v", info)
+		}
+	}
+
+	for _, info := range []LocalProcessInfo{
+		{Executable: `C:\Program Files\Codex\codex.exe`, Argv: nil},
+		{Executable: `C:\Program Files\Codex\codex.exe`, Argv: []string{"powershell.exe", "codex"}},
+		{Executable: `C:\Program Files\nodejs\node.exe`, Argv: []string{"node.exe", "codex.js"}},
+		{Executable: `C:\tools\codex-helper.exe`, Argv: []string{"codex-helper.exe"}},
+	} {
+		if IsLocalCodexProcess(info) {
+			t.Fatalf("unexpected local Codex classification: %#v", info)
+		}
+	}
+}
+
 func TestParseSSHInvocationSupportsInlineLoginUser(t *testing.T) {
 	got, ok := ParseSSHInvocation(LocalProcessInfo{
 		Executable: `C:\Windows\ssh.exe`,

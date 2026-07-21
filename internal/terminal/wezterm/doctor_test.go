@@ -71,7 +71,7 @@ func TestSummariesExposeOwnedPathsAndNativeContract(t *testing.T) {
 	install := InstallSummary(InstallResult{
 		ConfigPath: "config", ModulePath: "module", ManifestPath: "manifest", BackupPath: "backup",
 	})
-	for _, want := range []string{"config", "module", "manifest", "backup", "Ctrl+V", "stays native"} {
+	for _, want := range []string{"config", "module", "manifest", "backup", "Ctrl+V", "local Codex", "stay native"} {
 		if !strings.Contains(install, want) {
 			t.Fatalf("install summary missing %q: %s", want, install)
 		}

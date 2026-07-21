@@ -6,7 +6,7 @@ This document records the review boundary around the supported macOS+iTerm2 path
 
 - Direct-paste install targets are `sshpic install iterm2` on macOS and the experimental `sshpic install wezterm` on Windows 10/11. Only macOS+iTerm2 has a public support claim today.
 - The default iTerm2 `Cmd+V` path uses focused iTerm2 session evidence and delegates ordinary text paste back to iTerm2 native Paste.
-- The default WezTerm `Ctrl+V` path uses only the focused pane's tokenized foreground-process `argv`; it accepts native Windows `ssh`/`ssh.exe` and delegates non-image clipboard content to WezTerm native Paste.
+- The default WezTerm `Ctrl+V` path uses only the focused pane's tokenized foreground-process `argv`; it accepts native Windows `ssh`/`ssh.exe` for remote image upload, accepts an exact local `codex`/`codex.exe` executable-and-`argv[0]` match for native Codex image paste, and delegates non-image clipboard content to WezTerm native Paste.
 - `sshpic paste --output=payload` remains an explicit payload primitive for integrations and tests; it is not the default text fallback for shortcut hooks.
 - `sshpic restore iterm2` removes sshpic-owned iTerm2 helper/keymap state where present.
 - `sshpic doctor wezterm` reports Windows clipboard, WezTerm config, the available `ssh` path, and restore state. `sshpic restore wezterm` recovers the installer backup when a config existed, or removes the unchanged sshpic-created config when none existed before install.
@@ -61,6 +61,7 @@ Windows WezTerm release evidence needs a real Windows 10 or 11 interactive deskt
 - installation from an already-open Git Bash window with the cross-platform `./install.sh` command; standalone PowerShell must not invoke it through an asynchronous Windows file association;
 - WezTerm and Windows OpenSSH identity/version evidence;
 - an image copied from the Windows clipboard and exactly one `[Image #1]` attachment placeholder rendered in focused remote Codex with `Ctrl+V`, with no raw path or debug text left visible;
+- an image copied from the Windows clipboard and exactly one `[Image #1]` attachment placeholder rendered in focused local native Codex with the same `Ctrl+V`, plus exact native text paste from that same shortcut;
 - the real focused-pane outcome bundle plus passing regression tests showing target derivation from native `ssh.exe` tokenized `argv`, without configured/global fallback (the interactive bundle alone cannot independently attest WezTerm's process-tree report);
 - local materialized clipboard PNG and remote PNG SHA-256 equality, plus remote mode `0600`;
 - an ordinary text sentinel pasted exactly once through WezTerm native Paste;

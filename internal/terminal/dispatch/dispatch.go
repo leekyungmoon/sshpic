@@ -19,6 +19,7 @@ type Action string
 const (
 	ActionInsertLocalImagePath  Action = "insert_local_image_path"
 	ActionInsertRemoteImagePath Action = "insert_remote_image_path"
+	ActionForwardPasteKey       Action = "forward_paste_key"
 	ActionNativePaste           Action = "native_paste"
 	ActionSafeFail              Action = "safe_fail"
 	ActionError                 Action = "error"
