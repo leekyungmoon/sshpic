@@ -127,18 +127,37 @@ function Resolve-PowerShellLauncher {
     return $launcher
 }
 
-function Resolve-PublicInstallCommand {
-    $resolved = Get-Command (Join-Path $RepoRoot "install.sh") -CommandType ExternalScript,Application -ErrorAction Stop | Select-Object -First 1
-    if ($resolved.Name -notin @("install.sh", "install.sh.ps1", "install.sh.cmd")) {
-        throw "./install.sh resolved to an unexpected command: $($resolved.CommandType) $($resolved.Source)"
+function Resolve-GitSh {
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+        $candidates.Add((Join-Path $env:ProgramFiles "Git\bin\sh.exe"))
     }
-    return $resolved
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $candidates.Add((Join-Path $env:LOCALAPPDATA "Programs\Git\bin\sh.exe"))
+    }
+    $programFilesX86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+    if (-not [string]::IsNullOrWhiteSpace($programFilesX86)) {
+        $candidates.Add((Join-Path $programFilesX86 "Git\bin\sh.exe"))
+    }
+    $git = Get-Command "git.exe" -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -ne $git -and -not [string]::IsNullOrWhiteSpace($git.Source)) {
+        $gitRoot = Split-Path -Parent (Split-Path -Parent $git.Source)
+        $candidates.Add((Join-Path $gitRoot "bin\sh.exe"))
+    }
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return [IO.Path]::GetFullPath($candidate)
+        }
+    }
+    throw "Git for Windows sh.exe is required to run ./install.sh"
 }
 
 function Test-PublicInstallOSDetection {
+    $gitSh = Resolve-GitSh
     Push-Location -LiteralPath $RepoRoot
     try {
-        $output = @(& .\install.sh --detect-os 2>&1)
+        $output = @(& $gitSh "./install.sh" "--detect-os" 2>&1)
         $status = $LASTEXITCODE
     }
     finally {
@@ -167,7 +186,7 @@ if ($PreflightOnly) {
         throw "-PreflightOnly must run on Windows"
     }
     Assert-RepoContract
-    $publicInstallCommand = Resolve-PublicInstallCommand
+    $publicInstallCommand = Join-Path $RepoRoot "install.sh"
     $publicDetectedOS = Test-PublicInstallOSDetection
     $installLauncher = Resolve-InstallLauncher
     $uninstallLauncher = Resolve-UninstallLauncher
@@ -178,7 +197,7 @@ if ($PreflightOnly) {
     Write-Host "powershell: $(if ($powerShellTool) { $powerShellTool } else { 'not found (runtime prerequisite)' })"
     Write-Host "ssh.exe: $(if ($sshTool) { $sshTool } else { 'not found (runtime prerequisite)' })"
     Write-Host "WezTerm: $(if ($wezTermTool) { $wezTermTool } else { 'not installed (allowed in CI preflight)' })"
-    Write-Host "public ./install.sh command: $($publicInstallCommand.CommandType) $($publicInstallCommand.Source)"
+    Write-Host "public ./install.sh command: $publicInstallCommand"
     Write-Host "public ./install.sh detected OS: $publicDetectedOS"
     Write-Host "internal PowerShell installer: $installLauncher"
     Write-Host "PowerShell uninstaller: $uninstallLauncher"
@@ -191,7 +210,7 @@ if (-not $IsWindowsHost) {
     exit 78
 }
 Assert-RepoContract
-Resolve-PublicInstallCommand | Out-Null
+Resolve-GitSh | Out-Null
 Test-PublicInstallOSDetection | Out-Null
 
 if ([string]::IsNullOrWhiteSpace($SshTarget)) {

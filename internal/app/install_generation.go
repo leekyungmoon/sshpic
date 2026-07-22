@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/leekyungmoon/sshpic/internal/pathidentity"
 )
 
 const (
@@ -194,7 +196,7 @@ func peekSettledInstallGeneration() (string, error) {
 		return "", err
 	}
 	canonical, err = filepath.Abs(canonical)
-	if err != nil || !sameWindowsInstallPath(canonical, directory) {
+	if err != nil || !windowsInstallPathMatchesCanonical(canonical, directory) {
 		return "", errors.New("Windows install generation directory uses an ancestor alias")
 	}
 	ledger, err := readInstallGenerationLedgerUnlocked(directory)
@@ -337,7 +339,7 @@ func withInstallGenerationLock(createDirectory bool, fn func(string) error) erro
 		return err
 	}
 	canonical, err = filepath.Abs(canonical)
-	if err != nil || !sameWindowsInstallPath(canonical, directory) {
+	if err != nil || !windowsInstallPathMatchesCanonical(canonical, directory) {
 		return errors.New("Windows install generation directory uses an ancestor alias")
 	}
 	lockPath := filepath.Join(directory, installGenerationLockFile)
@@ -443,6 +445,11 @@ func sameWindowsInstallPath(left, right string) bool {
 		return strings.EqualFold(left, right)
 	}
 	return left == right
+}
+
+func windowsInstallPathMatchesCanonical(canonical, original string) bool {
+	expanded, err := pathidentity.ExpandWindowsShortNames(original)
+	return err == nil && sameWindowsInstallPath(canonical, expanded)
 }
 
 func writeInstallGenerationLedgerUnlocked(directory string, ledger installGenerationLedger) error {

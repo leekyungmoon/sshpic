@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/leekyungmoon/sshpic/internal/pathidentity"
 )
 
 // TargetKind describes why a local path is owned by sshpic.
@@ -1804,6 +1806,9 @@ func samePath(first, second string) bool {
 // symlink or junction ancestors.
 func sameCanonicalDirectoryPath(canonical, original string) bool {
 	if samePath(canonical, original) {
+		return true
+	}
+	if expanded, err := pathidentity.ExpandWindowsShortNames(original); err == nil && samePath(canonical, expanded) {
 		return true
 	}
 	if runtime.GOOS != "darwin" {

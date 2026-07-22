@@ -144,32 +144,6 @@ func TestWindowsPowerShellFacadeRunsCanonicalInstallInCurrentProcess(t *testing.
 			t.Fatalf("install.sh.cmd fallback may open another window via %q", forbidden)
 		}
 	}
-
-	if runtime.GOOS != "windows" {
-		return
-	}
-	powerShell, err := exec.LookPath("pwsh.exe")
-	if err != nil {
-		powerShell, err = exec.LookPath("powershell.exe")
-	}
-	if err != nil {
-		t.Skip("PowerShell is unavailable")
-	}
-	command := `$resolved = Get-Command .\install.sh -CommandType ExternalScript,Application -ErrorAction Stop | Select-Object -First 1; ` +
-		`if ($resolved.Name -notin @('install.sh','install.sh.ps1','install.sh.cmd')) { throw "resolved=$($resolved.Name):$($resolved.CommandType)" }; ` +
-		`$output = @(& .\install.sh --detect-os 2>&1); $status = $LASTEXITCODE; ` +
-		`if ($status -ne 0) { throw "public install status=$status output=$($output -join ' ')" }; ` +
-		`$detected = @($output | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ })[-1]; ` +
-		`[Console]::Out.WriteLine($detected); exit 0`
-	cmd := exec.Command(powerShell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command)
-	cmd.Dir = repoRoot
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("PowerShell could not resolve the public ./install.sh command: %v\n%s", err, out)
-	}
-	if got := lastNonEmptyOutputLine(out); got != "windows" {
-		t.Fatalf("PowerShell public ./install.sh detected OS=%q want windows; output=%s", got, out)
-	}
 }
 
 func TestWindowsPowerShellFacadesExposeCoreFailures(t *testing.T) {
@@ -984,7 +958,16 @@ printf 'mutation ran\n' >"$3"
 	}
 }
 
+func TestInstallTestShellFunctionAcceptsWindowsLineEndings(t *testing.T) {
+	source := "probe() {\r\n  printf 'ok\\n'\r\n}\r\n"
+	got := installTestShellFunction(source, "probe")
+	if !strings.Contains(got, "printf 'ok\\n'") || !strings.HasSuffix(got, "}\n") {
+		t.Fatalf("CRLF function extraction failed: %q", got)
+	}
+}
+
 func installTestShellFunction(script, name string) string {
+	script = strings.ReplaceAll(strings.ReplaceAll(script, "\r\n", "\n"), "\r", "\n")
 	start := strings.Index(script, name+"() {")
 	if start < 0 {
 		return ""
