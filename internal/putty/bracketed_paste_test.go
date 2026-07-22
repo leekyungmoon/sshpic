@@ -28,6 +28,41 @@ func TestTerminalInputParserForwardsOrdinaryAndNonEmptyPasteExactly(t *testing.T
 	}
 }
 
+func TestTerminalInputParserKeepsUnrelatedVTInputInOneWrite(t *testing.T) {
+	// Windows Terminal emits mouse reports like these while a TUI has mouse
+	// tracking enabled. ESC must reach the remote application together with the
+	// CSI suffix; otherwise the suffix is rendered as unsolicited typed text.
+	input := []byte("\x1b[<35;15;60M\x1b[<35;16;60M\x1b[<0;63;19M\x1b[A")
+	output := &recordingWriter{}
+	if err := proxyTerminalInput(context.Background(), output, bytes.NewReader(input), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(output.writes) != 1 {
+		t.Fatalf("VT input was split across %d writes: %q", len(output.writes), output.writes)
+	}
+	if !bytes.Equal(output.writes[0], input) {
+		t.Fatalf("output=%x, want %x", output.writes[0], input)
+	}
+}
+
+func TestTerminalInputParserDoesNotSplitVTSequenceAtBatchBoundary(t *testing.T) {
+	mouseReport := []byte("\x1b[<35;15;60M")
+	input := append(bytes.Repeat([]byte{'x'}, terminalInputWriteBatchSize-1), mouseReport...)
+	output := &recordingWriter{}
+	if err := proxyTerminalInput(context.Background(), output, bytes.NewReader(input), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(bytes.Join(output.writes, nil), input) {
+		t.Fatalf("output differs from input")
+	}
+	if len(output.writes) != 2 {
+		t.Fatalf("writes=%d, want ordinary batch then mouse report", len(output.writes))
+	}
+	if !bytes.Equal(output.writes[1], mouseReport) {
+		t.Fatalf("mouse report was split at batch boundary: writes end with %q, %q", output.writes[0][len(output.writes[0])-8:], output.writes[1])
+	}
+}
+
 func TestTerminalInputParserReplacesOnlyCompleteEmptyFrames(t *testing.T) {
 	start, end := string(bracketedPasteStart), string(bracketedPasteEnd)
 	input := "before" + start + end + start + "text" + end + start + end + "after"
@@ -224,3 +259,12 @@ func (w errorWriter) Write([]byte) (int, error) { return 0, w.err }
 type zeroWriter struct{}
 
 func (zeroWriter) Write([]byte) (int, error) { return 0, nil }
+
+type recordingWriter struct {
+	writes [][]byte
+}
+
+func (w *recordingWriter) Write(data []byte) (int, error) {
+	w.writes = append(w.writes, bytes.Clone(data))
+	return len(data), nil
+}

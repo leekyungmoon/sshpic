@@ -108,13 +108,7 @@ func newTrustedHelperScriptFixture(t *testing.T) *trustedHelperScriptFixture {
 		t.Fatal(err)
 	}
 
-	revisionCommand := exec.Command("git", "rev-parse", "6be0cd1^{commit}")
-	revisionCommand.Dir = repoRoot
-	revisionData, err := revisionCommand.Output()
-	if err != nil {
-		t.Fatalf("resolve trusted runtime revision: %v", err)
-	}
-	revision := strings.TrimSpace(string(revisionData))
+	revision := trustedRuntimeRevisionForTest(t, repoRoot)
 	fixture := &trustedHelperScriptFixture{
 		repoRoot: repoRoot, fakeBin: fakeBin, helperBin: helperBin,
 		installedBinary: installedBinary, configPath: configPath, modulePath: modulePath,

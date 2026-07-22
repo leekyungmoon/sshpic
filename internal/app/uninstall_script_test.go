@@ -453,13 +453,7 @@ func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, ext
 	if err := os.WriteFile(filepath.Join(weztermDir, ".sshpic-wezterm-install-v1.json"), manifestData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	revisionCommand := exec.Command("git", "rev-parse", "6be0cd1^{commit}")
-	revisionCommand.Dir = repoRoot
-	revisionData, err := revisionCommand.Output()
-	if err != nil {
-		t.Fatalf("resolve trusted runtime revision: %v", err)
-	}
-	trustedRevision := strings.TrimSpace(string(revisionData))
+	trustedRevision := trustedRuntimeRevisionForTest(t, repoRoot)
 
 	fakeShellBin := windowsPathForGitBash(fakeBin)
 	commandArgs := []string{
@@ -492,6 +486,24 @@ func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, ext
 	cmd.Stderr = &output
 	err = cmd.Run()
 	return uninstallScriptResult{output: output.String(), err: err}
+}
+
+func trustedRuntimeRevisionForTest(t *testing.T, repoRoot string) string {
+	t.Helper()
+	command := exec.Command(
+		"git", "log", "-1", "--format=%H", "--",
+		"cmd", "internal", "go.mod", "go.sum", ":(exclude,glob)**/*_test.go",
+	)
+	command.Dir = repoRoot
+	data, err := command.Output()
+	if err != nil {
+		t.Fatalf("resolve trusted runtime revision: %v", err)
+	}
+	revision := strings.TrimSpace(string(data))
+	if len(revision) != 40 {
+		t.Fatalf("trusted runtime revision has unexpected length: %q", revision)
+	}
+	return revision
 }
 
 func windowsPathForGitBash(path string) string {
