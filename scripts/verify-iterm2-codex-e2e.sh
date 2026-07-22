@@ -432,7 +432,7 @@ fi
 set +e
 (
   cd "$ROOT"
-  ./install.sh
+  ./install.sh.posix
 ) > "$INSTALL_LOG" 2>&1
 INSTALL_RC=$?
 set -e
@@ -441,15 +441,15 @@ capture_logs "$LOG_AFTER_INSTALL"
 CACHE_LINES_AFTER_INSTALL="$(log_line_count_path "$CACHE_LOG_PATH")"
 LIBRARY_LINES_AFTER_INSTALL="$(log_line_count_path "$LIBRARY_LOG_PATH")"
 if [[ $INSTALL_RC -ne 0 ]]; then
-  write_failure_evidence "./install.sh exited $INSTALL_RC" "$INSTALL_RC"
+  write_failure_evidence "./install.sh.posix exited $INSTALL_RC" "$INSTALL_RC"
 fi
 
 if ! BIN="$(resolve_sshpic_bin)"; then
-  write_failure_evidence "sshpic binary could not be resolved after ./install.sh" 1
+  write_failure_evidence "sshpic binary could not be resolved after ./install.sh.posix" 1
 fi
 "$BIN" doctor > "$DOCTOR_LOG" 2>&1 || true
 if ! command -v pngpaste >/dev/null 2>&1; then
-  write_failure_evidence "pngpaste is unavailable after ./install.sh" 1
+  write_failure_evidence "pngpaste is unavailable after ./install.sh.posix" 1
 fi
 
 if ! grep -F 'sshpic iTerm2 integration installed' "$INSTALL_LOG" >/dev/null; then

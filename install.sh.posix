@@ -107,7 +107,7 @@ wait_for_windows_tool() {
     printf 'Last %s error: %s\n' "$tool_label" "$probe_output" >&2
   fi
   echo "Windows Code Integrity may still be applying trust after winget installation." >&2
-  echo 'Close and reopen PowerShell if needed, then rerun: & "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh' >&2
+  echo 'Close and reopen PowerShell if needed, then rerun ./install.sh.' >&2
   return 1
 }
 
@@ -253,7 +253,7 @@ need_go() {
     winget.exe install --id GoLang.Go --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
     if ! find_go; then
       echo "winget finished with exit $winget_status, but Go could not be found." >&2
-      echo 'Close and reopen PowerShell, then rerun: & "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh' >&2
+      echo 'Close and reopen PowerShell, then rerun ./install.sh.' >&2
       exit 1
     fi
     if ! wait_for_windows_tool "Go ($go_cmd)" "$go_cmd" version; then
@@ -303,7 +303,7 @@ install_wezterm_if_needed() {
   winget.exe install --id wez.wezterm --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
   if ! find_wezterm; then
     echo "winget finished with exit $winget_status, but WezTerm could not be found." >&2
-    echo 'Close and reopen PowerShell, then rerun: & "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh' >&2
+    echo 'Close and reopen PowerShell, then rerun ./install.sh.' >&2
     exit 1
   fi
   if ! wait_for_windows_tool "WezTerm ($wezterm_cmd)" "$wezterm_cmd" --version; then
@@ -370,7 +370,7 @@ install_plink_if_needed() {
   winget.exe install --id PuTTY.PuTTY --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
   if ! find_plink; then
     echo "winget finished with exit $winget_status, but Plink could not be found." >&2
-    echo 'Close and reopen PowerShell, then rerun: & "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh' >&2
+    echo 'Close and reopen PowerShell, then rerun ./install.sh.' >&2
     exit 1
   fi
   if ! wait_for_windows_tool "PuTTY Plink ($plink_cmd)" "$plink_cmd" -V; then
@@ -414,14 +414,14 @@ case "$host_os" in
     cd "$script_dir"
     echo "Detected OS: Windows (Git Bash/MSYS)"
     echo "Installer entry point: ./install.sh"
-    echo 'Running install.sh in the current terminal.'
+    echo 'PowerShell literal ./install.sh resolved to the in-pane Windows launcher.'
     ;;
   macos) echo "Detected OS: macOS" ;;
   linux) echo "Detected OS: Linux" ;;
   wsl)
     echo "Detected OS: WSL" >&2
     echo 'Windows direct-paste installation must run on native Windows, not WSL.' >&2
-    echo 'From PowerShell, run: & "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh' >&2
+    echo 'From native Windows PowerShell, run ./install.sh.' >&2
     exit 1
     ;;
   *)

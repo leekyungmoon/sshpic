@@ -11,7 +11,7 @@ import (
 
 func TestWindowsInstallerHasNoFileAssociationOrAutoTabBootstrap(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh.posix"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,12 +29,67 @@ func TestWindowsInstallerHasNoFileAssociationOrAutoTabBootstrap(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"Running install.sh in the current terminal.",
+		"PowerShell literal ./install.sh resolved to the in-pane Windows launcher.",
 		"Open a fresh PowerShell 7 tab after this command returns",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("install.sh missing same-terminal contract %q", want)
 		}
+	}
+}
+
+func TestWindowsLiteralInstallLauncherUsesCMDInCurrentPane(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	if _, err := os.Stat(filepath.Join(repoRoot, "install.sh")); !os.IsNotExist(err) {
+		t.Fatalf("an exact install.sh would make PowerShell use the .sh file association: %v", err)
+	}
+	for _, required := range []string{"install.sh.cmd", "install.sh.posix"} {
+		if info, err := os.Stat(filepath.Join(repoRoot, required)); err != nil || info.IsDir() {
+			t.Fatalf("required installer entry %s is unavailable: %v", required, err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh.cmd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := strings.ToLower(string(data))
+	for _, want := range []string{
+		`setlocal enableextensions disabledelayedexpansion`,
+		`pushd "%~dp0"`,
+		`"%sshpic_git_sh%" "./install.sh.posix" %*`,
+		`exit /b %sshpic_status%`,
+	} {
+		if !strings.Contains(launcher, want) {
+			t.Fatalf("install.sh.cmd missing synchronous launcher contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{"git-bash.exe", "start ", "wt.exe", "new-tab"} {
+		if strings.Contains(launcher, forbidden) {
+			t.Fatalf("install.sh.cmd may open another window via %q", forbidden)
+		}
+	}
+
+	if runtime.GOOS != "windows" {
+		return
+	}
+	powerShell, err := exec.LookPath("pwsh.exe")
+	if err != nil {
+		powerShell, err = exec.LookPath("powershell.exe")
+	}
+	if err != nil {
+		t.Skip("PowerShell is unavailable")
+	}
+	command := `$resolved = Get-Command .\install.sh -CommandType Application -ErrorAction Stop; ` +
+		`if ($resolved.Name -ne 'install.sh.cmd') { throw "resolved=$($resolved.Name)" }; ` +
+		`& .\install.sh --detect-os; exit $LASTEXITCODE`
+	cmd := exec.Command(powerShell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command)
+	cmd.Dir = repoRoot
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("PowerShell literal ./install.sh launcher failed: %v\n%s", err, out)
+	}
+	if got := lastNonEmptyOutputLine(out); got != "windows" {
+		t.Fatalf("PowerShell literal ./install.sh detected OS=%q want windows; output=%s", got, out)
 	}
 }
 
@@ -44,7 +99,7 @@ func TestWindowsInstallerRunsViaExplicitGitSh(t *testing.T) {
 	}
 	shell := windowsGitSh(t)
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	cmd := exec.Command(shell, "./install.sh", "--detect-os")
+	cmd := exec.Command(shell, "./install.sh.posix", "--detect-os")
 	cmd.Dir = repoRoot
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -61,7 +116,7 @@ func TestWindowsToolProbeRetriesOnlyUntilExecutableRuns(t *testing.T) {
 		t.Skip("POSIX shell is unavailable")
 	}
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh.posix"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +165,7 @@ func TestWindowsToolProbePermanentFailureStopsBeforeBuildSentinel(t *testing.T) 
 		t.Skip("POSIX shell is unavailable")
 	}
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh.posix"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +211,7 @@ printf 'build ran\n' >"$build_sentinel"
 	for _, want := range []string{
 		"could not execute from Git for Windows sh after 4 attempts",
 		"application control blocked attempt 4",
-		`$env:ProgramFiles\Git\bin\sh.exe" ./install.sh`,
+		`rerun ./install.sh`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("permanent failure output missing %q: %s", want, text)
@@ -166,7 +221,7 @@ printf 'build ran\n' >"$build_sentinel"
 
 func TestWindowsInstallerUsesPrivateExclusiveHelperDirectory(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh.posix"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +253,7 @@ func TestWindowsPathContainmentHasDirectoryBoundary(t *testing.T) {
 		t.Skip("POSIX shell is unavailable")
 	}
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh.posix"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +287,7 @@ func TestWindowsInstallerRejectsGOBINInsideCheckoutBeforeMutation(t *testing.T) 
 	requireWindowsGitBash(t)
 	shell := windowsGitBash(t)
 	repoRoot := repositoryRoot(t)
-	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh.posix"))
 	if err != nil {
 		t.Fatal(err)
 	}

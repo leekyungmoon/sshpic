@@ -41,7 +41,8 @@ function Resolve-WezTerm {
 
 function Assert-RepoContract {
     $required = @(
-        (Join-Path $RepoRoot "install.sh"),
+        (Join-Path $RepoRoot "install.sh.cmd"),
+        (Join-Path $RepoRoot "install.sh.posix"),
         (Join-Path $RepoRoot ".github\workflows\ci.yml"),
         (Join-Path $RepoRoot "internal\terminal\wezterm\lua.go"),
         (Join-Path $RepoRoot "internal\terminal\wezterm\install.go")
@@ -52,7 +53,14 @@ function Assert-RepoContract {
         }
     }
 
-    $installer = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh"))
+    if (Test-Path -LiteralPath (Join-Path $RepoRoot "install.sh")) {
+        throw "an exact install.sh would make PowerShell use the Windows .sh file association and open another window"
+    }
+    $launcher = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh.cmd"))
+    if ($launcher -notmatch 'install\.sh\.posix' -or $launcher -match '(?im)\b(?:start|git-bash\.exe|wt\.exe)\b') {
+        throw "install.sh.cmd is not the synchronous in-pane launcher"
+    }
+    $installer = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh.posix"))
     if ($installer -notmatch 'install wezterm') {
         throw "install.sh does not invoke the WezTerm installer"
     }
@@ -68,11 +76,26 @@ function Assert-RepoContract {
     }
 }
 
+function Resolve-LiteralInstallLauncher {
+    $literal = Join-Path $RepoRoot "install.sh"
+    $resolved = Get-Command $literal -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $resolved) {
+        throw "PowerShell could not resolve literal ./install.sh through PATHEXT"
+    }
+    $expected = [IO.Path]::GetFullPath((Join-Path $RepoRoot "install.sh.cmd"))
+    $actual = [IO.Path]::GetFullPath($resolved.Source)
+    if (-not [string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "literal ./install.sh resolved to an unexpected command: $actual"
+    }
+    return $actual
+}
+
 if ($PreflightOnly) {
     if (-not $IsWindowsHost) {
         throw "-PreflightOnly must run on Windows"
     }
     Assert-RepoContract
+    $literalInstallLauncher = Resolve-LiteralInstallLauncher
     $powerShellTool = Get-App @("powershell.exe", "pwsh.exe")
     $sshTool = Get-App @("ssh.exe")
     $wezTermTool = Resolve-WezTerm
@@ -80,6 +103,7 @@ if ($PreflightOnly) {
     Write-Host "powershell: $(if ($powerShellTool) { $powerShellTool } else { 'not found (runtime prerequisite)' })"
     Write-Host "ssh.exe: $(if ($sshTool) { $sshTool } else { 'not found (runtime prerequisite)' })"
     Write-Host "WezTerm: $(if ($wezTermTool) { $wezTermTool } else { 'not installed (allowed in CI preflight)' })"
+    Write-Host "literal ./install.sh: $literalInstallLauncher"
     Write-Host "No clipboard, WezTerm config, winget, or SSH target was accessed."
     exit 0
 }
@@ -140,7 +164,7 @@ function Invoke-Logged {
         }
         # Windows PowerShell 5.1 turns successful native stderr into a
         # terminating NativeCommandError when ErrorActionPreference is Stop.
-        # install.sh may print supported-surface notices to stderr.
+        # install.sh.posix may print supported-surface notices to stderr.
         $ErrorActionPreference = "Continue"
         $output = & $FilePath @Arguments 2>&1 | Out-String
         $code = $LASTEXITCODE
@@ -482,6 +506,7 @@ if ($existingManaged.Count -gt 0) {
 }
 
 $GitBash = Resolve-GitBash
+$InstallLauncher = Resolve-LiteralInstallLauncher
 $PowerShellExe = Get-App @("powershell.exe", "pwsh.exe")
 $SshExe = Get-App @("ssh.exe")
 $Sshpic = $null
@@ -517,7 +542,7 @@ try {
     $SshPreflightResult = "pass"
 
     $InstallAttempted = $true
-    $installExit = Invoke-Logged $GitBash @("--noprofile", "--norc", "./install.sh") $InstallLog $RepoRoot
+    $installExit = Invoke-Logged $InstallLauncher @() $InstallLog $RepoRoot
     if ($installExit -ne 0) { throw "install.sh exited $installExit" }
     $Sshpic = Resolve-Sshpic
     if (-not $Sshpic) { throw "sshpic.exe could not be resolved after install" }
@@ -541,6 +566,7 @@ try {
         "os=$([Environment]::OSVersion.VersionString)",
         "powershell=$($PSVersionTable.PSVersion)",
         "git_bash=$GitBash",
+        "install_launcher=$InstallLauncher",
         "ssh=$SshExe",
         "ssh_version=$(Get-NativeVersion $SshExe @('-V'))",
         "wezterm=$WezTermExe",

@@ -27,10 +27,10 @@ The initial password path intentionally accepts a direct hostname or IP with an 
 If the installer just added Go, WezTerm, or PuTTY through `winget`, rerun it from PowerShell with the same synchronous, current-pane command:
 
 ```powershell
-& "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh
+./install.sh
 ```
 
-Do not use bare `./install.sh` from PowerShell; Windows dispatches it through the `.sh` file association instead of running it synchronously in the current pane. Wait for the explicit success message, then start a new PowerShell 7 session so the installed profile function loads. Fully restart or reload WezTerm as directed by the install output.
+On the Windows branch, that literal command resolves through PowerShell `PATHEXT` to `install.sh.cmd`, which synchronously invokes `install.sh.posix` in the same pane. If a new Git Bash window opens, first confirm that the checkout contains `install.sh.cmd` and `install.sh.posix` but no exact file named `install.sh`, then confirm `.CMD` is present in `$env:PATHEXT`. Do not run Git Bash's literal `./install.sh` on this branch. Wait for the explicit success message, then start a new PowerShell 7 session so the installed profile function loads. Fully restart or reload WezTerm as directed by the install output.
 
 ## Windows clipboard checks fail
 

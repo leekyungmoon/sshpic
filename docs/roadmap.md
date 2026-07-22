@@ -6,7 +6,7 @@
 - iTerm2 direct paste installed by default through Python RPC, with installer-managed runtime provisioning and safe-fail if provisioning is unavailable.
 - Windows 10/11 + Windows Terminal 1.24.10921+ password-SSH image paste through sshpic's post-authentication Plink stdin proxy: an empty bracketed-paste image signal becomes a SHA-verified remote path, while non-empty text is forwarded byte-for-byte and Plink retains direct ownership of password input.
 - Windows 10/11 + WezTerm password-SSH image paste through focused-pane dispatch and PuTTY 0.84 connection sharing, launched as normal `ssh user@host` from the same managed PowerShell 7 profile and rendered by Codex as `[Image #1]`; Windows PowerShell 5.1 is unsupported for that mapping, and native `ssh.exe` remains the key/agent path.
-- One cross-platform `install.sh` implementation, run as `./install.sh` on macOS/Linux or Git Bash and through Git for Windows' console `sh.exe` from PowerShell, with optional `winget` provisioning for Go, WezTerm, and PuTTY plus verified lifecycle coverage for both Windows terminal routes, the PowerShell mapping, and owned PuTTY sessions.
+- A literal `./install.sh` user command on every supported host: the main branch retains its exact POSIX `install.sh` for macOS/Linux, while the Windows branch intentionally omits that exact pathname so PowerShell resolves `install.sh.cmd` through `PATHEXT`; the facade synchronously runs `install.sh.posix` in the current pane, with optional `winget` provisioning for Go, WezTerm, and PuTTY plus verified lifecycle coverage for both Windows terminal routes, the PowerShell mapping, and owned PuTTY sessions.
 - Foreground SSH target detection at paste time.
 - SSH stdin upload.
 - Payload-only paste primitive.

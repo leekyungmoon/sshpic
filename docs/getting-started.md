@@ -2,26 +2,25 @@
 
 ## Install from a clone
 
-Clone the repository on every platform:
+On macOS and Linux, clone the main branch and run its POSIX entrypoint:
 
 ```sh
 git clone https://github.com/leekyungmoon/sshpic.git
 cd sshpic
-```
-
-On macOS and Linux, run:
-
-```sh
 ./install.sh
 ```
 
-On Windows 10/11 PowerShell, invoke Git for Windows' console `sh.exe` explicitly so installation runs synchronously in the current terminal pane and returns its real exit status:
+On Windows 10/11, clone the Windows branch and run the same literal command from PowerShell:
 
 ```powershell
-& "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh
+git clone --branch codex/windows-wezterm-ssh-image-copy --single-branch https://github.com/leekyungmoon/sshpic.git wezterm-ssh-image-copy
+cd .\wezterm-ssh-image-copy
+./install.sh
 ```
 
-There is still only one installer implementation: `install.sh`; the Windows command only supplies its interpreter. Do not use a bare `./install.sh` at a PowerShell prompt because Windows handles `.sh` through its file association instead of the current pane. Do not install from WSL. When Go, WezTerm, or PuTTY is newly provisioned and the installer asks for a rerun, repeat the platform-specific command above.
+The missing exact `install.sh` pathname on this Windows branch is intentional. PowerShell appends `.CMD` from `PATHEXT`, resolves `./install.sh` to `install.sh.cmd`, and that thin facade locates Git for Windows and runs `install.sh.posix` synchronously in the current pane. It neither dispatches the `.sh` file association nor opens a Git Bash installer window. Do not run Git Bash's literal `./install.sh` on this branch, and do not install from WSL. When Go, WezTerm, or PuTTY is newly provisioned and the installer asks for a rerun, repeat `./install.sh` from PowerShell.
+
+The Windows branch intentionally leaves the main-branch `README.md` unchanged. These branch-specific docs define its PowerShell command-facade contract; the main branch continues to expose its normal exact `install.sh` for macOS and Linux.
 
 PowerShell 7 (`pwsh`) is the managed runtime shell inside Windows Terminal 1.24.10921+ or WezTerm after installation. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the installer only cleans an exact recognized legacy sshpic block there. Wait for the install success message, then start a new PowerShell 7 session so the newly written profile function is loaded.
 

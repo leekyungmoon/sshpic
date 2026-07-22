@@ -14,7 +14,7 @@
 
 The Windows release-candidate rows are intentionally narrow:
 
-- install with `./install.sh` in Git Bash, or synchronously in the current PowerShell pane with `& "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh`; do not use bare `./install.sh` from PowerShell;
+- on the Windows branch, install synchronously in the current PowerShell pane with literal `./install.sh`; PowerShell resolves it through `PATHEXT` to `install.sh.cmd`, which invokes `install.sh.posix` without opening a separate Git Bash window; Git Bash's literal `./install.sh` is not a Windows-branch entrypoint because no exact file with that name exists;
 - run Windows Terminal 1.24.10921+ or WezTerm with PowerShell 7 (`pwsh`) for the normal `ssh user@host` command, or use `sshpic ssh user@host` explicitly from another native shell hosted by one of those terminals;
 - enter the server password only at Plink's interactive prompt; on the Windows Terminal route Plink reads it directly from the console before sshpic starts its post-authentication stdin proxy, so its bytes never enter sshpic memory, logs, files, or arguments;
 - use Windows Terminal 1.24.10921+ for its empty bracketed-paste image signal, or a current WezTerm release with the required Lua APIs, plus PuTTY 0.84 connection-sharing controls;

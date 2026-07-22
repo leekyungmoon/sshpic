@@ -395,7 +395,7 @@ func checkedSourceRootWithStat(value string, statFile func(string) (os.FileInfo,
 	if _, statErr := statFile(filepath.Join(abs, ".git")); statErr != nil {
 		return "", nil, fmt.Errorf("source checkout does not contain Git metadata: %s", abs)
 	}
-	for _, required := range []string{"go.mod", "uninstall.sh", filepath.Join("cmd", "sshpic")} {
+	for _, required := range []string{"go.mod", "uninstall.sh.cmd", "uninstall.sh.posix", filepath.Join("cmd", "sshpic")} {
 		if _, statErr := statFile(filepath.Join(abs, required)); statErr != nil {
 			return "", nil, fmt.Errorf("source checkout is missing %s: %s", required, abs)
 		}
@@ -451,7 +451,7 @@ func inspectUninstallBinary(sourceRoot, binaryPath, helperPath string) (os.FileI
 		return nil, false, fmt.Errorf("temporary uninstall helper is unavailable: %w", err)
 	}
 	if os.SameFile(info, helperInfo) {
-		return nil, false, errors.New("refusing Windows self-delete; run ./uninstall.sh from Git Bash in the source checkout")
+		return nil, false, errors.New("refusing Windows self-delete; run ./uninstall.sh from PowerShell in the source checkout")
 	}
 	return info, false, nil
 }

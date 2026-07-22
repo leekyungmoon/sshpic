@@ -14,7 +14,7 @@ All of the following are required:
 
 WSL terminals, SSH launched inside WSL, plain unmanaged PuTTY sessions, headless Windows sessions, Windows services, and unsupported wrappers are outside these candidates. They remain `TBD`.
 
-For image-paste runtime, PowerShell 7 (`pwsh`) is the managed shell inside Windows Terminal or WezTerm. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the lifecycle code recognizes it only to remove an exact legacy sshpic block. PowerShell must invoke Git for Windows' console `sh.exe` explicitly so `install.sh` runs synchronously in the current pane.
+For image-paste runtime, PowerShell 7 (`pwsh`) is the managed shell inside Windows Terminal or WezTerm. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the lifecycle code recognizes it only to remove an exact legacy sshpic block. On this Windows branch there is intentionally no top-level file named exactly `install.sh` or `uninstall.sh`. PowerShell resolves the literal commands `./install.sh` and `./uninstall.sh` through `PATHEXT` to `install.sh.cmd` and `uninstall.sh.cmd`; each launcher finds Git for Windows' console `sh.exe` and runs its `.posix` core synchronously in the current pane.
 
 The Windows provider reads an image already present on the clipboard. `sshpic shot` and `sshpic full` screen capture are not implemented on Windows.
 
@@ -22,32 +22,19 @@ The installer verifies WezTerm and Plink and rejects Plink releases older than 0
 
 ## Install
 
-In Git Bash, run the same installation commands used on macOS and Linux:
+Clone this Windows branch and run the literal install command from PowerShell:
 
-```bash
-git clone https://github.com/leekyungmoon/sshpic.git
-cd sshpic
+```powershell
+git clone --branch codex/windows-wezterm-ssh-image-copy --single-branch https://github.com/leekyungmoon/sshpic.git wezterm-ssh-image-copy
+cd .\wezterm-ssh-image-copy
 ./install.sh
 ```
 
-From PowerShell, run the same `install.sh` implementation synchronously in the current pane:
-
-```powershell
-& "$env:ProgramFiles\Git\bin\sh.exe" ./install.sh
-```
-
-There is no separate PowerShell installer. The command above names Git for Windows' console interpreter directly, stays in the current terminal pane, waits for completion, and returns the installer's real status. Do not use bare `./install.sh` from PowerShell because its Windows file association is outside the supported synchronous path.
-
-If Git for Windows is installed outside `%ProgramFiles%`, derive its root from the active `git.exe` and invoke the sibling interpreter:
-
-```powershell
-$gitRoot = Split-Path -Parent (Split-Path -Parent (Get-Command git.exe -ErrorAction Stop).Source)
-& (Join-Path $gitRoot 'bin\sh.exe') ./install.sh
-```
+PowerShell appends `.CMD` from `PATHEXT` and resolves that command to `install.sh.cmd` because this branch deliberately has no exact `install.sh` file. The launcher locates Git for Windows itself, invokes `install.sh.posix` without using the `.sh` file association, waits in the same pane, and returns the core installer's real exit status. `install.sh.cmd` is only the Windows command facade; installation logic remains in the POSIX core. Do not use Git Bash's literal `./install.sh` on this branch because that exact pathname does not exist. The main-branch `README.md` is intentionally unchanged; this document defines the Windows-branch invocation contract.
 
 The installer:
 
-1. detects the native Windows Git Bash environment;
+1. detects the native Windows environment in the Git for Windows shell selected by the command facade;
 2. uses an existing Go toolchain or, when available, asks `winget` to install `GoLang.Go`;
 3. uses an existing WezTerm installation or, when available, asks `winget` to install `wez.wezterm` for the managed WezTerm integration;
 4. uses an existing PuTTY Plink installation or asks `winget` to install `PuTTY.PuTTY`;
@@ -150,13 +137,13 @@ Preserve the output of `doctor wezterm` and `restore wezterm` before manually ch
 
 ## Uninstall
 
-Inside the cloned checkout, run the one supported Windows uninstall implementation from PowerShell through Git for Windows' console shell:
+Inside the cloned checkout, run the one supported Windows uninstall command from PowerShell:
 
 ```powershell
-& "$env:ProgramFiles\Git\bin\sh.exe" ./uninstall.sh
+./uninstall.sh
 ```
 
-There are no dry-run, purge, keep-source, binary-selection, or confirmation modes. `uninstall.sh` is the sole uninstall implementation. The explicit console-shell invocation stays in the current pane and returns the uninstaller's real exit code. From Git Bash, run `./uninstall.sh` directly.
+There are no dry-run, purge, keep-source, binary-selection, or confirmation modes. PowerShell resolves the literal command through `PATHEXT` to `uninstall.sh.cmd`; that facade finds Git for Windows and runs `uninstall.sh.posix` synchronously in the same pane, returning the core uninstaller's real exit code. There is intentionally no exact `uninstall.sh` file on this branch, so Git Bash's literal `./uninstall.sh` is not a supported Windows entrypoint.
 
 The uninstaller performs these operations in order:
 

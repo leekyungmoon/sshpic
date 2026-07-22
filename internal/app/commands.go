@@ -583,7 +583,7 @@ func runRestoreWezTerm(ctx context.Context, stdout, stderr io.Writer) int {
 
 func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int {
 	if len(pa.Positionals) != 2 || (pa.Positionals[1] != "wezterm" && pa.Positionals[1] != "windows-wezterm") {
-		fmt.Fprintln(stderr, "internal uninstall helper; run ./uninstall.sh from Git Bash in the source checkout")
+		fmt.Fprintln(stderr, "internal uninstall helper; run ./uninstall.sh from PowerShell in the source checkout")
 		return 2
 	}
 	for name := range pa.Bools {
@@ -721,7 +721,7 @@ func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) 
 	if result.NothingToDo {
 		fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
 		fmt.Fprintln(stderr, "complete uninstall could not be proven because no owned WezTerm manifest or resumable uninstall journal was found")
-		fmt.Fprintln(stderr, "If sshpic may still be installed, run ./install.sh once from Git Bash and then rerun ./uninstall.sh.")
+		fmt.Fprintln(stderr, "If sshpic may still be installed, run ./install.sh once from PowerShell and then rerun ./uninstall.sh.")
 		return 1
 	}
 	if !localExecuted {

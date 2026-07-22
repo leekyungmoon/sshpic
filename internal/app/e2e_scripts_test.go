@@ -75,7 +75,7 @@ func TestTerminalTargetE2EScriptsAreConservativeAndSyntaxValid(t *testing.T) {
 
 func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	installPath := filepath.Join(repoRoot, "install.sh")
+	installPath := filepath.Join(repoRoot, "install.sh.posix")
 	data, err := os.ReadFile(installPath)
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		`*[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]*|*[Ww][Ss][Ll]*`,
 		`Windows direct-paste installation must run on native Windows, not WSL`,
 		`Installer entry point: ./install.sh`,
-		`Running install.sh in the current terminal.`,
+		`PowerShell literal ./install.sh resolved to the in-pane Windows launcher.`,
 		`Open a fresh PowerShell 7 tab after this command returns`,
 		`verify_windows_terminal_version`,
 		`1.24.10921.0`,
@@ -251,7 +251,8 @@ func TestWindowsWezTermE2EHarnessUsesRunUniqueImageAndExactCodexGate(t *testing.
 		`$ShaEqualityResult`,
 		`[Image #1]`,
 		`BatchMode=yes`,
-		`Invoke-Logged $GitBash @("--noprofile", "--norc", "./install.sh")`,
+		`Resolve-LiteralInstallLauncher`,
+		`Invoke-Logged $InstallLauncher @() $InstallLog $RepoRoot`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Windows E2E harness missing %q", want)
