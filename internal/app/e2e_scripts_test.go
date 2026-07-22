@@ -96,8 +96,6 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		`1.24.10921.0`,
 		`Windows Terminal image-paste protocol ready`,
 		`--detect-os`,
-		`internal-begin-windows-install windows-wezterm`,
-		`--install-generation-protocol 1`,
 		`Windows source installation requires a cloned sshpic checkout`,
 		`wait_for_windows_tool`,
 		`"$go_cmd" version`,
@@ -110,15 +108,16 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		`internal-preflight-powershell-ssh-wrapper`,
 		`internal-install-powershell-ssh-wrapper`,
 		`internal-verify-powershell-ssh-wrapper`,
-		`prepare_windows_install_helper`,
-		`helper_bin_dir="$bin_dir"`,
-		`if ! mkdir -- "$install_helper_lock" 2>/dev/null; then`,
-		`sshpic-install-helper`,
-		`"$go_cmd" build -o "$install_helper" ./cmd/sshpic`,
+		`reuse_unchanged_windows_binary()`,
+		`"$go_cmd" version -m "$bin"`,
+		`vcs[.]revision`,
+		`git diff --quiet "$installed_revision" -- cmd internal go.mod go.sum`,
+		`:(exclude,glob)**/*_test.go`,
+		`go.mod`,
+		`go.sum`,
 		`$("$go_cmd" env GOEXE)`,
-		`"sshpic install helper ($install_helper)" "$install_helper" version`,
 		`"sshpic installed binary ($bin)" "$bin" version`,
-		`trap cleanup_windows_install_helper 0`,
+		`"$bin" install wezterm`,
 		`doctor wezterm --require-installed`,
 		`SSHPIC_WINDOWS_INSTALL_VERIFIED`,
 		`After SSHPIC_CURRENT_POWERSHELL_ACTIVATED appears`,
@@ -138,37 +137,32 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		`open_windows_ready_powershell`,
 		`Opened a fresh Windows Terminal PowerShell 7 tab`,
 		`Press Enter to close this installer window`,
+		`sshpic-install-helper`,
+		`prepare_windows_install_helper`,
+		`cleanup_windows_install_helper`,
+		`install_helper`,
+		`internal-begin-windows-install`,
+		`--install-generation`,
+		`"$go_cmd" build -o`,
+		`"$go_cmd" run ./cmd/sshpic`,
 	} {
 		if strings.Contains(text, forbidden) {
-			t.Fatalf("install.sh still contains separate-window bootstrap %q", forbidden)
+			t.Fatalf("install.sh contains forbidden Windows bootstrap/helper contract %q", forbidden)
 		}
 	}
-	beginGenerationIndex := strings.Index(text, "internal-begin-windows-install windows-wezterm")
-	plinkProbeIndex := strings.Index(text, `"$plink_cmd" -V`)
-	publishIndex := strings.Index(text, `"$go_cmd" install ./cmd/sshpic`)
-	if plinkProbeIndex < 0 || beginGenerationIndex < 0 || publishIndex < 0 || plinkProbeIndex >= beginGenerationIndex || beginGenerationIndex >= publishIndex {
-		t.Fatal("Windows install generation must begin before go install publishes the binary")
-	}
-	helperBuildIndex := strings.Index(text, `"$go_cmd" build -o "$install_helper" ./cmd/sshpic`)
-	helperProbeIndex := strings.Index(text, `"sshpic install helper ($install_helper)" "$install_helper" version`)
-	installedProbeIndex := strings.Index(text, `"sshpic installed binary ($bin)" "$bin" version`)
-	installWezTermIndex := strings.Index(text, `install wezterm --install-generation`)
-	provisionPuttyIndex := strings.Index(text, `internal-provision-putty-sessions`)
-	installPowerShellIndex := strings.Index(text, `internal-install-powershell-ssh-wrapper`)
-	preflightPowerShellIndex := strings.Index(text, `internal-preflight-powershell-ssh-wrapper`)
-	verifyPowerShellIndex := strings.Index(text, `internal-verify-powershell-ssh-wrapper`)
-	strictDoctorIndex := strings.Index(text, `doctor wezterm --require-installed`)
-	verifiedIndex := strings.Index(text, `SSHPIC_WINDOWS_INSTALL_VERIFIED`)
-	if helperBuildIndex < 0 || helperProbeIndex < 0 || installedProbeIndex < 0 || preflightPowerShellIndex < 0 || provisionPuttyIndex < 0 || installWezTermIndex < 0 || installPowerShellIndex < 0 || verifyPowerShellIndex < 0 || strictDoctorIndex < 0 || verifiedIndex < 0 ||
-		helperBuildIndex >= helperProbeIndex || helperProbeIndex >= beginGenerationIndex || publishIndex >= installedProbeIndex ||
-		installedProbeIndex >= preflightPowerShellIndex || preflightPowerShellIndex >= provisionPuttyIndex || provisionPuttyIndex >= installWezTermIndex || installWezTermIndex >= installPowerShellIndex || installPowerShellIndex >= verifyPowerShellIndex || verifyPowerShellIndex >= strictDoctorIndex || strictDoctorIndex >= verifiedIndex {
-		t.Fatal("Windows verified marker must be emitted only after integration install and strict doctor")
-	}
-	if strings.Contains(text, `"$go_cmd" run ./cmd/sshpic`) {
-		t.Fatal("Windows install generation must not execute through a one-shot go run temporary binary")
-	}
-	if strings.Contains(text, `install_helper="${TMPDIR`) || strings.Contains(text, `install_helper="$TMPDIR`) {
-		t.Fatal("Windows install helper must not execute from TEMP where Application Control can block fresh binaries")
+	reuseDecisionIndex := strings.LastIndex(text, "reuse_unchanged_windows_binary")
+	publishIndex := strings.LastIndex(text, `"$go_cmd" install ./cmd/sshpic`)
+	installedProbeIndex := strings.LastIndex(text, `"sshpic installed binary ($bin)" "$bin" version`)
+	preflightPowerShellIndex := strings.LastIndex(text, `SSHPIC_EXE="$bin_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-preflight-powershell-ssh-wrapper`)
+	provisionPuttyIndex := strings.LastIndex(text, `SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-provision-putty-sessions`)
+	installWezTermIndex := strings.LastIndex(text, `SSHPIC_WEZTERM_EXE="$wezterm_native" "$bin" install wezterm`)
+	installPowerShellIndex := strings.LastIndex(text, `SSHPIC_EXE="$bin_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-install-powershell-ssh-wrapper`)
+	verifyPowerShellIndex := strings.LastIndex(text, `"$bin" internal-verify-powershell-ssh-wrapper`)
+	strictDoctorIndex := strings.LastIndex(text, `doctor wezterm --require-installed`)
+	verifiedIndex := strings.LastIndex(text, `SSHPIC_WINDOWS_INSTALL_VERIFIED`)
+	if reuseDecisionIndex < 0 || publishIndex < 0 || installedProbeIndex < 0 || preflightPowerShellIndex < 0 || provisionPuttyIndex < 0 || installWezTermIndex < 0 || installPowerShellIndex < 0 || verifyPowerShellIndex < 0 || strictDoctorIndex < 0 || verifiedIndex < 0 ||
+		reuseDecisionIndex >= publishIndex || publishIndex >= installedProbeIndex || installedProbeIndex >= preflightPowerShellIndex || preflightPowerShellIndex >= provisionPuttyIndex || provisionPuttyIndex >= installWezTermIndex || installWezTermIndex >= installPowerShellIndex || installPowerShellIndex >= verifyPowerShellIndex || verifyPowerShellIndex >= strictDoctorIndex || strictDoctorIndex >= verifiedIndex {
+		t.Fatal("Windows install must decide reuse/build, probe the final binary, install integrations, pass strict doctor, and only then emit the verified marker")
 	}
 	if strings.Count(text, "SSHPIC_WINDOWS_INSTALL_VERIFIED") != 1 {
 		t.Fatal("Windows verified marker must have one success-only emission site")

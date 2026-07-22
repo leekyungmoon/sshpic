@@ -7,10 +7,6 @@ kernel_release="$(uname -r 2>/dev/null || printf 'unknown')"
 go_cmd=""
 wezterm_cmd=""
 plink_cmd=""
-install_helper=""
-install_helper_owned=0
-install_helper_lock=""
-install_helper_lock_owned=0
 bin_dir=""
 bin=""
 windows_tool_probe_attempts=8
@@ -106,24 +102,9 @@ wait_for_windows_tool() {
   if [ -n "$probe_output" ]; then
     printf 'Last %s error: %s\n' "$tool_label" "$probe_output" >&2
   fi
-  echo "Windows Code Integrity may still be applying trust after winget installation." >&2
-  echo 'Close and reopen PowerShell if needed, then rerun ./install.sh.' >&2
+  echo "Windows Code Integrity or application-control policy may have rejected it." >&2
+  echo "Review Windows Security protection history and CodeIntegrity/Operational; reopening the shell does not change an enforcement decision." >&2
   return 1
-}
-
-cleanup_windows_install_helper() {
-  cleanup_status=0
-  if [ "$install_helper_owned" -eq 1 ] && [ -n "$install_helper" ] && [ -f "$install_helper" ]; then
-    if ! rm -f -- "$install_helper"; then
-      cleanup_status=1
-    fi
-  fi
-  if [ "$install_helper_lock_owned" -eq 1 ] && [ -n "$install_helper_lock" ] && [ -d "$install_helper_lock" ]; then
-    if ! rmdir -- "$install_helper_lock"; then
-      cleanup_status=1
-    fi
-  fi
-  return "$cleanup_status"
 }
 
 canonical_windows_path() {
@@ -187,34 +168,36 @@ prepare_windows_binary_paths() {
   fi
 }
 
-prepare_windows_install_helper() {
-  # Windows Application Control can reject freshly built executables in TEMP
-  # even when the final Go binary is allowed. Build this short-lived helper
-  # beside the final Go binary, execute it once, and remove it before go install.
-  helper_bin_dir="$bin_dir"
-  if ! mkdir -p -- "$helper_bin_dir"; then
-    echo "could not create the Go binary directory for the Windows install helper: $helper_bin_dir" >&2
-    exit 1
+reuse_unchanged_windows_binary() {
+  # Smart App Control can reject a newly compiled, unsigned executable even
+  # when an already installed build of the same runtime is trusted. Reuse the
+  # existing binary only when Go can identify it without executing it and every
+  # runtime source input still matches the embedded, clean Git revision.
+  [ -f "$bin" ] || return 1
+  command -v git >/dev/null 2>&1 || return 1
+
+  binary_metadata="$("$go_cmd" version -m "$bin" 2>/dev/null)" || return 1
+  binary_package="$(printf '%s\n' "$binary_metadata" | awk '$1 == "path" { print $2; exit }')"
+  [ "$binary_package" = "$repo/cmd/sshpic" ] || return 1
+
+  installed_revision="$(printf '%s\n' "$binary_metadata" | awk '$1 == "build" && $2 ~ /^vcs[.]revision=/ { sub(/^vcs[.]revision=/, "", $2); print $2; exit }')"
+  installed_modified="$(printf '%s\n' "$binary_metadata" | awk '$1 == "build" && $2 ~ /^vcs[.]modified=/ { sub(/^vcs[.]modified=/, "", $2); print $2; exit }')"
+  [ "$installed_modified" = "false" ] || return 1
+  [ "${#installed_revision}" -eq 40 ] || return 1
+  case "$installed_revision" in
+    *[!0-9a-f]*) return 1 ;;
+  esac
+  git cat-file -e "$installed_revision^{commit}" 2>/dev/null || return 1
+
+  runtime_test_exclude=':(exclude,glob)**/*_test.go'
+  if ! git diff --quiet "$installed_revision" -- cmd internal go.mod go.sum "$runtime_test_exclude"; then
+    return 1
   fi
-  install_helper="$helper_bin_dir/sshpic-install-helper$("$go_cmd" env GOEXE)"
-  install_helper_lock="$helper_bin_dir/.sshpic-install-helper.lock"
-  trap cleanup_windows_install_helper 0
-  trap 'cleanup_windows_install_helper; exit 1' 1 2 15
-  if ! mkdir -- "$install_helper_lock" 2>/dev/null; then
-    echo "another sshpic installer owns the Windows install helper lock: $install_helper_lock" >&2
-    exit 1
-  fi
-  install_helper_lock_owned=1
-  if [ -e "$install_helper" ] || [ -L "$install_helper" ]; then
-    echo "refusing to replace an existing Windows install helper path: $install_helper" >&2
-    echo "Close another sshpic installer if one is running; no existing helper was removed." >&2
-    exit 1
-  fi
-  "$go_cmd" build -o "$install_helper" ./cmd/sshpic
-  install_helper_owned=1
-  if ! wait_for_windows_tool "sshpic install helper ($install_helper)" "$install_helper" version; then
-    exit 1
-  fi
+  untracked_runtime="$(git ls-files --others --exclude-standard -- cmd internal go.mod go.sum "$runtime_test_exclude")" || return 1
+  [ -z "$untracked_runtime" ] || return 1
+
+  printf 'Reusing installed sshpic binary: runtime sources are unchanged from trusted revision %s.\n' "$installed_revision"
+  return 0
 }
 
 find_go() {
@@ -441,33 +424,12 @@ install_pngpaste_if_possible
 install_python_if_possible
 
 if [ -f ./cmd/sshpic/main.go ] && [ -f ./go.mod ]; then
-  if is_windows_shell; then
-    # Publish an in-progress generation with a helper compiled from this exact
-    # checkout before go install can publish a new binary. The installed binary
-    # must present the same token before it can mutate the WezTerm integration.
-    # Probe that helper with the read-only version command first; the generation
-    # mutation itself is deliberately executed exactly once.
-    prepare_windows_install_helper
-    install_generation="$("$install_helper" \
-      internal-begin-windows-install windows-wezterm \
-      --install-generation-protocol 1)"
-    if [ -z "$install_generation" ]; then
-      echo "Windows install generation helper returned an empty token" >&2
-      exit 1
-    fi
-    if ! cleanup_windows_install_helper; then
-      echo "could not remove the short-lived Windows install helper: $install_helper" >&2
-      exit 1
-    fi
-    install_helper=""
-    install_helper_owned=0
-    install_helper_lock=""
-    install_helper_lock_owned=0
+  if ! is_windows_shell || ! reuse_unchanged_windows_binary; then
+    "$go_cmd" install ./cmd/sshpic
   fi
-  "$go_cmd" install ./cmd/sshpic
 else
   if is_windows_shell; then
-    echo "Windows source installation requires a cloned sshpic checkout so the install generation can be published before the binary." >&2
+    echo "Windows source installation requires a cloned sshpic checkout." >&2
     echo "Run: git clone https://github.com/leekyungmoon/sshpic.git && cd sshpic && ./install.sh" >&2
     exit 1
   fi
@@ -512,7 +474,7 @@ case "$host_os" in
     fi
     SSHPIC_EXE="$bin_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-preflight-powershell-ssh-wrapper
     SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-provision-putty-sessions
-    SSHPIC_WEZTERM_EXE="$wezterm_native" "$bin" install wezterm --install-generation "$install_generation"
+    SSHPIC_WEZTERM_EXE="$wezterm_native" "$bin" install wezterm
     SSHPIC_EXE="$bin_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-install-powershell-ssh-wrapper
     "$bin" internal-verify-powershell-ssh-wrapper
     if [ ! -x "$bin" ]; then

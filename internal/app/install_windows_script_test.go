@@ -450,15 +450,24 @@ printf 'build ran\n' >"$build_sentinel"
 	for _, want := range []string{
 		"could not execute from Git for Windows sh after 4 attempts",
 		"application control blocked attempt 4",
-		`rerun ./install.sh`,
+		"Windows Code Integrity or application-control policy may have rejected it.",
+		"Review Windows Security protection history and CodeIntegrity/Operational",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("permanent failure output missing %q: %s", want, text)
 		}
 	}
+	for _, forbidden := range []string{
+		"Close and reopen PowerShell",
+		"then rerun ./install.sh",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("permanent application-control failure must not prescribe a shell restart or unchanged rerun via %q: %s", forbidden, text)
+		}
+	}
 }
 
-func TestWindowsInstallerUsesPrivateExclusiveHelperDirectory(t *testing.T) {
+func TestWindowsInstallerAvoidsShortLivedHelperAndReusesOnlyUnchangedBinary(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh.posix"))
 	if err != nil {
@@ -466,23 +475,131 @@ func TestWindowsInstallerUsesPrivateExclusiveHelperDirectory(t *testing.T) {
 	}
 	text := string(data)
 	for _, want := range []string{
-		`install_helper_lock="$helper_bin_dir/.sshpic-install-helper.lock"`,
-		`if ! mkdir -- "$install_helper_lock" 2>/dev/null; then`,
-		`if [ -e "$install_helper" ] || [ -L "$install_helper" ]; then`,
-		`install_helper_owned=1`,
 		`prepare_windows_binary_paths`,
+		`reuse_unchanged_windows_binary()`,
+		`"$go_cmd" version -m "$bin"`,
+		`vcs[.]revision`,
+		`git cat-file -e`,
+		`git diff --quiet`,
+		`git ls-files --others --exclude-standard`,
+		`git diff --quiet "$installed_revision" -- cmd internal go.mod go.sum`,
+		`:(exclude,glob)**/*_test.go`,
+		`go.mod`,
+		`go.sum`,
+		`"$go_cmd" install ./cmd/sshpic`,
+		`"sshpic installed binary ($bin)" "$bin" version`,
+		`"$bin" install wezterm`,
 	} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("install.sh private-helper contract missing %q", want)
+			t.Fatalf("install.sh final-binary reuse contract missing %q", want)
 		}
 	}
 	for _, forbidden := range []string{
-		`if [ -f "$install_helper" ] && ! rm -f -- "$install_helper"`,
-		`could not remove a stale sshpic Windows install helper`,
+		`sshpic-install-helper`,
+		`prepare_windows_install_helper`,
+		`cleanup_windows_install_helper`,
+		`install_helper`,
+		`internal-begin-windows-install`,
+		`--install-generation`,
+		`"$go_cmd" build -o`,
+		`"$go_cmd" run ./cmd/sshpic`,
 	} {
 		if strings.Contains(text, forbidden) {
-			t.Fatalf("install.sh still uses unowned fixed helper path %q", forbidden)
+			t.Fatalf("install.sh must not create or invoke a short-lived Windows helper via %q", forbidden)
 		}
+	}
+}
+
+func TestReuseUnchangedWindowsBinaryRejectsAnyRuntimeMismatch(t *testing.T) {
+	shell := installTestShell()
+	if shell == "" {
+		t.Skip("POSIX shell is unavailable")
+	}
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh.posix"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	functionSource := installTestShellFunction(string(data), "reuse_unchanged_windows_binary")
+	if functionSource == "" {
+		t.Fatal("reuse_unchanged_windows_binary function not found")
+	}
+
+	dummyBinary := filepath.Join(t.TempDir(), "sshpic.exe")
+	if err := os.WriteFile(dummyBinary, []byte("metadata-only probe target\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shellBinary := dummyBinary
+	if runtime.GOOS == "windows" {
+		shellBinary = windowsPathForGitBash(dummyBinary)
+	}
+
+	const script = `
+bin=$1
+fake_mode=$2
+fake_package=$3
+fake_modified=$4
+repo=github.com/leekyungmoon/sshpic
+go_cmd=fake_go
+fake_revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+fake_go() {
+  if [ "$1" != version ] || [ "$2" != -m ] || [ "$3" != "$bin" ]; then
+    return 92
+  fi
+  printf '\tpath\t%s\n' "$fake_package"
+  printf '\tbuild\tvcs.revision=%s\n' "$fake_revision"
+  printf '\tbuild\tvcs.modified=%s\n' "$fake_modified"
+}
+git() {
+  case "$1:$2" in
+    cat-file:-e) return 0 ;;
+    diff:--quiet)
+      [ "$fake_mode" != runtime-changed ]
+      ;;
+    ls-files:--others)
+      if [ "$fake_mode" = untracked-runtime ]; then
+        printf '%s\n' internal/app/untracked_runtime.go
+      fi
+      return 0
+      ;;
+    *) return 93 ;;
+  esac
+}
+if reuse_unchanged_windows_binary; then
+  printf '%s\n' REUSED
+  exit 0
+fi
+printf '%s\n' REFUSED
+exit 3
+`
+	tests := []struct {
+		name       string
+		mode       string
+		pkg        string
+		modified   string
+		wantReuse  bool
+		wantOutput string
+	}{
+		{name: "matching clean revision", mode: "clean", pkg: "github.com/leekyungmoon/sshpic/cmd/sshpic", modified: "false", wantReuse: true, wantOutput: "REUSED"},
+		{name: "tracked runtime change", mode: "runtime-changed", pkg: "github.com/leekyungmoon/sshpic/cmd/sshpic", modified: "false", wantOutput: "REFUSED"},
+		{name: "dirty embedded metadata", mode: "clean", pkg: "github.com/leekyungmoon/sshpic/cmd/sshpic", modified: "true", wantOutput: "REFUSED"},
+		{name: "wrong package", mode: "clean", pkg: "example.invalid/not-sshpic", modified: "false", wantOutput: "REFUSED"},
+		{name: "untracked runtime source", mode: "untracked-runtime", pkg: "github.com/leekyungmoon/sshpic/cmd/sshpic", modified: "false", wantOutput: "REFUSED"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(shell, "-c", functionSource+script, "reuse-test", shellBinary, tc.mode, tc.pkg, tc.modified)
+			out, runErr := cmd.CombinedOutput()
+			if tc.wantReuse && runErr != nil {
+				t.Fatalf("matching binary was not reused: %v\n%s", runErr, out)
+			}
+			if !tc.wantReuse && runErr == nil {
+				t.Fatalf("mismatched binary was reused\n%s", out)
+			}
+			if !strings.Contains(string(out), tc.wantOutput) {
+				t.Fatalf("output missing %q: %s", tc.wantOutput, out)
+			}
+		})
 	}
 }
 
