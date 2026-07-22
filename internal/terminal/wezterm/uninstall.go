@@ -395,7 +395,7 @@ func checkedSourceRootWithStat(value string, statFile func(string) (os.FileInfo,
 	if _, statErr := statFile(filepath.Join(abs, ".git")); statErr != nil {
 		return "", nil, fmt.Errorf("source checkout does not contain Git metadata: %s", abs)
 	}
-	for _, required := range []string{"go.mod", "uninstall.sh.cmd", "uninstall.sh.posix", filepath.Join("cmd", "sshpic")} {
+	for _, required := range []string{"go.mod", "uninstall.sh.ps1", "uninstall.sh.cmd", "uninstall.sh.posix", filepath.Join("cmd", "sshpic")} {
 		if _, statErr := statFile(filepath.Join(abs, required)); statErr != nil {
 			return "", nil, fmt.Errorf("source checkout is missing %s: %s", required, abs)
 		}

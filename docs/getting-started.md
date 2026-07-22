@@ -18,11 +18,11 @@ cd .\wezterm-ssh-image-copy
 ./install.sh
 ```
 
-The missing exact `install.sh` pathname on this Windows branch is intentional. PowerShell appends `.CMD` from `PATHEXT`, resolves `./install.sh` to `install.sh.cmd`, and that thin facade locates Git for Windows and runs `install.sh.posix` synchronously in the current pane. It neither dispatches the `.sh` file association nor opens a Git Bash installer window. Do not run Git Bash's literal `./install.sh` on this branch, and do not install from WSL. When Go, WezTerm, or PuTTY is newly provisioned and the installer asks for a rerun, repeat `./install.sh` from PowerShell.
+The missing exact `install.sh` pathname on this Windows branch is intentional. PowerShell resolves `./install.sh` to `install.sh.ps1`; that facade locates Git for Windows, runs `install.sh.posix` synchronously in the current pane, and activates the verified managed `ssh` function in the same PowerShell process. `install.sh.cmd` remains only a `cmd.exe` fallback. Neither facade dispatches the `.sh` file association or opens a Git Bash installer window. Do not run Git Bash's literal `./install.sh` on this branch, and do not install from WSL. When Go, WezTerm, or PuTTY is newly provisioned and the installer asks for a rerun, repeat `./install.sh` from PowerShell.
 
 The Windows branch intentionally leaves the main-branch `README.md` unchanged. These branch-specific docs define its PowerShell command-facade contract; the main branch continues to expose its normal exact `install.sh` for macOS and Linux.
 
-PowerShell 7 (`pwsh`) is the managed runtime shell inside Windows Terminal 1.24.10921+ or WezTerm after installation. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the installer only cleans an exact recognized legacy sshpic block there. Wait for the install success message, then start a new PowerShell 7 session so the newly written profile function is loaded.
+PowerShell 7 (`pwsh`) is the managed runtime shell inside Windows Terminal 1.24.10921+ or WezTerm after installation. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the installer only cleans an exact recognized legacy sshpic block there. When `SSHPIC_CURRENT_POWERSHELL_ACTIVATED` appears, `Get-Command ssh` must already report `Function` in that same session; `ssh.exe` remains the explicit native recovery command.
 
 ## Install with the one-liner (macOS/Linux)
 
@@ -36,7 +36,7 @@ Windows installation requires the cloned checkout shown above so the installer c
 
 ### Windows Terminal or WezTerm (experimental)
 
-Open a new PowerShell 7 (`pwsh`) tab or pane in Windows Terminal 1.24.10921+ or WezTerm:
+In the same PowerShell 7 (`pwsh`) tab or pane where installation completed:
 
 ```text
 ssh user@host

@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -30,7 +31,7 @@ func TestWindowsInstallerHasNoFileAssociationOrAutoTabBootstrap(t *testing.T) {
 	}
 	for _, want := range []string{
 		"PowerShell literal ./install.sh resolved to the in-pane Windows launcher.",
-		"Open a fresh PowerShell 7 tab after this command returns",
+		"The PowerShell ./install.sh facade now activates that command in this same PowerShell session.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("install.sh missing same-terminal contract %q", want)
@@ -38,34 +39,85 @@ func TestWindowsInstallerHasNoFileAssociationOrAutoTabBootstrap(t *testing.T) {
 	}
 }
 
-func TestWindowsLiteralInstallLauncherUsesCMDInCurrentPane(t *testing.T) {
+func TestWindowsLiteralInstallLauncherUsesPS1InCurrentRunspace(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	if _, err := os.Stat(filepath.Join(repoRoot, "install.sh")); !os.IsNotExist(err) {
 		t.Fatalf("an exact install.sh would make PowerShell use the .sh file association: %v", err)
 	}
-	for _, required := range []string{"install.sh.cmd", "install.sh.posix"} {
+	for _, required := range []string{"install.sh.ps1", "install.sh.cmd", "install.sh.posix"} {
 		if info, err := os.Stat(filepath.Join(repoRoot, required)); err != nil || info.IsDir() {
 			t.Fatalf("required installer entry %s is unavailable: %v", required, err)
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh.cmd"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh.ps1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	launcher := strings.ToLower(string(data))
+	launcher := string(data)
+	for _, want := range []string{
+		`function Resolve-SshpicGitSh`,
+		`function Read-SshpicBoundedFile`,
+		`function Get-SshpicVerifiedOwnedBlock`,
+		`function Get-SshpicManagedFunctionDefinition`,
+		`install.sh.posix`,
+		`owned_bytes`,
+		`$ownedBlock = Get-SshpicVerifiedOwnedBlock`,
+		`$expectedDefinition = Get-SshpicManagedFunctionDefinition -OwnedBlock $ownedBlock`,
+		`$callerPid = $PID`,
+		`$native = Get-Command ssh.exe -CommandType Application`,
+		`& ([ScriptBlock]::Create($ownedBlock))`,
+		`Remove-Item -LiteralPath Function:\ssh -Force`,
+		`if ($PID -ne $callerPid)`,
+		`$activated = Get-Command ssh -CommandType Function`,
+		`$activated.Definition.Trim(), $expectedDefinition`,
+		`if ($args.Count -eq 0)`,
+		`Enable-SshpicInCurrentPowerShell`,
+		`SSHPIC_CURRENT_POWERSHELL_ACTIVATED`,
+	} {
+		if !strings.Contains(launcher, want) {
+			t.Fatalf("install.sh.ps1 missing same-runspace activation contract %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"Start-Process", "git-bash.exe", "wt.exe", "new-tab", "pwsh.exe", "powershell.exe", "ReadAllBytes",
+	} {
+		if strings.Contains(strings.ToLower(launcher), strings.ToLower(forbidden)) {
+			t.Fatalf("install.sh.ps1 may open another window or PowerShell process via %q", forbidden)
+		}
+	}
+	if strings.Contains(launcher, `. $PROFILE`) || strings.Contains(launcher, `& $PROFILE`) {
+		t.Fatal("install.sh.ps1 must execute only the manifest-verified owned_bytes block, not the whole user profile")
+	}
+	coreIndex := strings.LastIndex(launcher, `& $gitSh './install.sh.posix' @args`)
+	statusIndex := strings.LastIndex(launcher, `if ($installStatus -ne 0)`)
+	activateIndex := strings.LastIndex(launcher, `Enable-SshpicInCurrentPowerShell`)
+	if coreIndex < 0 || statusIndex <= coreIndex || activateIndex <= statusIndex {
+		t.Fatal("install.sh.ps1 must activate the current runspace only after the installer core succeeds")
+	}
+	nativeIndex := strings.Index(launcher, `$native = Get-Command ssh.exe -CommandType Application`)
+	executeOwnedIndex := strings.Index(launcher, `& ([ScriptBlock]::Create($ownedBlock))`)
+	if nativeIndex < 0 || executeOwnedIndex <= nativeIndex {
+		t.Fatal("install.sh.ps1 must verify native ssh.exe before creating the managed global ssh function")
+	}
+
+	cmdData, err := os.ReadFile(filepath.Join(repoRoot, "install.sh.cmd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmdLauncher := strings.ToLower(string(cmdData))
 	for _, want := range []string{
 		`setlocal enableextensions disabledelayedexpansion`,
 		`pushd "%~dp0"`,
 		`"%sshpic_git_sh%" "./install.sh.posix" %*`,
 		`exit /b %sshpic_status%`,
 	} {
-		if !strings.Contains(launcher, want) {
-			t.Fatalf("install.sh.cmd missing synchronous launcher contract %q", want)
+		if !strings.Contains(cmdLauncher, want) {
+			t.Fatalf("install.sh.cmd fallback missing synchronous launcher contract %q", want)
 		}
 	}
 	for _, forbidden := range []string{"git-bash.exe", "start ", "wt.exe", "new-tab"} {
-		if strings.Contains(launcher, forbidden) {
-			t.Fatalf("install.sh.cmd may open another window via %q", forbidden)
+		if strings.Contains(cmdLauncher, forbidden) {
+			t.Fatalf("install.sh.cmd fallback may open another window via %q", forbidden)
 		}
 	}
 
@@ -79,17 +131,204 @@ func TestWindowsLiteralInstallLauncherUsesCMDInCurrentPane(t *testing.T) {
 	if err != nil {
 		t.Skip("PowerShell is unavailable")
 	}
-	command := `$resolved = Get-Command .\install.sh -CommandType Application -ErrorAction Stop; ` +
-		`if ($resolved.Name -ne 'install.sh.cmd') { throw "resolved=$($resolved.Name)" }; ` +
+	command := `$resolved = Get-Command .\install.sh -CommandType ExternalScript,Application -ErrorAction Stop | Select-Object -First 1; ` +
+		`if ($resolved.Name -ne 'install.sh.ps1' -or $resolved.CommandType -ne 'ExternalScript') { throw "resolved=$($resolved.Name):$($resolved.CommandType)" }; ` +
 		`& .\install.sh --detect-os; exit $LASTEXITCODE`
 	cmd := exec.Command(powerShell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command)
 	cmd.Dir = repoRoot
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("PowerShell literal ./install.sh launcher failed: %v\n%s", err, out)
+		t.Fatalf("PowerShell literal ./install.sh .ps1 launcher failed: %v\n%s", err, out)
 	}
 	if got := lastNonEmptyOutputLine(out); got != "windows" {
 		t.Fatalf("PowerShell literal ./install.sh detected OS=%q want windows; output=%s", got, out)
+	}
+}
+
+func TestWindowsPowerShellFacadesExposeCoreFailures(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell facade failure semantics are Windows-only")
+	}
+	pwsh, err := exec.LookPath("pwsh.exe")
+	if err != nil {
+		t.Skip("PowerShell 7 is unavailable")
+	}
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	for _, tc := range []struct {
+		name       string
+		facade     string
+		core       string
+		status     int
+		wantPrefix string
+	}{
+		{name: "install", facade: "install.sh.ps1", core: "install.sh.posix", status: 37, wantPrefix: "sshpic installation failed:"},
+		{name: "uninstall", facade: "uninstall.sh.ps1", core: "uninstall.sh.posix", status: 23, wantPrefix: "sshpic uninstall failed:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			temp := t.TempDir()
+			facadeBytes, err := os.ReadFile(filepath.Join(repoRoot, tc.facade))
+			if err != nil {
+				t.Fatal(err)
+			}
+			facadePath := filepath.Join(temp, tc.facade)
+			if err := os.WriteFile(facadePath, facadeBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			coreText := "#!/usr/bin/env sh\nexit " + strconv.Itoa(tc.status) + "\n"
+			if err := os.WriteFile(filepath.Join(temp, tc.core), []byte(coreText), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			direct := exec.Command(pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", facadePath)
+			out, directErr := direct.CombinedOutput()
+			if directErr == nil {
+				t.Fatalf("%s facade process reported success for core exit %d\n%s", tc.name, tc.status, out)
+			}
+			if exitErr, ok := directErr.(*exec.ExitError); !ok || exitErr.ExitCode() == 0 {
+				t.Fatalf("%s facade process error=%v, want nonzero exit\n%s", tc.name, directErr, out)
+			}
+			if !strings.Contains(string(out), tc.wantPrefix) || !strings.Contains(string(out), "status "+strconv.Itoa(tc.status)) {
+				t.Fatalf("%s facade failure output did not identify the core status\n%s", tc.name, out)
+			}
+
+			probe := `$ErrorActionPreference = 'Stop'; try { & $env:SSHPIC_FACADE_UNDER_TEST; throw 'facade returned without an error' } catch { $message = $_.Exception.Message; $status = $LASTEXITCODE }; if ($status -ne [int]$env:SSHPIC_EXPECTED_STATUS -or -not $message.StartsWith($env:SSHPIC_EXPECTED_PREFIX, [StringComparison]::Ordinal)) { [Console]::Error.WriteLine("status=$status message=$message"); exit 91 }`
+			inRunspace := exec.Command(pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", probe)
+			inRunspace.Env = append(os.Environ(),
+				"SSHPIC_FACADE_UNDER_TEST="+facadePath,
+				"SSHPIC_EXPECTED_STATUS="+strconv.Itoa(tc.status),
+				"SSHPIC_EXPECTED_PREFIX="+tc.wantPrefix,
+			)
+			if out, err := inRunspace.CombinedOutput(); err != nil {
+				t.Fatalf("%s facade did not expose failure in the caller runspace: %v\n%s", tc.name, err, out)
+			}
+		})
+	}
+}
+
+func TestWindowsPowerShellFacadesActivateAndRemoveOnlyManagedSSHInSameRunspace(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell facade lifecycle is Windows-only")
+	}
+	pwsh, err := exec.LookPath("pwsh.exe")
+	if err != nil {
+		t.Skip("PowerShell 7 is unavailable")
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp := t.TempDir()
+	fakeSh := filepath.Join(temp, "fake-sh.cmd")
+	if err := os.WriteFile(fakeSh, []byte("@echo off\r\nexit /b 0\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(temp, "uninstall.sh.posix"), []byte("#!/bin/sh\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	harness := filepath.Join(temp, "facade-lifecycle.ps1")
+	const source = `param(
+    [Parameter(Mandatory)][string] $InstallFacade,
+    [Parameter(Mandatory)][string] $UninstallFacade,
+    [Parameter(Mandatory)][string] $FakeSh
+)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+function Get-FacadeFunctionSource {
+    param([string] $Path, [string] $Name)
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref] $tokens, [ref] $parseErrors)
+    if ($parseErrors.Count -ne 0) { throw "$Path has parse errors" }
+    $matches = @($ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            [string]::Equals($node.Name, $Name, [StringComparison]::Ordinal)
+    }, $true))
+    if ($matches.Count -ne 1) { throw "$Path does not define exactly one $Name" }
+    return $matches[0].Extent.Text
+}
+
+$script:FakeOwnedBlock = @'
+if ($env:WEZTERM_PANE -or $env:WT_SESSION) {
+    function global:ssh {
+        # sshpic-managed-function-version: 2
+        'sshpic-test-managed'
+    }
+}
+'@
+$script:SshpicFunctionMarker = '# sshpic-managed-function-version: 2'
+$env:WT_SESSION = 'sshpic-same-runspace-test'
+$env:WEZTERM_PANE = $null
+
+Invoke-Expression (Get-FacadeFunctionSource $InstallFacade 'Get-SshpicManagedFunctionDefinition')
+Invoke-Expression (Get-FacadeFunctionSource $InstallFacade 'Enable-SshpicInCurrentPowerShell')
+function Get-SshpicVerifiedOwnedBlock { return $script:FakeOwnedBlock }
+
+$callerPid = $PID
+$activationOutput = @(Enable-SshpicInCurrentPowerShell)
+if ($PID -ne $callerPid) { throw 'activation changed the PowerShell process' }
+if ($activationOutput -notcontains 'SSHPIC_CURRENT_POWERSHELL_ACTIVATED') {
+    throw 'activation sentinel was not emitted'
+}
+$managed = Get-Command ssh -CommandType Function -ErrorAction Stop
+if (-not $managed.Definition.Contains($script:SshpicFunctionMarker, [StringComparison]::Ordinal)) {
+    throw 'managed ssh function was not active in the caller runspace'
+}
+
+Invoke-Expression (Get-FacadeFunctionSource $UninstallFacade 'Get-SshpicManagedFunctionDefinition')
+function Resolve-SshpicGitSh { return $FakeSh }
+function Get-SshpicVerifiedOwnedBlock { return $script:FakeOwnedBlock }
+$tokens = $null
+$parseErrors = $null
+$uninstallAst = [Management.Automation.Language.Parser]::ParseFile(
+    $UninstallFacade,
+    [ref] $tokens,
+    [ref] $parseErrors
+)
+if ($parseErrors.Count -ne 0) { throw 'uninstall facade has parse errors' }
+$mainTry = @($uninstallAst.EndBlock.Statements | Where-Object {
+    $_ -is [Management.Automation.Language.TryStatementAst]
+})
+if ($mainTry.Count -ne 1) { throw 'uninstall facade does not have one top-level lifecycle block' }
+$lifecycleRootLiteral = "'" + $PSScriptRoot.Replace("'", "''") + "'"
+$lifecycleSource = $mainTry[0].Extent.Text.Replace('$PSScriptRoot', $lifecycleRootLiteral)
+function Invoke-UninstallLifecycle {
+    param([string] $LifecycleSource)
+    Invoke-Expression $LifecycleSource
+}
+
+$deactivationOutput = @(Invoke-UninstallLifecycle $lifecycleSource)
+if ($PID -ne $callerPid) { throw 'deactivation changed the PowerShell process' }
+if ($deactivationOutput -notcontains 'SSHPIC_CURRENT_POWERSHELL_DEACTIVATED') {
+    throw 'deactivation sentinel was not emitted'
+}
+if ($null -ne (Get-Command ssh -CommandType Function -ErrorAction SilentlyContinue)) {
+    throw 'managed ssh function remains in the caller runspace'
+}
+
+function global:ssh { 'foreign-user-function' }
+$foreignDefinition = (Get-Command ssh -CommandType Function -ErrorAction Stop).Definition
+$foreignOutput = @(Invoke-UninstallLifecycle $lifecycleSource)
+$remaining = Get-Command ssh -CommandType Function -ErrorAction Stop
+if ($remaining.Definition -cne $foreignDefinition) {
+    throw 'uninstall removed or changed a foreign ssh function'
+}
+if ($foreignOutput -contains 'SSHPIC_CURRENT_POWERSHELL_DEACTIVATED') {
+    throw 'uninstall claimed to remove a foreign ssh function'
+}
+Remove-Item -LiteralPath Function:\ssh -Force
+`
+	if err := os.WriteFile(harness, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(
+		pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", harness,
+		filepath.Join(repoRoot, "install.sh.ps1"), filepath.Join(repoRoot, "uninstall.sh.ps1"), fakeSh,
+	)
+	cmd.Dir = temp
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("same-runspace facade lifecycle failed: %v\n%s", err, out)
 	}
 }
 

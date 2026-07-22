@@ -34,6 +34,7 @@ func newUninstallFixture(t *testing.T, binaryInSource bool) uninstallFixture {
 	}
 	for path, data := range map[string][]byte{
 		filepath.Join(sourceRoot, "go.mod"):             []byte("module example.invalid/sshpic\n"),
+		filepath.Join(sourceRoot, "uninstall.sh.ps1"):   []byte("return\r\n"),
 		filepath.Join(sourceRoot, "uninstall.sh.cmd"):   []byte("@exit /b 0\r\n"),
 		filepath.Join(sourceRoot, "uninstall.sh.posix"): []byte("#!/bin/sh\n"),
 		filepath.Join(sourceRoot, ".git", "HEAD"):       []byte("ref: refs/heads/test\n"),

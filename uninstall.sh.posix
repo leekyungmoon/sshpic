@@ -38,7 +38,7 @@ case "$script_path" in
   *) script_path="$(command -v "$script_path" 2>/dev/null || printf '%s' "$script_path")" ;;
 esac
 repo_root="$(CDPATH= cd -P -- "$(dirname -- "$script_path")" && pwd -P)"
-for required in ".git" "go.mod" "uninstall.sh.cmd" "uninstall.sh.posix" "cmd/sshpic"; do
+for required in ".git" "go.mod" "uninstall.sh.ps1" "uninstall.sh.cmd" "uninstall.sh.posix" "cmd/sshpic"; do
   if [ ! -e "$repo_root/$required" ]; then
     echo "refusing to run outside the sshpic source checkout; missing: $repo_root/$required" >&2
     exit 1
@@ -233,7 +233,7 @@ if ! "$helper" internal-remove-putty-sessions; then
   exit 1
 fi
 
-for required in ".git" "go.mod" "uninstall.sh.cmd" "uninstall.sh.posix" "cmd/sshpic"; do
+for required in ".git" "go.mod" "uninstall.sh.ps1" "uninstall.sh.cmd" "uninstall.sh.posix" "cmd/sshpic"; do
   if [ ! -e "$repo_root/$required" ]; then
     echo "Uninstall removed installed state but the source checkout verification failed: $repo_root/$required" >&2
     exit 1

@@ -60,7 +60,7 @@ Ubuntu support language needs separate evidence bundles for GNOME Terminal on X1
 
 The shared Windows release evidence needs a real Windows 10 or 11 interactive desktop bundle for each candidate showing:
 
-- synchronous installation in the current PowerShell pane with literal `./install.sh`, resolved through `PATHEXT` to the Windows branch's `install.sh.cmd` facade and then to its `install.sh.posix` core, followed by the SSH test in a new PowerShell 7 session that loads the managed profile; the evidence must also show that no separate Git Bash installer window opened;
+- synchronous installation in the current PowerShell pane with literal `./install.sh`, resolved to the Windows branch's `install.sh.ps1` facade and then to its `install.sh.posix` core; before the command returns, the same PowerShell PID must change `Get-Command ssh` from the native application to the managed function while preserving `ssh.exe`, and no separate installer window may open;
 - terminal identity/version evidence—Windows Terminal 1.24.10921+ or the tested WezTerm release—and PuTTY Plink identity/version evidence for the password path, plus Windows OpenSSH evidence when the legacy key path is claimed;
 - an image copied from the Windows clipboard and exactly one `[Image #1]` attachment placeholder rendered in focused remote Codex with `Ctrl+V`, with no raw path or debug text left visible;
 - an image copied from the Windows clipboard and exactly one `[Image #1]` attachment placeholder rendered in focused local native Codex with the same `Ctrl+V`, plus exact native text paste from that same shortcut;

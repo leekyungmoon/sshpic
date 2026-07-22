@@ -525,13 +525,13 @@ case "$host_os" in
     fi
     echo "installed sshpic: $bin"
     echo "Windows installation verified: the executable, manifest-owned WezTerm artifacts, and managed PowerShell 7 SSH wrapper passed strict doctor."
-    echo "TEST IN A NEW POWERSHELL 7 SESSION: use Windows Terminal 1.24.10921+ or WezTerm."
+    echo "Use Windows Terminal 1.24.10921+ or WezTerm with PowerShell 7."
     echo "The managed normal-ssh command is enabled only in PowerShell 7 (pwsh) inside Windows Terminal or WezTerm."
-    echo "For password login, open a new PowerShell 7 (pwsh) session and run: ssh user@host"
+    echo "The PowerShell ./install.sh facade now activates that command in this same PowerShell session."
+    echo "After SSHPIC_CURRENT_POWERSHELL_ACTIVATED appears, run: ssh user@host"
     echo "Enter the server password once, start Codex, focus its input, and press Ctrl+V."
     echo "Native ssh.exe remains the explicit key/agent-authenticated recovery path."
     echo "Expected Codex UI: [Image #1]"
-    echo "Open a fresh PowerShell 7 tab after this command returns; an already-running shell cannot reload a profile change retroactively."
     echo "SSHPIC_WINDOWS_INSTALL_VERIFIED"
     ;;
 esac

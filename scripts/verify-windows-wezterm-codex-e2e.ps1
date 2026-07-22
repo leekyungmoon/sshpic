@@ -41,8 +41,12 @@ function Resolve-WezTerm {
 
 function Assert-RepoContract {
     $required = @(
+        (Join-Path $RepoRoot "install.sh.ps1"),
         (Join-Path $RepoRoot "install.sh.cmd"),
         (Join-Path $RepoRoot "install.sh.posix"),
+        (Join-Path $RepoRoot "uninstall.sh.ps1"),
+        (Join-Path $RepoRoot "uninstall.sh.cmd"),
+        (Join-Path $RepoRoot "uninstall.sh.posix"),
         (Join-Path $RepoRoot ".github\workflows\ci.yml"),
         (Join-Path $RepoRoot "internal\terminal\wezterm\lua.go"),
         (Join-Path $RepoRoot "internal\terminal\wezterm\install.go")
@@ -56,9 +60,53 @@ function Assert-RepoContract {
     if (Test-Path -LiteralPath (Join-Path $RepoRoot "install.sh")) {
         throw "an exact install.sh would make PowerShell use the Windows .sh file association and open another window"
     }
-    $launcher = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh.cmd"))
-    if ($launcher -notmatch 'install\.sh\.posix' -or $launcher -match '(?im)\b(?:start|git-bash\.exe|wt\.exe)\b') {
-        throw "install.sh.cmd is not the synchronous in-pane launcher"
+    if (Test-Path -LiteralPath (Join-Path $RepoRoot "uninstall.sh")) {
+        throw "an exact uninstall.sh would make PowerShell use the Windows .sh file association and open another window"
+    }
+    $installLauncher = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh.ps1"))
+    foreach ($sentinel in @(
+        "function Resolve-SshpicGitSh",
+        "function Read-SshpicBoundedFile",
+        "function Get-SshpicVerifiedOwnedBlock",
+        "function Get-SshpicManagedFunctionDefinition",
+        "install.sh.posix",
+        "owned_bytes",
+        "SSHPIC_CURRENT_POWERSHELL_ACTIVATED"
+    )) {
+        if (-not $installLauncher.Contains($sentinel)) {
+            throw "install.sh.ps1 same-runspace activation sentinel is missing: $sentinel"
+        }
+    }
+    $uninstallLauncher = [IO.File]::ReadAllText((Join-Path $RepoRoot "uninstall.sh.ps1"))
+    foreach ($sentinel in @(
+        "function Resolve-SshpicGitSh",
+        "function Read-SshpicBoundedFile",
+        "function Get-SshpicVerifiedOwnedBlock",
+        "function Get-SshpicManagedFunctionDefinition",
+        "uninstall.sh.posix",
+        "owned_bytes",
+        "SSHPIC_CURRENT_POWERSHELL_DEACTIVATED",
+        "Remove-Item"
+    )) {
+        if (-not $uninstallLauncher.Contains($sentinel)) {
+            throw "uninstall.sh.ps1 same-runspace deactivation sentinel is missing: $sentinel"
+        }
+    }
+    foreach ($launcherContract in @(
+        @{ name = "install.sh.ps1"; text = $installLauncher },
+        @{ name = "uninstall.sh.ps1"; text = $uninstallLauncher }
+    )) {
+        if ($launcherContract.text -match '(?im)\b(?:Start-Process|git-bash\.exe|wt\.exe|new-tab|pwsh\.exe|powershell\.exe)\b') {
+            throw "$($launcherContract.name) may open another window or nested PowerShell process"
+        }
+    }
+    $installFallback = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh.cmd"))
+    if ($installFallback -notmatch 'install\.sh\.posix' -or $installFallback -match '(?im)\b(?:start|git-bash\.exe|wt\.exe)\b') {
+        throw "install.sh.cmd is not the synchronous fallback launcher"
+    }
+    $uninstallFallback = [IO.File]::ReadAllText((Join-Path $RepoRoot "uninstall.sh.cmd"))
+    if ($uninstallFallback -notmatch 'uninstall\.sh\.posix' -or $uninstallFallback -match '(?im)\b(?:start|git-bash\.exe|wt\.exe)\b') {
+        throw "uninstall.sh.cmd is not the synchronous fallback launcher"
     }
     $installer = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh.posix"))
     if ($installer -notmatch 'install wezterm') {
@@ -76,18 +124,27 @@ function Assert-RepoContract {
     }
 }
 
-function Resolve-LiteralInstallLauncher {
-    $literal = Join-Path $RepoRoot "install.sh"
-    $resolved = Get-Command $literal -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+function Resolve-LiteralLauncher {
+    param([string]$Name)
+    $literal = Join-Path $RepoRoot $Name
+    $resolved = Get-Command $literal -CommandType ExternalScript,Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($null -eq $resolved) {
-        throw "PowerShell could not resolve literal ./install.sh through PATHEXT"
+        throw "PowerShell could not resolve literal ./$Name"
     }
-    $expected = [IO.Path]::GetFullPath((Join-Path $RepoRoot "install.sh.cmd"))
+    $expected = [IO.Path]::GetFullPath((Join-Path $RepoRoot ($Name + ".ps1")))
     $actual = [IO.Path]::GetFullPath($resolved.Source)
-    if (-not [string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "literal ./install.sh resolved to an unexpected command: $actual"
+    if ($resolved.CommandType -ne "ExternalScript" -or -not [string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "literal ./$Name resolved to an unexpected command: $($resolved.CommandType) $actual"
     }
     return $actual
+}
+
+function Resolve-LiteralInstallLauncher {
+    return Resolve-LiteralLauncher "install.sh"
+}
+
+function Resolve-LiteralUninstallLauncher {
+    return Resolve-LiteralLauncher "uninstall.sh"
 }
 
 if ($PreflightOnly) {
@@ -96,6 +153,7 @@ if ($PreflightOnly) {
     }
     Assert-RepoContract
     $literalInstallLauncher = Resolve-LiteralInstallLauncher
+    $literalUninstallLauncher = Resolve-LiteralUninstallLauncher
     $powerShellTool = Get-App @("powershell.exe", "pwsh.exe")
     $sshTool = Get-App @("ssh.exe")
     $wezTermTool = Resolve-WezTerm
@@ -104,6 +162,7 @@ if ($PreflightOnly) {
     Write-Host "ssh.exe: $(if ($sshTool) { $sshTool } else { 'not found (runtime prerequisite)' })"
     Write-Host "WezTerm: $(if ($wezTermTool) { $wezTermTool } else { 'not installed (allowed in CI preflight)' })"
     Write-Host "literal ./install.sh: $literalInstallLauncher"
+    Write-Host "literal ./uninstall.sh: $literalUninstallLauncher"
     Write-Host "No clipboard, WezTerm config, winget, or SSH target was accessed."
     exit 0
 }
@@ -511,6 +570,7 @@ $PowerShellExe = Get-App @("powershell.exe", "pwsh.exe")
 $SshExe = Get-App @("ssh.exe")
 $Sshpic = $null
 $InstallAttempted = $false
+$SameRunspaceActivationResult = "not_run"
 $SshPreflightResult = "not_run"
 $ImageResult = "not_run"
 $RemoteResult = "not_run"
@@ -544,6 +604,12 @@ try {
     $InstallAttempted = $true
     $installExit = Invoke-Logged $InstallLauncher @() $InstallLog $RepoRoot
     if ($installExit -ne 0) { throw "install.sh exited $installExit" }
+    $currentSsh = Get-Command ssh -CommandType Function -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $currentSsh -or $currentSsh.Definition -notmatch 'sshpic-managed-function-version:\s*2') {
+        $SameRunspaceActivationResult = "fail"
+        throw "install.sh did not activate the manifest-verified managed ssh function in this PowerShell runspace"
+    }
+    $SameRunspaceActivationResult = "pass"
     $Sshpic = Resolve-Sshpic
     if (-not $Sshpic) { throw "sshpic.exe could not be resolved after install" }
 
@@ -610,7 +676,7 @@ try {
     Set-ClipboardFixture $PowerShellExe "image" $Fixture
     $LocalMaterializedSha256 = (Get-FileHash -LiteralPath $ExpectedClipboardPng -Algorithm SHA256).Hash.ToLowerInvariant()
 
-    Write-Host "In WezTerm: run 'ssh.exe $SshTarget', start Codex, focus its input, and press Ctrl+V once."
+    Write-Host "In Windows Terminal or WezTerm PowerShell 7: run the managed command 'ssh $SshTarget' (never ssh.exe), enter the password, start Codex, focus its input, and press Ctrl+V once."
     Write-Host "Expected Codex UI: exactly one [Image #1] attachment placeholder. A visible raw remote path is a failure."
     $ImageResult = if (Confirm-Pass "Did Codex show exactly one [Image #1], with no raw path or command/debug text? [y/N]") { "pass" } else { "fail" }
 
@@ -699,7 +765,7 @@ finally {
     }
 
     $overall = "fail"
-    if ($SshPreflightResult -eq "pass" -and $ImageResult -eq "pass" -and $RemoteResult -eq "pass" -and $ShaEqualityResult -eq "pass" -and $TextResult -eq "pass" -and $RestoreResult -eq "pass" -and $ClipboardRestoreResult -eq "pass_exact_empty") {
+    if ($SameRunspaceActivationResult -eq "pass" -and $SshPreflightResult -eq "pass" -and $ImageResult -eq "pass" -and $RemoteResult -eq "pass" -and $ShaEqualityResult -eq "pass" -and $TextResult -eq "pass" -and $RestoreResult -eq "pass" -and $ClipboardRestoreResult -eq "pass_exact_empty") {
         $overall = "pass"
         $ExitCode = 0
     }
@@ -714,6 +780,7 @@ finally {
 - Result: $overall
 - Failure reason: $Failure
 - SSH target: $SshTarget
+- Current PowerShell runspace activation: $SameRunspaceActivationResult
 - SSH BatchMode preflight: $SshPreflightResult
 - Codex exact `[Image #1]` UI result: $ImageResult
 - Local materialized PNG SHA-256: $LocalMaterializedSha256

@@ -1,8 +1,8 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-rem See install.sh.cmd: the missing exact .sh file is intentional so PowerShell
-rem keeps literal ./uninstall.sh synchronous in the current terminal pane.
+rem cmd.exe fallback. PowerShell resolves literal ./uninstall.sh to
+rem uninstall.sh.ps1 so the current-runspace ssh function is removed too.
 set "SSHPIC_GIT_SH=%ProgramFiles%\Git\bin\sh.exe"
 if exist "%SSHPIC_GIT_SH%" goto run_uninstaller
 

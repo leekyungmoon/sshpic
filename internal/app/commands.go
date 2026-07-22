@@ -263,6 +263,7 @@ func isWindowsTerminalSession() bool {
 // selection, shared-SFTP upload, SHA verification, and terminal-safe payloads.
 func windowsTerminalEmptyPasteHandler(plinkPath string, invocation putty.Invocation) putty.EmptyPasteHandler {
 	return func(parent context.Context) (string, error) {
+		appendIntegrationLog("windows terminal empty paste received")
 		ctx, cancel := context.WithTimeout(parent, 25*time.Second)
 		defer cancel()
 
@@ -296,6 +297,7 @@ func windowsTerminalEmptyPasteHandler(plinkPath string, invocation putty.Invocat
 			},
 		)
 		if result.Action == dispatch.ActionInsertRemoteImagePath && result.Payload != "" {
+			appendIntegrationLog("windows terminal empty paste inserted remote image payload")
 			return result.Payload, nil
 		}
 		appendIntegrationLog("windows terminal empty paste preserved: " + result.Kind + " " + result.Reason)

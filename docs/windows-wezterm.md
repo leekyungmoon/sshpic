@@ -14,7 +14,7 @@ All of the following are required:
 
 WSL terminals, SSH launched inside WSL, plain unmanaged PuTTY sessions, headless Windows sessions, Windows services, and unsupported wrappers are outside these candidates. They remain `TBD`.
 
-For image-paste runtime, PowerShell 7 (`pwsh`) is the managed shell inside Windows Terminal or WezTerm. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the lifecycle code recognizes it only to remove an exact legacy sshpic block. On this Windows branch there is intentionally no top-level file named exactly `install.sh` or `uninstall.sh`. PowerShell resolves the literal commands `./install.sh` and `./uninstall.sh` through `PATHEXT` to `install.sh.cmd` and `uninstall.sh.cmd`; each launcher finds Git for Windows' console `sh.exe` and runs its `.posix` core synchronously in the current pane.
+For image-paste runtime, PowerShell 7 (`pwsh`) is the managed shell inside Windows Terminal or WezTerm. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the lifecycle code recognizes it only to remove an exact legacy sshpic block. On this Windows branch there is intentionally no top-level file named exactly `install.sh` or `uninstall.sh`. PowerShell resolves the literal commands to `install.sh.ps1` and `uninstall.sh.ps1`; each launcher runs its `.posix` core synchronously, then activates or removes the exact manifest-owned `ssh` function in the same PowerShell runspace. The `.cmd` companions remain `cmd.exe` fallbacks.
 
 The Windows provider reads an image already present on the clipboard. `sshpic shot` and `sshpic full` screen capture are not implemented on Windows.
 
@@ -30,7 +30,7 @@ cd .\wezterm-ssh-image-copy
 ./install.sh
 ```
 
-PowerShell appends `.CMD` from `PATHEXT` and resolves that command to `install.sh.cmd` because this branch deliberately has no exact `install.sh` file. The launcher locates Git for Windows itself, invokes `install.sh.posix` without using the `.sh` file association, waits in the same pane, and returns the core installer's real exit status. `install.sh.cmd` is only the Windows command facade; installation logic remains in the POSIX core. Do not use Git Bash's literal `./install.sh` on this branch because that exact pathname does not exist. The main-branch `README.md` is intentionally unchanged; this document defines the Windows-branch invocation contract.
+PowerShell resolves that command to `install.sh.ps1` because this branch deliberately has no exact `install.sh` file. The launcher locates Git for Windows, invokes `install.sh.posix` without using the `.sh` file association, waits in the same pane, validates the profile ownership manifest and exact installed bytes, and activates only that managed block in the caller's runspace. It does not re-run the user's full profile. `install.sh.cmd` is retained only for `cmd.exe`; installation logic remains in the POSIX core. Do not use Git Bash's literal `./install.sh` on this branch because that exact pathname does not exist. The main-branch `README.md` is intentionally unchanged.
 
 The installer:
 
@@ -43,9 +43,9 @@ The installer:
 7. runs `sshpic install wezterm`; and
 8. installs a bounded, marker-owned block in the current user's PowerShell 7 profile that maps normal `ssh` to the password path inside Windows Terminal or WezTerm.
 
-If a newly installed executable is not visible to the current installer shell, repeat the same platform-specific install command. Do not begin the SSH test until the installer prints its completion message, then start a new PowerShell 7 session so the managed profile is loaded.
+If a newly installed executable is not visible to the installer, repeat the same command. Do not begin the SSH test until both `SSHPIC_WINDOWS_INSTALL_VERIFIED` and `SSHPIC_CURRENT_POWERSHELL_ACTIVATED` appear.
 
-Do not run the installer from WSL for this integration. After installation, open a new PowerShell 7 tab or pane inside Windows Terminal 1.24.10921+ or WezTerm and use normal `ssh`. The explicit `sshpic ssh` equivalent remains available from another native Windows shell. Do not use Windows PowerShell 5.1 or SSH launched inside WSL for the managed path.
+Do not run the installer from WSL for this integration. After installation, the same PowerShell 7 tab or pane inside Windows Terminal 1.24.10921+ or WezTerm must resolve normal `ssh` as a function. The explicit `sshpic ssh` equivalent remains available from another native Windows shell. Do not use Windows PowerShell 5.1 or SSH launched inside WSL for the managed path.
 
 ## WezTerm configuration safety
 
@@ -61,13 +61,13 @@ It writes an owned module named `sshpic-wezterm.lua` beside that config and an o
 
 The installer patches only a config with one simple final `return <identifier>`. Before committing the change, it asks the selected WezTerm executable to validate the generated config. It refuses to guess at a complex config, overwrite an existing non-managed module or backup, or replace managed files that changed after installation. A refusal is a safe failure: the pre-existing config remains byte-for-byte unchanged.
 
-After a successful install, reload the WezTerm configuration or restart WezTerm before testing its `Ctrl+V` path. For Windows Terminal, open a new PowerShell 7 tab so the managed profile block is loaded, and verify the terminal version before testing.
+After a successful install, reload the WezTerm configuration if it has not refreshed automatically. For Windows Terminal, the same PowerShell PID is ready after the activation sentinel; verify the terminal version and `Get-Command ssh` before testing.
 
 ## Use
 
 For a local native Windows Codex session, the existing WezTerm adapter can start `codex` directly, use focused-process evidence, and keep ordinary text on WezTerm's native paste path. The Windows Terminal adapter described here is the managed remote `sshpic ssh` proxy path; it does not claim local-Codex image paste outside that proxy.
 
-For a password-authenticated remote Codex session, use an explicit account name. In a new Windows Terminal or WezTerm PowerShell 7 tab/pane after the verified installer completes, the normal command is:
+For a password-authenticated remote Codex session, use an explicit account name. In the same Windows Terminal or WezTerm PowerShell 7 tab/pane after the verified installer completes, the normal command is:
 
 ```text
 ssh user@host
@@ -143,7 +143,7 @@ Inside the cloned checkout, run the one supported Windows uninstall command from
 ./uninstall.sh
 ```
 
-There are no dry-run, purge, keep-source, binary-selection, or confirmation modes. PowerShell resolves the literal command through `PATHEXT` to `uninstall.sh.cmd`; that facade finds Git for Windows and runs `uninstall.sh.posix` synchronously in the same pane, returning the core uninstaller's real exit code. There is intentionally no exact `uninstall.sh` file on this branch, so Git Bash's literal `./uninstall.sh` is not a supported Windows entrypoint.
+There are no dry-run, purge, keep-source, binary-selection, or confirmation modes. PowerShell resolves the literal command to `uninstall.sh.ps1`; that facade runs `uninstall.sh.posix` synchronously and removes the current-runspace `ssh` function only when it exactly matches the pre-uninstall manifest-owned definition. There is intentionally no exact `uninstall.sh` file on this branch, so Git Bash's literal `./uninstall.sh` is not a supported Windows entrypoint.
 
 The uninstaller performs these operations in order:
 
@@ -174,7 +174,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify-windows-wezterm-codex-
 
 The existing automated harness still exercises the WezTerm native key/agent path using a `BatchMode=yes` preflight. Its password path must additionally retain a real interactive run showing one Plink password prompt, a focused managed `plink.exe` process, no second authentication prompt, an exact `[Image #1]` result, matching local/remote SHA-256, modes `0700`/`0600`, exact native text paste, and no X11 clipboard error. No retained password-path PASS bundle is currently present, so unit tests or the harness do not promote the WezTerm candidate to supported status.
 
-Windows Terminal needs a separate real interactive bundle from version 1.24.10921 or newer. Start a new PowerShell 7 tab, verify `Get-Command ssh` resolves to the managed function, connect with `ssh user@host`, start remote Codex, and retain evidence for all of the following:
+Windows Terminal needs a separate real interactive bundle from version 1.24.10921 or newer. In the same PowerShell 7 process used for installation, verify `Get-Command ssh` resolves to the managed function, connect with `ssh user@host`, start remote Codex, and retain evidence for all of the following:
 
 - one interactive Plink authentication and no second prompt;
 - image `Ctrl+V` arriving as an empty bracketed-paste frame and producing exactly one `[Image #1]`;

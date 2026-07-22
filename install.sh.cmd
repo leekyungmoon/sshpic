@@ -1,10 +1,8 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-rem PowerShell resolves literal ./install.sh to this .cmd through PATHEXT only
-rem because no top-level file named exactly install.sh exists on this Windows branch.
-rem Keep the POSIX implementation separate or Windows will use the .sh file
-rem association and open Git Bash in another window before any repo code runs.
+rem cmd.exe fallback. PowerShell resolves literal ./install.sh to install.sh.ps1,
+rem which can activate the managed ssh function in the caller's current runspace.
 set "SSHPIC_GIT_SH=%ProgramFiles%\Git\bin\sh.exe"
 if exist "%SSHPIC_GIT_SH%" goto run_installer
 
@@ -22,7 +20,7 @@ for /f "delims=" %%G in ('where.exe git.exe 2^>nul') do (
 )
 
 echo sshpic installation failed: Git for Windows sh.exe was not found. 1>&2
-echo Install Git for Windows, then rerun ./install.sh from PowerShell. 1>&2
+echo Install Git for Windows, then rerun ./install.sh. 1>&2
 exit /b 69
 
 :run_installer
