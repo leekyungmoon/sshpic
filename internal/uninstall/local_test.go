@@ -1037,6 +1037,26 @@ func TestBuildLocalPlanRejectsAliasedLocalRoots(t *testing.T) {
 	}
 }
 
+func TestSameCanonicalDirectoryPathOnlyAllowsDarwinSystemVarAlias(t *testing.T) {
+	canonical := "/private/var/folders/sshpic"
+	original := "/var/folders/sshpic"
+	if got := sameCanonicalDirectoryPath(canonical, original); got != (runtime.GOOS == "darwin") {
+		t.Fatalf("Darwin /var alias match=%v on %s", got, runtime.GOOS)
+	}
+	for _, test := range []struct {
+		canonical string
+		original  string
+	}{
+		{canonical: "/private/var/folders/other", original: original},
+		{canonical: "/private/tmp/sshpic", original: "/tmp/sshpic"},
+		{canonical: "/outside/sshpic", original: original},
+	} {
+		if sameCanonicalDirectoryPath(test.canonical, test.original) {
+			t.Fatalf("unexpected canonical alias match: canonical=%s original=%s", test.canonical, test.original)
+		}
+	}
+}
+
 func TestBuildLocalPlanRejectsOwnedNamespaceAncestorAliases(t *testing.T) {
 	for _, parentName := range []string{".config", ".cache"} {
 		t.Run(parentName, func(t *testing.T) {

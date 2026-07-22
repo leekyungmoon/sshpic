@@ -394,7 +394,7 @@ func checkedOptionalDirectory(label, value string) (string, error) {
 		if canonicalErr != nil {
 			return "", fmt.Errorf("validate missing %s: %w", label, canonicalErr)
 		}
-		if !samePath(canonical, path) {
+		if !sameCanonicalDirectoryPath(canonical, path) {
 			return "", fmt.Errorf("%s uses a symlink, junction, or ancestor alias: %s", label, path)
 		}
 		return path, nil
@@ -430,7 +430,7 @@ func checkedExistingPlainDirectory(label, path string) (os.FileInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve absolute %s: %w", label, err)
 	}
-	if !samePath(filepath.Clean(canonical), path) {
+	if !sameCanonicalDirectoryPath(filepath.Clean(canonical), path) {
 		return nil, fmt.Errorf("%s uses a symlink, junction, or ancestor alias: %s", label, path)
 	}
 	current, err := os.Lstat(path)
@@ -1797,6 +1797,23 @@ func samePath(first, second string) bool {
 		return strings.EqualFold(first, second)
 	}
 	return first == second
+}
+
+// macOS exposes /var through the immutable system alias /private/var. Accept
+// only that exact canonical rewrite while continuing to reject arbitrary
+// symlink or junction ancestors.
+func sameCanonicalDirectoryPath(canonical, original string) bool {
+	if samePath(canonical, original) {
+		return true
+	}
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	original = filepath.Clean(original)
+	if original != "/var" && !strings.HasPrefix(original, "/var/") {
+		return false
+	}
+	return samePath(filepath.Clean(canonical), filepath.Clean("/private"+original))
 }
 
 func pathKey(path string) string {
