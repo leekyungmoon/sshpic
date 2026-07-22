@@ -1221,10 +1221,30 @@ func canonicalContainmentPath(value string) (string, bool) {
 	if err != nil || abs == "" {
 		return "", false
 	}
-	if canonical, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
-		abs = canonical
+	current := filepath.Clean(abs)
+	var suffix []string
+	for {
+		canonical, evalErr := filepath.EvalSymlinks(current)
+		if evalErr == nil {
+			for index := len(suffix) - 1; index >= 0; index-- {
+				canonical = filepath.Join(canonical, suffix[index])
+			}
+			canonical, err = filepath.Abs(canonical)
+			if err != nil {
+				return "", false
+			}
+			return filepath.Clean(canonical), true
+		}
+		if !errors.Is(evalErr, os.ErrNotExist) {
+			return "", false
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", false
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
 	}
-	return filepath.Clean(abs), true
 }
 
 func safeRelative(value string) bool {

@@ -189,8 +189,12 @@ func TestResolvePlinkExplicitPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved != filepath.Clean(path) {
-		t.Fatalf("resolved=%q want %q", resolved, path)
+	want, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != filepath.Clean(want) {
+		t.Fatalf("resolved=%q want %q", resolved, want)
 	}
 }
 
@@ -213,7 +217,11 @@ func TestResolvePlinkFindsStandardWindowsInstallOutsidePATH(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != filepath.Clean(want) {
-		t.Fatalf("resolved=%q want %q", got, want)
+	canonicalWant, err := filepath.EvalSymlinks(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Clean(canonicalWant) {
+		t.Fatalf("resolved=%q want %q", got, canonicalWant)
 	}
 }

@@ -308,7 +308,8 @@ func TestManagedPlinkBindingKeepsUserPathRelative(t *testing.T) {
 		t.Fatal("ownership manifest exposed the concrete user home path")
 	}
 	resolved, err := resolveManagedPlinkBinding(home, binding)
-	if err != nil || !samePath(resolved, plinkPath) {
+	canonicalPlink, ok := canonicalContainmentPath(plinkPath)
+	if err != nil || !ok || !samePath(resolved, canonicalPlink) {
 		t.Fatalf("resolved=%q err=%v", resolved, err)
 	}
 }
@@ -318,6 +319,31 @@ func TestManifestRejectsAbsolutePlinkPathInsideUserRoots(t *testing.T) {
 	binding := plinkBinding{Anchor: "fixed-absolute", Path: filepath.Join(home, "PuTTY", "plink.exe")}
 	if safeManifestPlinkBinding(home, binding) {
 		t.Fatal("absolute Plink path inside the user profile was accepted")
+	}
+}
+
+func TestCanonicalContainmentPathResolvesMissingSuffixThroughAlias(t *testing.T) {
+	root := t.TempDir()
+	realRoot := filepath.Join(root, "real")
+	if err := os.MkdirAll(realRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	aliasRoot := filepath.Join(root, "alias")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Skipf("directory symlinks are unavailable: %v", err)
+	}
+	candidate := filepath.Join(aliasRoot, "missing", "plink.exe")
+	got, ok := canonicalContainmentPath(candidate)
+	if !ok {
+		t.Fatal("canonical containment path rejected an existing aliased ancestor")
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(realRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(canonicalRoot, "missing", "plink.exe")
+	if !samePath(got, want) {
+		t.Fatalf("canonical=%q want %q", got, want)
 	}
 }
 
