@@ -73,6 +73,19 @@ func TestWindowsLiteralInstallLauncherUsesPS1InCurrentRunspace(t *testing.T) {
 		`if ($args.Count -eq 0)`,
 		`Enable-SshpicInCurrentPowerShell`,
 		`SSHPIC_CURRENT_POWERSHELL_ACTIVATED`,
+		`function Install-SshpicConsoleUtf8Profile`,
+		`function Get-SshpicVerifiedConsoleUtf8Install`,
+		`function Write-SshpicConsoleAtomicFile`,
+		`function Enable-SshpicConsoleUtf8InCurrentPowerShell`,
+		`function Disable-SshpicConsoleUtf8InCurrentPowerShell`,
+		`$PROFILE.CurrentUserCurrentHost`,
+		`powershell-console-utf8-v1.json`,
+		`SSHPIC_CURRENT_POWERSHELL_UTF8_ACTIVATED`,
+		`Undo-SshpicConsoleUtf8ProfileInstall -Receipt $consoleReceipt`,
+		`PSObject.Properties['LinkType']`,
+		`PSObject.Properties['Target']`,
+		`function Assert-SshpicConsoleManifestShape`,
+		`the manifest-owned console UTF-8 bytes do not match the exact sshpic block`,
 	} {
 		if !strings.Contains(launcher, want) {
 			t.Fatalf("install.sh.ps1 missing same-runspace activation contract %q", want)
@@ -93,6 +106,11 @@ func TestWindowsLiteralInstallLauncherUsesPS1InCurrentRunspace(t *testing.T) {
 	activateIndex := strings.LastIndex(launcher, `Enable-SshpicInCurrentPowerShell`)
 	if coreIndex < 0 || statusIndex <= coreIndex || activateIndex <= statusIndex {
 		t.Fatal("install.sh.ps1 must activate the current runspace only after the installer core succeeds")
+	}
+	consoleInstallIndex := strings.LastIndex(launcher, `$consoleReceipt = Install-SshpicConsoleUtf8Profile`)
+	consoleEnableIndex := strings.LastIndex(launcher, `Enable-SshpicConsoleUtf8InCurrentPowerShell`)
+	if consoleInstallIndex <= statusIndex || consoleEnableIndex <= consoleInstallIndex || activateIndex <= consoleEnableIndex {
+		t.Fatal("install.sh.ps1 must atomically install and activate CurrentUserCurrentHost UTF-8 before activating ssh")
 	}
 	nativeIndex := strings.Index(launcher, `$native = Get-Command ssh.exe -CommandType Application`)
 	executeOwnedIndex := strings.Index(launcher, `& ([ScriptBlock]::Create($ownedBlock))`)
@@ -279,6 +297,8 @@ if (-not $managed.Definition.Contains($script:SshpicFunctionMarker, [StringCompa
 Invoke-Expression (Get-FacadeFunctionSource $UninstallFacade 'Get-SshpicManagedFunctionDefinition')
 function Resolve-SshpicGitSh { return $FakeSh }
 function Get-SshpicVerifiedOwnedBlock { return $script:FakeOwnedBlock }
+function Get-SshpicConsoleUtf8RemovalPlan { return $null }
+function Disable-SshpicConsoleUtf8InCurrentPowerShell { return }
 $tokens = $null
 $parseErrors = $null
 $uninstallAst = [Management.Automation.Language.Parser]::ParseFile(
@@ -329,6 +349,283 @@ Remove-Item -LiteralPath Function:\ssh -Force
 	cmd.Dir = temp
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("same-runspace facade lifecycle failed: %v\n%s", err, out)
+	}
+}
+
+func TestWindowsConsoleUtf8ProfileFacadeLifecycle(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows console profile lifecycle is Windows-only")
+	}
+	pwsh, err := exec.LookPath("pwsh.exe")
+	if err != nil {
+		t.Skip("PowerShell 7 is unavailable")
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testRoot := t.TempDir()
+	harness := filepath.Join(testRoot, "console-utf8-lifecycle.ps1")
+	const source = `param(
+    [Parameter(Mandatory)][string] $InstallFacade,
+    [Parameter(Mandatory)][string] $UninstallFacade,
+    [Parameter(Mandatory)][string] $TestRoot
+)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+function Import-FacadeFunction {
+    param([string] $Path, [string] $Name)
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref] $tokens, [ref] $parseErrors)
+    if ($parseErrors.Count -ne 0) { throw "$Path has parse errors" }
+    $matches = @($ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $Name
+    }, $true))
+    if ($matches.Count -ne 1) { throw "$Path does not define exactly one $Name" }
+    $definition = $matches[0].Extent.Text
+    $prefix = 'function ' + $Name
+    if (-not $definition.StartsWith($prefix, [StringComparison]::Ordinal)) { throw "unexpected function syntax for $Name" }
+    Invoke-Expression ('function script:' + $Name + $definition.Substring($prefix.Length))
+}
+
+$script:SshpicProfileMaximumBytes = 2MB
+$script:SshpicConsoleProfileManifestOwner = 'github.com/leekyungmoon/sshpic:powershell-console-utf8:v1'
+$script:SshpicConsoleProfileManifestVersion = 1
+$script:SshpicConsoleProfileManifestMaximumBytes = 64KB
+$script:SshpicConsoleBeginMarker = '# BEGIN sshpic managed Windows console UTF-8'
+$script:SshpicConsoleEndMarker = '# END sshpic managed Windows console UTF-8'
+$script:SshpicConsoleVersionMarker = '# sshpic-managed-console-utf8-version: 1'
+$script:SshpicConsoleRuntimeOwner = 'github.com/leekyungmoon/sshpic:powershell-console-utf8-runtime:v1'
+$script:SshpicConsoleRuntimeStateName = '__SshpicConsoleUtf8RuntimeStateV1'
+
+$installFunctions = @(
+    'Get-SshpicConsoleUtf8Block', 'Get-SshpicConsoleUtf8Paths', 'Test-SshpicConsoleRegularFile',
+    'Read-SshpicConsoleBoundedFile', 'ConvertFrom-SshpicConsoleStrictUtf8', 'Get-SshpicConsoleSha256Hex',
+    'Write-SshpicConsoleAtomicFile', 'New-SshpicConsoleOwnedBytes', 'Install-SshpicConsoleUtf8Profile',
+    'Assert-SshpicConsoleManifestShape', 'Get-SshpicVerifiedConsoleUtf8Install', 'Undo-SshpicConsoleUtf8ProfileInstall',
+    'Enable-SshpicConsoleUtf8InCurrentPowerShell', 'Disable-SshpicConsoleUtf8InCurrentPowerShell'
+)
+foreach ($name in $installFunctions) { Import-FacadeFunction $InstallFacade $name }
+
+# OneDrive cloud placeholders carry ReparsePoint without being links and remain valid profiles.
+if (Test-Path -LiteralPath $PROFILE.CurrentUserCurrentHost) {
+    if (-not (Test-SshpicConsoleRegularFile -Path $PROFILE.CurrentUserCurrentHost -Label 'real CurrentUserCurrentHost profile')) {
+        throw 'the real CurrentUserCurrentHost profile was not accepted as a regular file'
+    }
+}
+
+function New-TestPaths {
+    param([string] $Name)
+    $testHome = Join-Path $TestRoot $Name
+    return [pscustomobject]@{
+        Home = $testHome
+        Profile = Join-Path $testHome 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'
+    }
+}
+
+# Existing user bytes, including CRLF style and no sshpic data, must return byte-for-byte.
+$existing = New-TestPaths 'existing'
+[IO.Directory]::CreateDirectory((Split-Path -Parent $existing.Profile)) | Out-Null
+$original = [Text.UTF8Encoding]::new($false).GetBytes('user-profile-line' + [char] 13 + [char] 10)
+[IO.File]::WriteAllBytes($existing.Profile, $original)
+$receipt = Install-SshpicConsoleUtf8Profile -HomePath $existing.Home -ProfilePath $existing.Profile
+if (-not $receipt.Changed) { throw 'first console profile installation reported no change' }
+$verified = Get-SshpicVerifiedConsoleUtf8Install -HomePath $existing.Home -ProfilePath $existing.Profile
+$installedHash = Get-SshpicConsoleSha256Hex -Bytes $verified.ProfileBytes
+$second = Install-SshpicConsoleUtf8Profile -HomePath $existing.Home -ProfilePath $existing.Profile
+if ($second.Changed) { throw 'console profile reinstall was not idempotent' }
+
+# The facade rollback receipt must undo a newly installed block exactly.
+$rollback = New-TestPaths 'activation-rollback'
+[IO.Directory]::CreateDirectory((Split-Path -Parent $rollback.Profile)) | Out-Null
+$rollbackOriginal = [Text.UTF8Encoding]::new($false).GetBytes('rollback-user-bytes')
+[IO.File]::WriteAllBytes($rollback.Profile, $rollbackOriginal)
+$rollbackReceipt = Install-SshpicConsoleUtf8Profile -HomePath $rollback.Home -ProfilePath $rollback.Profile
+Undo-SshpicConsoleUtf8ProfileInstall -Receipt $rollbackReceipt
+if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($rollback.Profile)) -cne [Convert]::ToBase64String($rollbackOriginal)) {
+    throw 'installer activation rollback did not restore exact user bytes'
+}
+if (Test-Path -LiteralPath (Join-Path $rollback.Home '.config\sshpic\powershell-console-utf8-v1.json')) {
+    throw 'installer activation rollback retained its ownership manifest'
+}
+
+# If manifest deletion is denied, failed activation rollback must leave one complete,
+# verifiable installation rather than an original profile paired with a stale manifest.
+$lockedRollback = New-TestPaths 'activation-rollback-locked-manifest'
+[IO.Directory]::CreateDirectory((Split-Path -Parent $lockedRollback.Profile)) | Out-Null
+$lockedRollbackOriginal = [Text.UTF8Encoding]::new($false).GetBytes('locked-rollback-user-bytes')
+[IO.File]::WriteAllBytes($lockedRollback.Profile, $lockedRollbackOriginal)
+$lockedRollbackReceipt = Install-SshpicConsoleUtf8Profile -HomePath $lockedRollback.Home -ProfilePath $lockedRollback.Profile
+$lockedInstalled = Get-SshpicVerifiedConsoleUtf8Install -HomePath $lockedRollback.Home -ProfilePath $lockedRollback.Profile
+$lockedManifest = [IO.File]::Open($lockedRollbackReceipt.Paths.Manifest, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+    $lockedUndoRefused = $false
+    try { Undo-SshpicConsoleUtf8ProfileInstall -Receipt $lockedRollbackReceipt }
+    catch { $lockedUndoRefused = $true }
+    if (-not $lockedUndoRefused) { throw 'locked manifest did not force installer rollback recovery' }
+}
+finally { $lockedManifest.Dispose() }
+$lockedRecovered = Get-SshpicVerifiedConsoleUtf8Install -HomePath $lockedRollback.Home -ProfilePath $lockedRollback.Profile
+if ([Convert]::ToBase64String($lockedRecovered.ProfileBytes) -cne [Convert]::ToBase64String($lockedInstalled.ProfileBytes)) {
+    throw 'failed installer rollback did not recover the exact installed profile bytes'
+}
+Undo-SshpicConsoleUtf8ProfileInstall -Receipt $lockedRollbackReceipt
+if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($lockedRollback.Profile)) -cne [Convert]::ToBase64String($lockedRollbackOriginal)) {
+    throw 'installer rollback retry did not restore exact user bytes'
+}
+if (Test-Path -LiteralPath $lockedRollbackReceipt.Paths.Manifest) {
+    throw 'installer rollback retry retained its ownership manifest'
+}
+
+$uninstallFunctions = @(
+    'Get-SshpicConsoleUtf8Block', 'Get-SshpicConsoleUtf8Paths', 'Test-SshpicConsoleRegularFile',
+    'Read-SshpicConsoleBoundedFile', 'ConvertFrom-SshpicConsoleStrictUtf8', 'New-SshpicConsoleOwnedBytes',
+    'Get-SshpicConsoleSha256Hex', 'Write-SshpicConsoleAtomicFile', 'Assert-SshpicConsoleManifestShape',
+    'Get-SshpicVerifiedConsoleUtf8Install', 'Get-SshpicConsoleUtf8RemovalPlan',
+    'Remove-SshpicConsoleUtf8Profile', 'Disable-SshpicConsoleUtf8InCurrentPowerShell'
+)
+foreach ($name in $uninstallFunctions) { Import-FacadeFunction $UninstallFacade $name }
+
+$plan = Get-SshpicConsoleUtf8RemovalPlan -HomePath $existing.Home -ProfilePath $existing.Profile
+
+# A locked manifest makes the last uninstall mutation fail; the installed profile must roll back.
+$manifestLock = [IO.File]::Open($plan.Paths.Manifest, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+    $rollbackRefused = $false
+    try { Remove-SshpicConsoleUtf8Profile -Plan $plan }
+    catch { $rollbackRefused = $true }
+    if (-not $rollbackRefused) { throw 'locked manifest did not force uninstall rollback' }
+}
+finally { $manifestLock.Dispose() }
+$rolledBack = Get-SshpicVerifiedConsoleUtf8Install -HomePath $existing.Home -ProfilePath $existing.Profile
+if ((Get-SshpicConsoleSha256Hex -Bytes $rolledBack.ProfileBytes) -cne $installedHash) {
+    throw 'failed uninstall did not roll the installed profile back exactly'
+}
+
+$plan = Get-SshpicConsoleUtf8RemovalPlan -HomePath $existing.Home -ProfilePath $existing.Profile
+Remove-SshpicConsoleUtf8Profile -Plan $plan
+if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($existing.Profile)) -cne [Convert]::ToBase64String($original)) {
+    throw 'uninstall did not restore exact pre-install profile bytes'
+}
+if (Test-Path -LiteralPath $plan.Paths.Manifest) { throw 'uninstall retained the console profile manifest' }
+
+# A profile created solely by sshpic must disappear rather than remain empty.
+foreach ($name in $installFunctions) { Import-FacadeFunction $InstallFacade $name }
+$created = New-TestPaths 'created'
+$createdReceipt = Install-SshpicConsoleUtf8Profile -HomePath $created.Home -ProfilePath $created.Profile
+if (-not $createdReceipt.Changed) { throw 'created-profile install reported no change' }
+foreach ($name in $uninstallFunctions) { Import-FacadeFunction $UninstallFacade $name }
+$createdPlan = Get-SshpicConsoleUtf8RemovalPlan -HomePath $created.Home -ProfilePath $created.Profile
+Remove-SshpicConsoleUtf8Profile -Plan $createdPlan
+if (Test-Path -LiteralPath $created.Profile) { throw 'sshpic-created CurrentUserCurrentHost profile remains' }
+
+# Any post-install profile mutation must be preserved and block uninstall.
+foreach ($name in $installFunctions) { Import-FacadeFunction $InstallFacade $name }
+$tampered = New-TestPaths 'tampered'
+$tamperedReceipt = Install-SshpicConsoleUtf8Profile -HomePath $tampered.Home -ProfilePath $tampered.Profile
+[IO.File]::AppendAllText($tampered.Profile, 'foreign-edit', [Text.UTF8Encoding]::new($false))
+foreach ($name in $uninstallFunctions) { Import-FacadeFunction $UninstallFacade $name }
+$tamperRefused = $false
+try { Get-SshpicConsoleUtf8RemovalPlan -HomePath $tampered.Home -ProfilePath $tampered.Profile | Out-Null }
+catch { $tamperRefused = $true }
+if (-not $tamperRefused) { throw 'tampered CurrentUserCurrentHost profile was not preserved' }
+
+# The ownership manifest is a strict schema, not a mutable recipe for bytes to remove.
+foreach ($name in $installFunctions) { Import-FacadeFunction $InstallFacade $name }
+$manifestCase = New-TestPaths 'manifest-validation'
+[IO.Directory]::CreateDirectory((Split-Path -Parent $manifestCase.Profile)) | Out-Null
+[IO.File]::WriteAllText($manifestCase.Profile, 'manifest-user-prefix', [Text.UTF8Encoding]::new($false))
+$manifestReceipt = Install-SshpicConsoleUtf8Profile -HomePath $manifestCase.Home -ProfilePath $manifestCase.Profile
+$manifestPath = $manifestReceipt.Paths.Manifest
+$validManifestBytes = [IO.File]::ReadAllBytes($manifestPath)
+$validProfileBytes = [IO.File]::ReadAllBytes($manifestCase.Profile)
+$validManifestText = [Text.UTF8Encoding]::new($false, $true).GetString($validManifestBytes)
+function Assert-ConsoleVerificationRefused {
+    param([string] $Name)
+    $refused = $false
+    try { Get-SshpicVerifiedConsoleUtf8Install -HomePath $manifestCase.Home -ProfilePath $manifestCase.Profile | Out-Null }
+    catch { $refused = $true }
+    if (-not $refused) { throw "console manifest verification accepted $Name" }
+}
+
+$unknownField = $validManifestText | ConvertFrom-Json
+$unknownField | Add-Member -NotePropertyName unexpected -NotePropertyValue 'foreign'
+[IO.File]::WriteAllText($manifestPath, (($unknownField | ConvertTo-Json -Depth 3) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+Assert-ConsoleVerificationRefused 'an unknown field'
+[IO.File]::WriteAllBytes($manifestPath, $validManifestBytes)
+
+$wrongType = $validManifestText | ConvertFrom-Json
+$wrongType.profile_existed = 'false'
+[IO.File]::WriteAllText($manifestPath, (($wrongType | ConvertTo-Json -Depth 3) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+Assert-ConsoleVerificationRefused 'a string in a Boolean field'
+[IO.File]::WriteAllBytes($manifestPath, $validManifestBytes)
+
+$impossibleCreation = $validManifestText | ConvertFrom-Json
+$impossibleCreation.profile_existed = $false
+[IO.File]::WriteAllText($manifestPath, (($impossibleCreation | ConvertTo-Json -Depth 3) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+Assert-ConsoleVerificationRefused 'created-profile state with a nonempty prefix'
+[IO.File]::WriteAllBytes($manifestPath, $validManifestBytes)
+
+$forged = $validManifestText | ConvertFrom-Json
+$forgedOwned = [Convert]::FromBase64String([string] $forged.owned_bytes)
+$forgedOwnedText = [Text.UTF8Encoding]::new($false, $true).GetString($forgedOwned).Replace('Keep PuTTY/Plink', 'Keep XuTTY/Plink')
+$forgedOwned = [Text.UTF8Encoding]::new($false).GetBytes($forgedOwnedText)
+$forgedProfile = [byte[]]::new([int64] $forged.before_length + $forgedOwned.Length)
+[Buffer]::BlockCopy($validProfileBytes, 0, $forgedProfile, 0, [int] $forged.before_length)
+[Buffer]::BlockCopy($forgedOwned, 0, $forgedProfile, [int] $forged.before_length, $forgedOwned.Length)
+$forged.owned_bytes = [Convert]::ToBase64String($forgedOwned)
+$forged.installed_sha256 = Get-SshpicConsoleSha256Hex -Bytes $forgedProfile
+[IO.File]::WriteAllBytes($manifestCase.Profile, $forgedProfile)
+[IO.File]::WriteAllText($manifestPath, (($forged | ConvertTo-Json -Depth 3) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+Assert-ConsoleVerificationRefused 'a forged marker-bearing owned block'
+[IO.File]::WriteAllBytes($manifestCase.Profile, $validProfileBytes)
+[IO.File]::WriteAllBytes($manifestPath, $validManifestBytes)
+
+# Runtime deactivation restores only code pages that are still sshpic's UTF-8 value.
+Import-FacadeFunction $InstallFacade 'Get-SshpicConsoleUtf8Block'
+Import-FacadeFunction $InstallFacade 'Enable-SshpicConsoleUtf8InCurrentPowerShell'
+Import-FacadeFunction $UninstallFacade 'Disable-SshpicConsoleUtf8InCurrentPowerShell'
+$savedInput = [Console]::InputEncoding
+$savedOutput = [Console]::OutputEncoding
+$savedNativeOutput = $global:OutputEncoding
+$savedWT = $env:WT_SESSION
+$savedWezTerm = $env:WEZTERM_PANE
+try {
+    $env:WT_SESSION = 'sshpic-console-profile-test'
+    $env:WEZTERM_PANE = $null
+    Enable-SshpicConsoleUtf8InCurrentPowerShell | Out-Null
+    if ([Console]::InputEncoding.CodePage -ne 65001 -or [Console]::OutputEncoding.CodePage -ne 65001 -or
+        $global:OutputEncoding.CodePage -ne 65001) {
+        throw 'current runspace did not activate UTF-8'
+    }
+    [Console]::InputEncoding = [Text.UnicodeEncoding]::new($false, $false)
+    Disable-SshpicConsoleUtf8InCurrentPowerShell | Out-Null
+    if ([Console]::InputEncoding.CodePage -ne 1200) { throw 'uninstall overwrote a post-install input encoding change' }
+    if ($null -ne (Get-Variable -Name $script:SshpicConsoleRuntimeStateName -Scope Global -ErrorAction SilentlyContinue)) {
+        throw 'current runspace retained sshpic console state'
+    }
+}
+finally {
+    [Console]::InputEncoding = $savedInput
+    [Console]::OutputEncoding = $savedOutput
+    $global:OutputEncoding = $savedNativeOutput
+    Remove-Variable -Name $script:SshpicConsoleRuntimeStateName -Scope Global -Force -ErrorAction SilentlyContinue
+    $env:WT_SESSION = $savedWT
+    $env:WEZTERM_PANE = $savedWezTerm
+}
+`
+	if err := os.WriteFile(harness, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(
+		pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", harness,
+		filepath.Join(repoRoot, "install.sh.ps1"), filepath.Join(repoRoot, "uninstall.sh.ps1"), testRoot,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("console UTF-8 facade lifecycle failed: %v\n%s", err, out)
 	}
 }
 

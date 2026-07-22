@@ -69,8 +69,32 @@ find_go() {
 }
 
 if ! find_go; then
-  echo "Go is required to build a separate uninstall helper from this checkout." >&2
+  echo "Go is required to verify the installed sshpic binary before uninstall." >&2
   echo "No installed files were changed. Install Go, then rerun the supported PowerShell uninstall command." >&2
+  exit 1
+fi
+
+find_powershell() {
+  if command -v powershell.exe >/dev/null 2>&1; then
+    powershell_cmd="$(command -v powershell.exe)"
+    return 0
+  fi
+  for candidate in \
+    "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" \
+    "/c/Windows/Sysnative/WindowsPowerShell/v1.0/powershell.exe"
+  do
+    if [ -x "$candidate" ]; then
+      powershell_cmd="$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+powershell_cmd=""
+if ! find_powershell; then
+  echo "Windows PowerShell is required to verify the manifest-owned installed sshpic binary." >&2
+  echo "No installed files were changed." >&2
   exit 1
 fi
 
@@ -152,6 +176,240 @@ windows_path_is_within() {
   esac
 }
 
+resolve_manifest_verified_helper_source() {
+  repo_native_for_probe="$(to_native_path "$repo_root")" || return 1
+  probe_script="$(cat <<'POWERSHELL'
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$maximumBytes = 2MB
+$installOwner = 'github.com/leekyungmoon/sshpic:wezterm:v1'
+$journalOwner = 'github.com/leekyungmoon/sshpic:wezterm-uninstall:v1'
+$manifestName = '.sshpic-wezterm-install-v1.json'
+$moduleName = 'sshpic-wezterm.lua'
+
+function Read-StrictJson([string] $Path, [string] $Label) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $item.Length -gt $maximumBytes) {
+        throw "$Label is not a bounded regular non-reparse file"
+    }
+    $bytes = [IO.File]::ReadAllBytes($item.FullName)
+    if ($bytes -contains [byte]0) { throw "$Label contains a NUL byte" }
+    try { $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes) }
+    catch { throw "$Label is not strict UTF-8" }
+    try { return $text | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "$Label is not valid JSON" }
+}
+
+function Full-Path([string] $Path) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path) -or
+        $Path.Contains("`r") -or $Path.Contains("`n")) {
+        throw 'owned path is not absolute or contains a line break'
+    }
+    return [IO.Path]::GetFullPath($Path)
+}
+
+function Same-Path([string] $Left, [string] $Right) {
+    return [string]::Equals((Full-Path $Left), (Full-Path $Right), [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-Binary-Path([string] $Path) {
+    $full = Full-Path $Path
+    if (-not [string]::Equals([IO.Path]::GetFileName($full), 'sshpic.exe', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'the manifest-owned binary is not named sshpic.exe'
+    }
+    $repo = (Full-Path $env:SSHPIC_UNINSTALL_SOURCE_ROOT).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    if ($full.StartsWith($repo, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'the manifest-owned binary overlaps the source checkout'
+    }
+    return $full
+}
+
+function Assert-Regular-Hash([string] $Path, [string] $Expected, [string] $Label) {
+    if ($Expected -notmatch '^[0-9a-fA-F]{64}$') { throw "$Label has no valid SHA-256" }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Label is not a regular non-reparse file"
+    }
+    $stream = [IO.File]::Open($item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { $actual = ([BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha256.Dispose(); $stream.Dispose() }
+    if (-not [string]::Equals($actual, $Expected, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label does not match its ownership SHA-256"
+    }
+    return $actual
+}
+
+function Add-Manifest-Candidate([Collections.Generic.List[string]] $Paths, [string] $ConfigPath) {
+    if ([string]::IsNullOrWhiteSpace($ConfigPath)) { return }
+    try { $candidate = Join-Path ([IO.Path]::GetDirectoryName((Full-Path $ConfigPath))) $manifestName }
+    catch { return }
+    foreach ($existing in $Paths) {
+        if ([string]::Equals($existing, $candidate, [StringComparison]::OrdinalIgnoreCase)) { return }
+    }
+    $Paths.Add($candidate)
+}
+
+$homePath = Full-Path ([Environment]::GetFolderPath('UserProfile'))
+$candidates = [Collections.Generic.List[string]]::new()
+if (-not [string]::IsNullOrWhiteSpace($env:WEZTERM_CONFIG_FILE)) {
+    Add-Manifest-Candidate $candidates $env:WEZTERM_CONFIG_FILE
+}
+else {
+    $selectedConfig = $null
+    $weztermCandidates = [Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($env:SSHPIC_WEZTERM_EXE)) { $weztermCandidates.Add($env:SSHPIC_WEZTERM_EXE) }
+    $weztermCommand = Get-Command wezterm.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $weztermCommand) { $weztermCandidates.Add($weztermCommand.Source) }
+    if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+        $weztermCandidates.Add((Join-Path $env:ProgramFiles 'WezTerm\wezterm.exe'))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $weztermCandidates.Add((Join-Path $env:LOCALAPPDATA 'Programs\WezTerm\wezterm.exe'))
+    }
+    foreach ($wezterm in $weztermCandidates) {
+        try {
+            $portable = Join-Path ([IO.Path]::GetDirectoryName((Full-Path $wezterm))) 'wezterm.lua'
+            if (Test-Path -LiteralPath $portable -PathType Leaf) { $selectedConfig = $portable; break }
+        } catch { }
+    }
+    if ($null -eq $selectedConfig -and -not [string]::IsNullOrWhiteSpace($env:XDG_CONFIG_HOME)) {
+        $xdgConfig = Join-Path $env:XDG_CONFIG_HOME 'wezterm\wezterm.lua'
+        if (Test-Path -LiteralPath $xdgConfig -PathType Leaf) { $selectedConfig = $xdgConfig }
+    }
+    if ($null -eq $selectedConfig) {
+        $homeConfig = Join-Path $homePath '.config\wezterm\wezterm.lua'
+        if (Test-Path -LiteralPath $homeConfig -PathType Leaf) { $selectedConfig = $homeConfig }
+    }
+    if ($null -eq $selectedConfig) { $selectedConfig = Join-Path $homePath '.wezterm.lua' }
+    Add-Manifest-Candidate $candidates $selectedConfig
+}
+
+$verified = [Collections.Generic.List[object]]::new()
+foreach ($manifestPath in $candidates) {
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { continue }
+    $manifest = Read-StrictJson $manifestPath 'WezTerm ownership manifest'
+    if ([int]$manifest.version -ne 1 -or [string]$manifest.owner -cne $installOwner) {
+        throw 'the WezTerm ownership manifest has an unexpected owner or version'
+    }
+    $configPath = Full-Path ([string]$manifest.config_path)
+    if (-not (Same-Path $manifestPath (Join-Path ([IO.Path]::GetDirectoryName($configPath)) $manifestName))) {
+        throw 'the WezTerm ownership manifest is not adjacent to its config path'
+    }
+    $modulePath = Full-Path ([string]$manifest.module_path)
+    if (-not (Same-Path $modulePath (Join-Path ([IO.Path]::GetDirectoryName($configPath)) $moduleName))) {
+        throw 'the WezTerm ownership manifest module path is not canonical'
+    }
+    $binaryPath = Assert-Binary-Path ([string]$manifest.binary_path)
+    $hash = Assert-Regular-Hash $binaryPath ([string]$manifest.binary_sha256) 'manifest-owned sshpic binary'
+    $null = Assert-Regular-Hash $modulePath ([string]$manifest.module_sha256) 'manifest-owned WezTerm module'
+    $verified.Add([pscustomobject]@{ Path = $binaryPath; Hash = $hash })
+}
+
+if ($verified.Count -eq 0) {
+    $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+    if ([string]::IsNullOrWhiteSpace($localAppData)) { throw 'cannot resolve the uninstall journal directory' }
+    $journalPath = Join-Path $localAppData 'sshpic-uninstall\state-v1.json'
+    $journal = Read-StrictJson $journalPath 'sshpic uninstall journal'
+    if ([int]$journal.version -ne 1 -or [string]$journal.owner -cne $journalOwner) {
+        throw 'the sshpic uninstall journal has an unexpected owner or version'
+    }
+    if (-not (Same-Path ([string]$journal.source_root) $env:SSHPIC_UNINSTALL_SOURCE_ROOT)) {
+        throw 'the sshpic uninstall journal belongs to a different source checkout'
+    }
+    $binaryPath = Assert-Binary-Path ([string]$journal.binary_path)
+    $expectedHash = [string]$journal.binary_sha256
+    $sourcePath = $binaryPath
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        $sourcePath = Full-Path ([string]$journal.quarantine_path)
+        $prefix = $binaryPath + '.sshpic-uninstall-'
+        if (-not $sourcePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+            -not $sourcePath.EndsWith('.pending', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'the uninstall journal quarantine path is not an owned sibling of sshpic.exe'
+        }
+        $token = $sourcePath.Substring($prefix.Length, $sourcePath.Length - $prefix.Length - '.pending'.Length)
+        if ($token -notmatch '^[0-9a-fA-F]{32}$') { throw 'the uninstall journal quarantine token is invalid' }
+    }
+    $hash = Assert-Regular-Hash $sourcePath $expectedHash 'journal-owned sshpic binary'
+    $verified.Add([pscustomobject]@{ Path = $sourcePath; Hash = $hash })
+}
+
+$pathBytes = [Text.UTF8Encoding]::new($false).GetBytes([string]$verified[0].Path)
+[Console]::Out.Write(([string]$verified[0].Hash) + '|' + [Convert]::ToBase64String($pathBytes))
+POWERSHELL
+)"
+
+  probe_output="$(SSHPIC_UNINSTALL_SOURCE_ROOT="$repo_native_for_probe" \
+    "$powershell_cmd" -NoLogo -NoProfile -NonInteractive -Command "$probe_script" 2>&1)" || {
+    printf 'Could not verify the installed sshpic binary from owned state: %s\n' "$probe_output" >&2
+    return 1
+  }
+  probe_output="$(printf '%s' "$probe_output" | tr -d '\r')"
+  helper_source_hash="${probe_output%%|*}"
+  helper_source_base64="${probe_output#*|}"
+  if [ "$helper_source_hash" = "$probe_output" ] || [ "${#helper_source_hash}" -ne 64 ]; then
+    echo "Windows ownership probe returned an invalid result." >&2
+    return 1
+  fi
+  helper_source_native="$(printf '%s' "$helper_source_base64" | base64 -d 2>/dev/null)" || {
+    echo "Windows ownership probe returned an invalid binary path." >&2
+    return 1
+  }
+  if command -v cygpath >/dev/null 2>&1; then
+    helper_source="$(cygpath -u "$helper_source_native")" || return 1
+  else
+    helper_source="$helper_source_native"
+  fi
+  [ -f "$helper_source" ] && [ ! -L "$helper_source" ] || {
+    echo "Manifest-verified sshpic binary source is unavailable: $helper_source" >&2
+    return 1
+  }
+
+  source_overlap=0
+  windows_path_is_within "$repo_root" "$helper_source" || source_overlap=$?
+  if [ "$source_overlap" -eq 2 ]; then
+    echo "Could not safely compare the trusted binary source with the checkout." >&2
+    return 1
+  fi
+  if [ "$source_overlap" -eq 0 ]; then
+    echo "Refusing a trusted binary source inside the checkout: $helper_source" >&2
+    return 1
+  fi
+
+  binary_metadata="$("$go_cmd" version -m "$helper_source" 2>/dev/null)" || {
+    echo "Could not inspect Go ownership metadata in the manifest-verified sshpic binary." >&2
+    return 1
+  }
+  binary_package="$(printf '%s\n' "$binary_metadata" | awk '$1 == "path" { print $2; exit }')"
+  installed_revision="$(printf '%s\n' "$binary_metadata" | awk '$1 == "build" && $2 ~ /^vcs[.]revision=/ { sub(/^vcs[.]revision=/, "", $2); print $2; exit }')"
+  installed_modified="$(printf '%s\n' "$binary_metadata" | awk '$1 == "build" && $2 ~ /^vcs[.]modified=/ { sub(/^vcs[.]modified=/, "", $2); print $2; exit }')"
+  if [ "$binary_package" != "github.com/leekyungmoon/sshpic/cmd/sshpic" ] || \
+     [ "$installed_modified" != "false" ] || [ "${#installed_revision}" -ne 40 ]; then
+    echo "Manifest-owned sshpic binary does not contain clean sshpic build metadata." >&2
+    return 1
+  fi
+  case "$installed_revision" in
+    *[!0-9a-f]*) echo "Manifest-owned sshpic binary has an invalid source revision." >&2; return 1 ;;
+  esac
+  if ! git -C "$repo_root" cat-file -e "$installed_revision^{commit}" 2>/dev/null; then
+    echo "The installed sshpic source revision is unavailable in this checkout." >&2
+    return 1
+  fi
+  runtime_test_exclude=':(exclude,glob)**/*_test.go'
+  if ! git -C "$repo_root" diff --quiet "$installed_revision" -- cmd internal go.mod go.sum "$runtime_test_exclude"; then
+    echo "The checkout runtime differs from the manifest-owned installed sshpic binary; refusing an incompatible uninstall helper." >&2
+    return 1
+  fi
+  untracked_runtime="$(git -C "$repo_root" ls-files --others --exclude-standard -- cmd internal go.mod go.sum "$runtime_test_exclude")" || return 1
+  if [ -n "$untracked_runtime" ]; then
+    echo "The checkout contains untracked runtime sources; refusing an incompatible uninstall helper." >&2
+    return 1
+  fi
+  return 0
+}
+
 overlap_status=0
 windows_path_is_within "$repo_root" "$bin_dir" || overlap_status=$?
 if [ "$overlap_status" -eq 2 ]; then
@@ -179,13 +437,34 @@ if [ -e "$helper" ] || [ -L "$helper" ]; then
   echo "Close another sshpic uninstaller if one is running; no existing helper was removed." >&2
   exit 1
 fi
-helper_native="$(to_native_path "$helper")"
+if ! resolve_manifest_verified_helper_source; then
+  echo "No installed files were changed. A manifest-verified trusted sshpic.exe is required for uninstall." >&2
+  exit 1
+fi
 
-if ! (CDPATH= cd -P "$repo_root" && "$go_cmd" build -o "$helper_native" ./cmd/sshpic); then
-  echo "Could not build the isolated uninstall helper; no installed files were changed." >&2
+if ! cp -- "$helper_source" "$helper"; then
+  echo "Could not copy the manifest-verified sshpic binary to the isolated uninstall helper path." >&2
   exit 1
 fi
 helper_owned=1
+if ! cmp -s -- "$helper_source" "$helper"; then
+  echo "The isolated uninstall helper is not byte-identical to the manifest-verified sshpic binary." >&2
+  exit 1
+fi
+helper_metadata="$("$go_cmd" version -m "$helper" 2>/dev/null)" || {
+  echo "The copied uninstall helper lost its verified Go build metadata." >&2
+  exit 1
+}
+helper_package="$(printf '%s\n' "$helper_metadata" | awk '$1 == "path" { print $2; exit }')"
+helper_revision="$(printf '%s\n' "$helper_metadata" | awk '$1 == "build" && $2 ~ /^vcs[.]revision=/ { sub(/^vcs[.]revision=/, "", $2); print $2; exit }')"
+helper_modified="$(printf '%s\n' "$helper_metadata" | awk '$1 == "build" && $2 ~ /^vcs[.]modified=/ { sub(/^vcs[.]modified=/, "", $2); print $2; exit }')"
+if [ "$helper_package" != "$binary_package" ] || \
+   [ "$helper_revision" != "$installed_revision" ] || \
+   [ "$helper_modified" != "$installed_modified" ]; then
+  echo "The copied uninstall helper metadata differs from the manifest-verified sshpic binary." >&2
+  exit 1
+fi
+printf 'sshpic uninstall helper copied byte-identically from manifest-owned binary at revision %s.\n' "$installed_revision"
 
 probe_attempt=1
 probe_status=1

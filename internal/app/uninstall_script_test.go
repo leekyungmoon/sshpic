@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -36,6 +37,17 @@ func runUninstallTestHelper() {
 	case name == "go":
 		if len(os.Args) == 2 && os.Args[1] == "version" {
 			fmt.Fprintln(os.Stdout, "go version go1.22.12 windows/amd64")
+			os.Exit(0)
+		}
+		if len(os.Args) == 4 && os.Args[1] == "version" && os.Args[2] == "-m" {
+			revision := os.Getenv("SSHPIC_TEST_REVISION")
+			if len(revision) != 40 {
+				os.Exit(2)
+			}
+			fmt.Fprintf(os.Stdout, "%s: go1.22.12\n", os.Args[3])
+			fmt.Fprintln(os.Stdout, "\tpath\tgithub.com/leekyungmoon/sshpic/cmd/sshpic")
+			fmt.Fprintf(os.Stdout, "\tbuild\tvcs.revision=%s\n", revision)
+			fmt.Fprintln(os.Stdout, "\tbuild\tvcs.modified=false")
 			os.Exit(0)
 		}
 		if len(os.Args) == 3 && os.Args[1] == "env" {
@@ -163,6 +175,17 @@ func TestWindowsLiteralUninstallLauncherUsesPS1InCurrentRunspace(t *testing.T) {
 		`Remove-Item -LiteralPath Function:\ssh -Force`,
 		`$remaining = Get-Command ssh`,
 		`SSHPIC_CURRENT_POWERSHELL_DEACTIVATED`,
+		`function Get-SshpicConsoleUtf8RemovalPlan`,
+		`function Get-SshpicVerifiedConsoleUtf8Install`,
+		`function Remove-SshpicConsoleUtf8Profile`,
+		`function Disable-SshpicConsoleUtf8InCurrentPowerShell`,
+		`$PROFILE.CurrentUserCurrentHost`,
+		`powershell-console-utf8-v1.json`,
+		`SSHPIC_CURRENT_POWERSHELL_UTF8_DEACTIVATED`,
+		`PSObject.Properties['LinkType']`,
+		`PSObject.Properties['Target']`,
+		`function Assert-SshpicConsoleManifestShape`,
+		`the manifest-owned console UTF-8 bytes do not match the exact sshpic block`,
 	} {
 		if !strings.Contains(launcher, want) {
 			t.Fatalf("uninstall.sh.ps1 missing same-runspace deactivation contract %q", want)
@@ -181,6 +204,12 @@ func TestWindowsLiteralUninstallLauncherUsesPS1InCurrentRunspace(t *testing.T) {
 	removeIndex := strings.LastIndex(launcher, `Remove-Item -LiteralPath Function:\ssh -Force`)
 	if ownershipIndex < 0 || coreIndex <= ownershipIndex || statusIndex <= coreIndex || removeIndex <= statusIndex {
 		t.Fatal("uninstall.sh.ps1 must verify ownership before uninstall and remove only the same managed function after core success")
+	}
+	consolePlanIndex := strings.LastIndex(launcher, `$consoleRemovalPlan = Get-SshpicConsoleUtf8RemovalPlan`)
+	consoleRemoveIndex := strings.LastIndex(launcher, `Remove-SshpicConsoleUtf8Profile -Plan $consoleRemovalPlan`)
+	consoleDisableIndex := strings.LastIndex(launcher, `Disable-SshpicConsoleUtf8InCurrentPowerShell`)
+	if consolePlanIndex < 0 || consolePlanIndex >= coreIndex || consoleRemoveIndex <= statusIndex || consoleDisableIndex <= consoleRemoveIndex {
+		t.Fatal("uninstall.sh.ps1 must pin UTF-8 ownership before core removal, then restore the profile and current runspace")
 	}
 
 	cmdData, err := os.ReadFile(filepath.Join(repoRoot, "uninstall.sh.cmd"))
@@ -390,6 +419,47 @@ func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, ext
 	if err := os.MkdirAll(helperBin, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	installedDir := filepath.Join(t.TempDir(), "installed")
+	installedBinary := filepath.Join(installedDir, "sshpic.exe")
+	if err := copyTestExecutable(installedBinary); err != nil {
+		t.Fatal(err)
+	}
+	weztermDir := filepath.Join(t.TempDir(), "wezterm-state")
+	if err := os.MkdirAll(weztermDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(weztermDir, "wezterm.lua")
+	modulePath := filepath.Join(weztermDir, "sshpic-wezterm.lua")
+	if err := os.WriteFile(configPath, []byte("local config = {}\nreturn config\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(modulePath, []byte("-- sshpic test module\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := map[string]any{
+		"version":       1,
+		"owner":         "github.com/leekyungmoon/sshpic:wezterm:v1",
+		"binary_path":   installedBinary,
+		"binary_sha256": fileSHA256ForTest(t, installedBinary),
+		"config_path":   configPath,
+		"module_path":   modulePath,
+		"module_sha256": fileSHA256ForTest(t, modulePath),
+	}
+	manifestData, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestData = append(manifestData, '\n')
+	if err := os.WriteFile(filepath.Join(weztermDir, ".sshpic-wezterm-install-v1.json"), manifestData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	revisionCommand := exec.Command("git", "rev-parse", "6be0cd1^{commit}")
+	revisionCommand.Dir = repoRoot
+	revisionData, err := revisionCommand.Output()
+	if err != nil {
+		t.Fatalf("resolve trusted runtime revision: %v", err)
+	}
+	trustedRevision := strings.TrimSpace(string(revisionData))
 
 	fakeShellBin := windowsPathForGitBash(fakeBin)
 	commandArgs := []string{
@@ -407,6 +477,8 @@ func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, ext
 		"TEMP="+windowsPathForGitBash(tempRoot),
 		"TMPDIR="+windowsPathForGitBash(filepath.Join(t.TempDir(), "must-not-be-used")),
 		"SSHPIC_TEST_GOBIN="+helperBin,
+		"SSHPIC_TEST_REVISION="+trustedRevision,
+		"WEZTERM_CONFIG_FILE="+configPath,
 	)
 	for key, value := range extraEnv {
 		if key == "SSHPIC_TEST_GOBIN" {
@@ -418,7 +490,7 @@ func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, ext
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	err := cmd.Run()
+	err = cmd.Run()
 	return uninstallScriptResult{output: output.String(), err: err}
 }
 
