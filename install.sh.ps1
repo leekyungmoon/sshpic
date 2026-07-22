@@ -627,17 +627,58 @@ function Enable-SshpicInCurrentPowerShell {
 
 $script:SshpicFacadeExitCode = 1
 try {
-    $corePath = Join-Path $PSScriptRoot 'install.sh.posix'
+    $corePath = Join-Path $PSScriptRoot 'install.sh'
     if (-not (Test-Path -LiteralPath $corePath -PathType Leaf)) {
         throw "the installer core is missing: $corePath"
     }
     $gitSh = Resolve-SshpicGitSh
+    if ($PSVersionTable.PSVersion.Major -lt 7 -and $args.Count -eq 0) {
+        $previousKeepState = $env:SSHPIC_INSTALL_KEEP_POWERSHELL
+        $previousFacadeState = $env:SSHPIC_INSTALL_POWERSHELL_FACADE
+        Push-Location -LiteralPath $PSScriptRoot
+        try {
+            $env:SSHPIC_INSTALL_KEEP_POWERSHELL = '1'
+            Remove-Item Env:\SSHPIC_INSTALL_POWERSHELL_FACADE -ErrorAction SilentlyContinue
+            & $gitSh './install.sh' @args
+            $installStatus = $LASTEXITCODE
+        }
+        finally {
+            if ($null -eq $previousKeepState) {
+                Remove-Item Env:\SSHPIC_INSTALL_KEEP_POWERSHELL -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:SSHPIC_INSTALL_KEEP_POWERSHELL = $previousKeepState
+            }
+            if ($null -eq $previousFacadeState) {
+                Remove-Item Env:\SSHPIC_INSTALL_POWERSHELL_FACADE -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:SSHPIC_INSTALL_POWERSHELL_FACADE = $previousFacadeState
+            }
+            Pop-Location
+        }
+        if ($installStatus -ne 0) {
+            $script:SshpicFacadeExitCode = [int] $installStatus
+            $global:LASTEXITCODE = $installStatus
+            throw "installer core exited with status $installStatus"
+        }
+        $global:LASTEXITCODE = 0
+        return
+    }
+    $previousFacadeState = $env:SSHPIC_INSTALL_POWERSHELL_FACADE
     Push-Location -LiteralPath $PSScriptRoot
     try {
-        & $gitSh './install.sh.posix' @args
+        $env:SSHPIC_INSTALL_POWERSHELL_FACADE = '1'
+        & $gitSh './install.sh' @args
         $installStatus = $LASTEXITCODE
     }
     finally {
+        if ($null -eq $previousFacadeState) {
+            Remove-Item Env:\SSHPIC_INSTALL_POWERSHELL_FACADE -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:SSHPIC_INSTALL_POWERSHELL_FACADE = $previousFacadeState
+        }
         Pop-Location
     }
     if ($installStatus -ne 0) {

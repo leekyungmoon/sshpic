@@ -75,7 +75,7 @@ func TestTerminalTargetE2EScriptsAreConservativeAndSyntaxValid(t *testing.T) {
 
 func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	installPath := filepath.Join(repoRoot, "install.sh.posix")
+	installPath := filepath.Join(repoRoot, "install.sh")
 	data, err := os.ReadFile(installPath)
 	if err != nil {
 		t.Fatal(err)
@@ -90,8 +90,8 @@ func TestInstallScriptHasExplicitOSDetection(t *testing.T) {
 		`*[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]*|*[Ww][Ss][Ll]*`,
 		`Windows direct-paste installation must run on native Windows, not WSL`,
 		`Installer entry point: ./install.sh`,
-		`PowerShell literal ./install.sh resolved to the in-pane Windows launcher.`,
-		`The PowerShell ./install.sh facade now activates that command in this same PowerShell session.`,
+		`Windows setup selected.`,
+		`The managed ssh command is active in this PowerShell 7 session.`,
 		`verify_windows_terminal_version`,
 		`1.24.10921.0`,
 		`Windows Terminal image-paste protocol ready`,
@@ -245,8 +245,11 @@ func TestWindowsWezTermE2EHarnessUsesRunUniqueImageAndExactCodexGate(t *testing.
 		`$ShaEqualityResult`,
 		`[Image #1]`,
 		`BatchMode=yes`,
-		`Resolve-LiteralInstallLauncher`,
-		`Resolve-LiteralUninstallLauncher`,
+		`Resolve-PublicInstallCommand`,
+		`Test-PublicInstallOSDetection`,
+		`& .\install.sh --detect-os`,
+		`Resolve-InstallLauncher`,
+		`Resolve-UninstallLauncher`,
 		`install.sh.ps1`,
 		`uninstall.sh.ps1`,
 		`SSHPIC_CURRENT_POWERSHELL_ACTIVATED`,

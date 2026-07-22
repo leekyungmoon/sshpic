@@ -30,7 +30,7 @@ If the installer just added Go, WezTerm, or PuTTY through `winget`, rerun it fro
 ./install.sh
 ```
 
-On the Windows branch, that literal command resolves to `install.sh.ps1`, which synchronously invokes `install.sh.posix` and activates only the manifest-owned profile block in the same PowerShell process. If a new Git Bash window opens, confirm that the checkout contains `install.sh.ps1`, `install.sh.cmd`, and `install.sh.posix` but no exact file named `install.sh`; `Get-Command ./install.sh` must report `ExternalScript` and `install.sh.ps1`. Do not run Git Bash's literal `./install.sh` on this branch. Wait for `SSHPIC_CURRENT_POWERSHELL_ACTIVATED`, then verify `Get-Command ssh` before connecting. Reload WezTerm as directed if its configuration has not refreshed.
+`install.sh` detects Windows and continues through the bundled PowerShell launcher, which activates only the manifest-owned profile block. Wait for `SSHPIC_CURRENT_POWERSHELL_ACTIVATED`, then verify `Get-Command ssh` before connecting. Reload WezTerm as directed if its configuration has not refreshed.
 
 ## Windows clipboard checks fail
 

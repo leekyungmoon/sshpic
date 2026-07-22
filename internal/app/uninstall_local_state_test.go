@@ -130,7 +130,7 @@ func TestWindowsUninstallRemovesInstalledStateAndPreservesCheckoutByteForByte(t 
 	if data, err := os.ReadFile(dirtyPath); err != nil || !bytes.Equal(data, dirtyData) {
 		t.Fatalf("dirty source file changed: data=%q err=%v", data, err)
 	}
-	for _, required := range []string{".git", "go.mod", "uninstall.sh.ps1", "uninstall.sh.cmd", "uninstall.sh.posix", filepath.Join("cmd", "sshpic")} {
+	for _, required := range []string{".git", "go.mod", "uninstall.sh.ps1", "uninstall.sh.cmd", "uninstall.sh", filepath.Join("cmd", "sshpic")} {
 		if _, err := os.Stat(filepath.Join(sourceRoot, required)); err != nil {
 			t.Fatalf("source checkout entry changed: %s: %v", required, err)
 		}
@@ -357,10 +357,10 @@ func newSyntheticSourceCheckout(t *testing.T) (string, string) {
 		}
 	}
 	for path, data := range map[string][]byte{
-		filepath.Join(root, "go.mod"):             []byte("module github.com/leekyungmoon/sshpic\n\ngo 1.22\n"),
-		filepath.Join(root, "uninstall.sh.ps1"):   []byte("return\r\n"),
-		filepath.Join(root, "uninstall.sh.cmd"):   []byte("@exit /b 0\r\n"),
-		filepath.Join(root, "uninstall.sh.posix"): []byte("#!/usr/bin/env sh\n"),
+		filepath.Join(root, "go.mod"):           []byte("module github.com/leekyungmoon/sshpic\n\ngo 1.22\n"),
+		filepath.Join(root, "uninstall.sh.ps1"): []byte("return\r\n"),
+		filepath.Join(root, "uninstall.sh.cmd"): []byte("@exit /b 0\r\n"),
+		filepath.Join(root, "uninstall.sh"):     []byte("#!/usr/bin/env sh\n"),
 	} {
 		if err := os.WriteFile(path, data, 0o700); err != nil {
 			t.Fatal(err)

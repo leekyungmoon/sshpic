@@ -459,12 +459,12 @@ try {
         }
     }
 
-    $corePath = Join-Path $PSScriptRoot 'uninstall.sh.posix'
+    $corePath = Join-Path $PSScriptRoot 'uninstall.sh'
     if (-not (Test-Path -LiteralPath $corePath -PathType Leaf)) { throw "the uninstaller core is missing: $corePath" }
     $gitSh = Resolve-SshpicGitSh
     Push-Location -LiteralPath $PSScriptRoot
     try {
-        & $gitSh './uninstall.sh.posix'
+        & $gitSh './uninstall.sh'
         $uninstallStatus = $LASTEXITCODE
     }
     finally {

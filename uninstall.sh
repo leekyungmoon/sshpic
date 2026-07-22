@@ -3,9 +3,9 @@ set -eu
 
 usage() {
   cat <<'EOF'
-Usage: ./uninstall.sh
+Usage: .\uninstall.sh.ps1 (PowerShell 7) or ./uninstall.sh (Git Bash)
 
-Run this command from PowerShell in the cloned checkout.
+Run one of these commands in the cloned checkout.
 
 Removes the Windows sshpic installation. This removes the managed PowerShell
 SSH command and PuTTY sessions, restores the manifest-owned WezTerm
@@ -26,7 +26,7 @@ case "$platform" in
   MINGW*|MSYS*|CYGWIN*) ;;
   *)
     echo "This uninstaller is for native Windows and must run through Git for Windows sh." >&2
-    echo 'From native Windows PowerShell, run ./uninstall.sh.' >&2
+    echo 'From native Windows PowerShell 7, run .\uninstall.sh.ps1.' >&2
     echo "No files were changed." >&2
     exit 1
     ;;
@@ -38,7 +38,7 @@ case "$script_path" in
   *) script_path="$(command -v "$script_path" 2>/dev/null || printf '%s' "$script_path")" ;;
 esac
 repo_root="$(CDPATH= cd -P -- "$(dirname -- "$script_path")" && pwd -P)"
-for required in ".git" "go.mod" "uninstall.sh.ps1" "uninstall.sh.cmd" "uninstall.sh.posix" "cmd/sshpic"; do
+for required in ".git" "go.mod" "uninstall.sh.ps1" "uninstall.sh.cmd" "uninstall.sh" "cmd/sshpic"; do
   if [ ! -e "$repo_root/$required" ]; then
     echo "refusing to run outside the sshpic source checkout; missing: $repo_root/$required" >&2
     exit 1
@@ -418,7 +418,7 @@ if [ "$overlap_status" -eq 2 ]; then
 fi
 if [ "$overlap_status" -eq 0 ]; then
   echo "Refusing uninstall helper creation because GOBIN is inside the source checkout: $bin_dir" >&2
-  echo "Unset GOBIN or set it outside this checkout, then rerun ./uninstall.sh. No files were changed." >&2
+  echo 'Unset GOBIN or set it outside this checkout, then rerun .\uninstall.sh.ps1. No files were changed.' >&2
   exit 1
 fi
 if ! mkdir -p -- "$bin_dir"; then
@@ -512,7 +512,7 @@ if ! "$helper" internal-remove-putty-sessions; then
   exit 1
 fi
 
-for required in ".git" "go.mod" "uninstall.sh.ps1" "uninstall.sh.cmd" "uninstall.sh.posix" "cmd/sshpic"; do
+for required in ".git" "go.mod" "uninstall.sh.ps1" "uninstall.sh.cmd" "uninstall.sh" "cmd/sshpic"; do
   if [ ! -e "$repo_root/$required" ]; then
     echo "Uninstall removed installed state but the source checkout verification failed: $repo_root/$required" >&2
     exit 1

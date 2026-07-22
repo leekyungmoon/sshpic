@@ -1,8 +1,7 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-rem cmd.exe fallback. PowerShell resolves literal ./uninstall.sh to
-rem uninstall.sh.ps1 so the current-runspace ssh function is removed too.
+rem cmd.exe fallback for the Windows uninstaller shell entrypoint.
 set "SSHPIC_GIT_SH=%ProgramFiles%\Git\bin\sh.exe"
 if exist "%SSHPIC_GIT_SH%" goto run_uninstaller
 
@@ -25,7 +24,7 @@ exit /b 69
 
 :run_uninstaller
 pushd "%~dp0" >nul || exit /b 1
-"%SSHPIC_GIT_SH%" "./uninstall.sh.posix" %*
+"%SSHPIC_GIT_SH%" "./uninstall.sh" %*
 set "SSHPIC_STATUS=%ERRORLEVEL%"
 popd >nul
 exit /b %SSHPIC_STATUS%

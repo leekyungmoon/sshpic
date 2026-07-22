@@ -693,7 +693,11 @@ func TestRestoreRediscoversPortableWezTermConfig(t *testing.T) {
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")
 	portableDir := filepath.Join(dir, "portable")
-	wezterm := testFile(t, filepath.Join(portableDir, "wezterm.exe"), "binary")
+	weztermName := "wezterm"
+	if runtime.GOOS == "windows" {
+		weztermName = "wezterm.exe"
+	}
+	wezterm := testFile(t, filepath.Join(portableDir, weztermName), "binary")
 	configPath := testFile(t, filepath.Join(portableDir, "wezterm.lua"), "local config = {}\nreturn config\n")
 	original, _ := os.ReadFile(configPath)
 	binary := testFile(t, filepath.Join(dir, "sshpic.exe"), "binary")

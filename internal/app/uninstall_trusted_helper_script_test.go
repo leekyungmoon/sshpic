@@ -182,7 +182,7 @@ func (fixture *trustedHelperScriptFixture) run(t *testing.T) uninstallScriptResu
 	fakeShellBin := windowsPathForGitBash(fixture.fakeBin)
 	commandArgs := []string{
 		"-c", `PATH="$1:$PATH"; export PATH; shift; exec "$@"`,
-		"sshpic-uninstall-trusted-copy-test", fakeShellBin, "./uninstall.sh.posix",
+		"sshpic-uninstall-trusted-copy-test", fakeShellBin, "./uninstall.sh",
 	}
 	cmd := exec.Command(shell, commandArgs...)
 	cmd.Dir = fixture.repoRoot

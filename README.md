@@ -1,6 +1,6 @@
 # sshpic
 
-🖼️ Paste local screenshots into remote SSH coding-agent terminals from macOS + iTerm2 with normal `Cmd+V`.
+🖼️ Paste local screenshots into remote SSH coding-agent terminals from macOS or Windows without leaving your terminal.
 
 ![8-second sshpic demo: copy image, press Cmd+V in iTerm2, remote path appears](docs/assets/sshpic-hero.gif)
 
@@ -29,15 +29,9 @@ cd sshpic
 ./install.sh
 ```
 
-### 👉 One-liner
+Use the same command on macOS, Linux, and Windows. `install.sh` detects the host OS and chooses the right setup automatically. On Windows it continues in PowerShell 7 and can use `winget` for missing tools. On macOS it sets up iTerm2 and the clipboard helper. On Linux it installs the CLI without claiming an unsupported terminal shortcut.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh | bash
-```
-
-The installer builds `sshpic`, sets up the macOS clipboard helper when Homebrew is available, creates a config file if needed, removes older sshpic iTerm2 settings, and enables the current iTerm2 `Cmd+V` integration.
-
-If your Mac cannot set up the required iTerm2 support, the installer stops before changing `Cmd+V`. Your normal paste shortcut stays untouched.
+If setup cannot be completed safely, the installer stops without replacing your normal paste shortcut.
 
 ## ⚡ Quick Start
 
@@ -55,6 +49,8 @@ After a successful iTerm2 install, keep your normal remote coding flow:
 ```
 
 No config editing, snippet printing, iTerm2 settings clicking, or per-screenshot upload command is part of the successful normal flow.
+
+On Windows, stay in the PowerShell 7 window where installation finished. Run `ssh user@host`, start Codex, copy an image, and press `Ctrl+V`. Windows Terminal or WezTerm should show one `[Image #1]` attachment in Codex. Normal text still pastes normally.
 
 ## 🔍 How it works
 
@@ -79,11 +75,13 @@ Codex CLI, Claude Code, or another terminal agent still needs to read the path. 
 |---|---|
 | macOS + iTerm2 | ✅ Available now |
 | macOS + iTerm2 setup cannot be completed | Installer stops; your normal `Cmd+V` stays unchanged |
+| Windows 10/11 + Windows Terminal 1.24.10921+ + PowerShell 7 | 🧪 Preview available |
+| Windows 10/11 + WezTerm + PowerShell 7 | 🧪 Preview available |
 | Ubuntu GNOME Terminal (X11 / Wayland) | Not available yet |
-| Windows / WSL | Not available yet |
+| WSL | Not available yet |
 | macOS Terminal.app | Not available yet |
 
-For now, use **macOS + iTerm2** for the normal screenshot-to-path paste flow. Work on other terminals is underway, but they are not ready for everyday use yet.
+For the stable path, use **macOS + iTerm2**. The native Windows preview is ready to try on a normal signed-in Windows desktop. Ubuntu, WSL, and Terminal.app are not ready yet.
 
 ## 🔒 Security note
 

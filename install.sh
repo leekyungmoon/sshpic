@@ -35,6 +35,79 @@ if [ "${1:-}" = "--detect-os" ]; then
   exit 0
 fi
 
+pwsh_cmd=""
+
+use_windows_pwsh() {
+  candidate="$1"
+  [ -x "$candidate" ] || return 1
+  "$candidate" -NoLogo -NoProfile -NonInteractive -Command \
+    'if ($PSVersionTable.PSVersion.Major -lt 7) { exit 1 }' >/dev/null 2>&1 || return 1
+  pwsh_cmd="$candidate"
+  return 0
+}
+
+find_windows_pwsh() {
+  if command -v pwsh.exe >/dev/null 2>&1; then
+    use_windows_pwsh "$(command -v pwsh.exe)" && return 0
+  fi
+  for candidate in \
+    "/c/Program Files/PowerShell/7/pwsh.exe" \
+    "/c/Users/${USERNAME:-}/AppData/Local/Microsoft/WindowsApps/pwsh.exe"
+  do
+    use_windows_pwsh "$candidate" && return 0
+  done
+  return 1
+}
+
+ensure_windows_pwsh() {
+  find_windows_pwsh && return 0
+  if ! command -v winget.exe >/dev/null 2>&1; then
+    echo "PowerShell 7 is required. Install it or make winget available, then run ./install.sh again." >&2
+    return 1
+  fi
+  echo "PowerShell 7 was not found; installing it with winget..."
+  winget_status=0
+  winget.exe install --id Microsoft.PowerShell --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
+  pwsh_probe_attempt=1
+  while [ "$pwsh_probe_attempt" -le 8 ]; do
+    if find_windows_pwsh; then
+      return 0
+    fi
+    [ "$pwsh_probe_attempt" -eq 8 ] || sleep 2
+    pwsh_probe_attempt=$((pwsh_probe_attempt + 1))
+  done
+  echo "winget finished with exit $winget_status, but PowerShell 7 could not be started." >&2
+  echo "Run ./install.sh again after PowerShell 7 finishes installing." >&2
+  return 1
+}
+
+launch_windows_facade() {
+  [ "$host_os" = "windows" ] || return 0
+  [ "${SSHPIC_INSTALL_POWERSHELL_FACADE:-}" != "1" ] || return 0
+
+  install_script="$0"
+  case "$install_script" in
+    */*) ;;
+    *) install_script="$(command -v "$install_script" 2>/dev/null || printf '%s' "$install_script")" ;;
+  esac
+  install_dir="$(CDPATH= cd -- "$(dirname -- "$install_script")" && pwd -P)"
+  facade="$install_dir/install.sh.ps1"
+  if [ ! -f "$facade" ]; then
+    echo "Windows installation requires the cloned sshpic checkout; install.sh.ps1 is missing." >&2
+    return 1
+  fi
+  ensure_windows_pwsh || return 1
+
+  echo "Detected OS: Windows"
+  echo "Continuing in PowerShell 7..."
+  if [ "${SSHPIC_INSTALL_KEEP_POWERSHELL:-}" = "1" ] || { [ -t 0 ] && [ -t 1 ]; }; then
+    exec "$pwsh_cmd" -NoLogo -NoProfile -ExecutionPolicy Bypass -NoExit -File "$facade" "$@"
+  fi
+  exec "$pwsh_cmd" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$facade" "$@"
+}
+
+launch_windows_facade "$@"
+
 is_windows_shell() {
   [ "$host_os" = "windows" ]
 }
@@ -236,7 +309,7 @@ need_go() {
     winget.exe install --id GoLang.Go --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
     if ! find_go; then
       echo "winget finished with exit $winget_status, but Go could not be found." >&2
-      echo 'Close and reopen PowerShell, then rerun ./install.sh.' >&2
+      echo 'Close and reopen the terminal, then rerun ./install.sh.' >&2
       exit 1
     fi
     if ! wait_for_windows_tool "Go ($go_cmd)" "$go_cmd" version; then
@@ -286,7 +359,7 @@ install_wezterm_if_needed() {
   winget.exe install --id wez.wezterm --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
   if ! find_wezterm; then
     echo "winget finished with exit $winget_status, but WezTerm could not be found." >&2
-    echo 'Close and reopen PowerShell, then rerun ./install.sh.' >&2
+    echo 'Close and reopen the terminal, then rerun ./install.sh.' >&2
     exit 1
   fi
   if ! wait_for_windows_tool "WezTerm ($wezterm_cmd)" "$wezterm_cmd" --version; then
@@ -329,7 +402,7 @@ verify_plink_min_version() {
       ;;
   esac
   if [ "$plink_major" -eq 0 ] && [ "$plink_minor" -lt 84 ]; then
-    echo "PuTTY Plink $plink_version is too old; install PuTTY 0.84 or newer and rerun ./install.sh." >&2
+    printf 'PuTTY Plink %s is too old; install PuTTY 0.84 or newer and rerun ./install.sh.\n' "$plink_version" >&2
     return 1
   fi
   printf 'PuTTY Plink compatibility: %s (minimum 0.84)\n' "$plink_version"
@@ -353,7 +426,7 @@ install_plink_if_needed() {
   winget.exe install --id PuTTY.PuTTY --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
   if ! find_plink; then
     echo "winget finished with exit $winget_status, but Plink could not be found." >&2
-    echo 'Close and reopen PowerShell, then rerun ./install.sh.' >&2
+    echo 'Close and reopen the terminal, then rerun ./install.sh.' >&2
     exit 1
   fi
   if ! wait_for_windows_tool "PuTTY Plink ($plink_cmd)" "$plink_cmd" -V; then
@@ -397,14 +470,14 @@ case "$host_os" in
     cd "$script_dir"
     echo "Detected OS: Windows (Git Bash/MSYS)"
     echo "Installer entry point: ./install.sh"
-    echo 'PowerShell literal ./install.sh resolved to the in-pane Windows launcher.'
+    echo 'Windows setup selected.'
     ;;
   macos) echo "Detected OS: macOS" ;;
   linux) echo "Detected OS: Linux" ;;
   wsl)
     echo "Detected OS: WSL" >&2
     echo 'Windows direct-paste installation must run on native Windows, not WSL.' >&2
-    echo 'From native Windows PowerShell, run ./install.sh.' >&2
+    echo 'From native Windows, run ./install.sh outside WSL.' >&2
     exit 1
     ;;
   *)
@@ -489,7 +562,7 @@ case "$host_os" in
     echo "Windows installation verified: the executable, manifest-owned WezTerm artifacts, and managed PowerShell 7 SSH wrapper passed strict doctor."
     echo "Use Windows Terminal 1.24.10921+ or WezTerm with PowerShell 7."
     echo "The managed normal-ssh command is enabled only in PowerShell 7 (pwsh) inside Windows Terminal or WezTerm."
-    echo "The PowerShell ./install.sh facade now activates that command in this same PowerShell session."
+    echo 'The managed ssh command is active in this PowerShell 7 session.'
     echo "After SSHPIC_CURRENT_POWERSHELL_ACTIVATED appears, run: ssh user@host"
     echo "Enter the server password once, start Codex, focus its input, and press Ctrl+V."
     echo "Native ssh.exe remains the explicit key/agent-authenticated recovery path."

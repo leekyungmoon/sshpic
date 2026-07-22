@@ -1,8 +1,8 @@
 # Getting started
 
-## Install from a clone
+## Install
 
-On macOS and Linux, clone the main branch and run its POSIX entrypoint:
+Use the same command on macOS, Linux, and Windows:
 
 ```sh
 git clone https://github.com/leekyungmoon/sshpic.git
@@ -10,27 +10,9 @@ cd sshpic
 ./install.sh
 ```
 
-On Windows 10/11, clone the Windows branch and run the same literal command from PowerShell:
-
-```powershell
-git clone --branch codex/windows-wezterm-ssh-image-copy --single-branch https://github.com/leekyungmoon/sshpic.git wezterm-ssh-image-copy
-cd .\wezterm-ssh-image-copy
-./install.sh
-```
-
-The missing exact `install.sh` pathname on this Windows branch is intentional. PowerShell resolves `./install.sh` to `install.sh.ps1`; that facade locates Git for Windows, runs `install.sh.posix` synchronously in the current pane, and activates the verified managed `ssh` function in the same PowerShell process. `install.sh.cmd` remains only a `cmd.exe` fallback. Neither facade dispatches the `.sh` file association or opens a Git Bash installer window. Do not run Git Bash's literal `./install.sh` on this branch, and do not install from WSL. When Go, WezTerm, or PuTTY is newly provisioned and the installer asks for a rerun, repeat `./install.sh` from PowerShell.
-
-The Windows branch intentionally leaves the main-branch `README.md` unchanged. These branch-specific docs define its PowerShell command-facade contract; the main branch continues to expose its normal exact `install.sh` for macOS and Linux.
+`install.sh` detects Windows, macOS, Linux, and WSL before changing anything. On native Windows it continues through the bundled PowerShell launcher and keeps the ready PowerShell 7 session open. On macOS and Linux it continues in the current shell. If a required tool is newly installed and setup asks for another attempt, run `./install.sh` again.
 
 PowerShell 7 (`pwsh`) is the managed runtime shell inside Windows Terminal 1.24.10921+ or WezTerm after installation. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the installer only cleans an exact recognized legacy sshpic block there. When `SSHPIC_CURRENT_POWERSHELL_ACTIVATED` appears, `Get-Command ssh` must already report `Function` in that same session; `ssh.exe` remains the explicit native recovery command.
-
-## Install with the one-liner (macOS/Linux)
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/leekyungmoon/sshpic/main/install.sh | bash
-```
-
-Windows installation requires the cloned checkout shown above so the installer can publish and verify one coherent Windows integration generation.
 
 ## Use
 

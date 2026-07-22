@@ -43,10 +43,10 @@ function Assert-RepoContract {
     $required = @(
         (Join-Path $RepoRoot "install.sh.ps1"),
         (Join-Path $RepoRoot "install.sh.cmd"),
-        (Join-Path $RepoRoot "install.sh.posix"),
+        (Join-Path $RepoRoot "install.sh"),
         (Join-Path $RepoRoot "uninstall.sh.ps1"),
         (Join-Path $RepoRoot "uninstall.sh.cmd"),
-        (Join-Path $RepoRoot "uninstall.sh.posix"),
+        (Join-Path $RepoRoot "uninstall.sh"),
         (Join-Path $RepoRoot ".github\workflows\ci.yml"),
         (Join-Path $RepoRoot "internal\terminal\wezterm\lua.go"),
         (Join-Path $RepoRoot "internal\terminal\wezterm\install.go")
@@ -57,19 +57,13 @@ function Assert-RepoContract {
         }
     }
 
-    if (Test-Path -LiteralPath (Join-Path $RepoRoot "install.sh")) {
-        throw "an exact install.sh would make PowerShell use the Windows .sh file association and open another window"
-    }
-    if (Test-Path -LiteralPath (Join-Path $RepoRoot "uninstall.sh")) {
-        throw "an exact uninstall.sh would make PowerShell use the Windows .sh file association and open another window"
-    }
     $installLauncher = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh.ps1"))
     foreach ($sentinel in @(
         "function Resolve-SshpicGitSh",
         "function Read-SshpicBoundedFile",
         "function Get-SshpicVerifiedOwnedBlock",
         "function Get-SshpicManagedFunctionDefinition",
-        "install.sh.posix",
+        "Join-Path `$PSScriptRoot 'install.sh'",
         "owned_bytes",
         "SSHPIC_CURRENT_POWERSHELL_ACTIVATED"
     )) {
@@ -83,7 +77,7 @@ function Assert-RepoContract {
         "function Read-SshpicBoundedFile",
         "function Get-SshpicVerifiedOwnedBlock",
         "function Get-SshpicManagedFunctionDefinition",
-        "uninstall.sh.posix",
+        "Join-Path `$PSScriptRoot 'uninstall.sh'",
         "owned_bytes",
         "SSHPIC_CURRENT_POWERSHELL_DEACTIVATED",
         "Remove-Item"
@@ -101,14 +95,14 @@ function Assert-RepoContract {
         }
     }
     $installFallback = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh.cmd"))
-    if ($installFallback -notmatch 'install\.sh\.posix' -or $installFallback -match '(?im)\b(?:start|git-bash\.exe|wt\.exe)\b') {
+    if ($installFallback -notmatch '"\./install\.sh"' -or $installFallback -match '(?im)\b(?:start|git-bash\.exe|wt\.exe)\b') {
         throw "install.sh.cmd is not the synchronous fallback launcher"
     }
     $uninstallFallback = [IO.File]::ReadAllText((Join-Path $RepoRoot "uninstall.sh.cmd"))
-    if ($uninstallFallback -notmatch 'uninstall\.sh\.posix' -or $uninstallFallback -match '(?im)\b(?:start|git-bash\.exe|wt\.exe)\b') {
+    if ($uninstallFallback -notmatch '"\./uninstall\.sh"' -or $uninstallFallback -match '(?im)\b(?:start|git-bash\.exe|wt\.exe)\b') {
         throw "uninstall.sh.cmd is not the synchronous fallback launcher"
     }
-    $installer = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh.posix"))
+    $installer = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh"))
     if ($installer -notmatch 'install wezterm') {
         throw "install.sh does not invoke the WezTerm installer"
     }
@@ -124,27 +118,48 @@ function Assert-RepoContract {
     }
 }
 
-function Resolve-LiteralLauncher {
+function Resolve-PowerShellLauncher {
     param([string]$Name)
-    $literal = Join-Path $RepoRoot $Name
-    $resolved = Get-Command $literal -CommandType ExternalScript,Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -eq $resolved) {
-        throw "PowerShell could not resolve literal ./$Name"
+    $launcher = [IO.Path]::GetFullPath((Join-Path $RepoRoot ($Name + ".ps1")))
+    if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
+        throw "PowerShell launcher is missing: $launcher"
     }
-    $expected = [IO.Path]::GetFullPath((Join-Path $RepoRoot ($Name + ".ps1")))
-    $actual = [IO.Path]::GetFullPath($resolved.Source)
-    if ($resolved.CommandType -ne "ExternalScript" -or -not [string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "literal ./$Name resolved to an unexpected command: $($resolved.CommandType) $actual"
-    }
-    return $actual
+    return $launcher
 }
 
-function Resolve-LiteralInstallLauncher {
-    return Resolve-LiteralLauncher "install.sh"
+function Resolve-PublicInstallCommand {
+    $resolved = Get-Command (Join-Path $RepoRoot "install.sh") -CommandType ExternalScript,Application -ErrorAction Stop | Select-Object -First 1
+    if ($resolved.Name -notin @("install.sh", "install.sh.ps1", "install.sh.cmd")) {
+        throw "./install.sh resolved to an unexpected command: $($resolved.CommandType) $($resolved.Source)"
+    }
+    return $resolved
 }
 
-function Resolve-LiteralUninstallLauncher {
-    return Resolve-LiteralLauncher "uninstall.sh"
+function Test-PublicInstallOSDetection {
+    Push-Location -LiteralPath $RepoRoot
+    try {
+        $output = @(& .\install.sh --detect-os 2>&1)
+        $status = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+    }
+    if ($status -ne 0) {
+        throw "public ./install.sh --detect-os failed with status ${status}: $($output -join ' ')"
+    }
+    $detected = @($output | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ })[-1]
+    if ($detected -ne "windows") {
+        throw "public ./install.sh detected '$detected' instead of 'windows'"
+    }
+    return $detected
+}
+
+function Resolve-InstallLauncher {
+    return Resolve-PowerShellLauncher "install.sh"
+}
+
+function Resolve-UninstallLauncher {
+    return Resolve-PowerShellLauncher "uninstall.sh"
 }
 
 if ($PreflightOnly) {
@@ -152,8 +167,10 @@ if ($PreflightOnly) {
         throw "-PreflightOnly must run on Windows"
     }
     Assert-RepoContract
-    $literalInstallLauncher = Resolve-LiteralInstallLauncher
-    $literalUninstallLauncher = Resolve-LiteralUninstallLauncher
+    $publicInstallCommand = Resolve-PublicInstallCommand
+    $publicDetectedOS = Test-PublicInstallOSDetection
+    $installLauncher = Resolve-InstallLauncher
+    $uninstallLauncher = Resolve-UninstallLauncher
     $powerShellTool = Get-App @("powershell.exe", "pwsh.exe")
     $sshTool = Get-App @("ssh.exe")
     $wezTermTool = Resolve-WezTerm
@@ -161,8 +178,10 @@ if ($PreflightOnly) {
     Write-Host "powershell: $(if ($powerShellTool) { $powerShellTool } else { 'not found (runtime prerequisite)' })"
     Write-Host "ssh.exe: $(if ($sshTool) { $sshTool } else { 'not found (runtime prerequisite)' })"
     Write-Host "WezTerm: $(if ($wezTermTool) { $wezTermTool } else { 'not installed (allowed in CI preflight)' })"
-    Write-Host "literal ./install.sh: $literalInstallLauncher"
-    Write-Host "literal ./uninstall.sh: $literalUninstallLauncher"
+    Write-Host "public ./install.sh command: $($publicInstallCommand.CommandType) $($publicInstallCommand.Source)"
+    Write-Host "public ./install.sh detected OS: $publicDetectedOS"
+    Write-Host "internal PowerShell installer: $installLauncher"
+    Write-Host "PowerShell uninstaller: $uninstallLauncher"
     Write-Host "No clipboard, WezTerm config, winget, or SSH target was accessed."
     exit 0
 }
@@ -172,6 +191,8 @@ if (-not $IsWindowsHost) {
     exit 78
 }
 Assert-RepoContract
+Resolve-PublicInstallCommand | Out-Null
+Test-PublicInstallOSDetection | Out-Null
 
 if ([string]::IsNullOrWhiteSpace($SshTarget)) {
     Write-Error "SSHPIC_E2E_HOST (or -SshTarget) is required for the real E2E."
@@ -223,7 +244,7 @@ function Invoke-Logged {
         }
         # Windows PowerShell 5.1 turns successful native stderr into a
         # terminating NativeCommandError when ErrorActionPreference is Stop.
-        # install.sh.posix may print supported-surface notices to stderr.
+        # install.sh may print supported-surface notices to stderr.
         $ErrorActionPreference = "Continue"
         $output = & $FilePath @Arguments 2>&1 | Out-String
         $code = $LASTEXITCODE
@@ -565,7 +586,7 @@ if ($existingManaged.Count -gt 0) {
 }
 
 $GitBash = Resolve-GitBash
-$InstallLauncher = Resolve-LiteralInstallLauncher
+$InstallLauncher = Resolve-InstallLauncher
 $PowerShellExe = Get-App @("powershell.exe", "pwsh.exe")
 $SshExe = Get-App @("ssh.exe")
 $Sshpic = $null
