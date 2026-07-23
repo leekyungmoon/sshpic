@@ -96,6 +96,13 @@ cleanup_failed_progress() {
   eval "$sshpic_progress_saved_traps"
 }
 
+render_progress() {
+  (
+    trap - 13
+    printf "$@"
+  )
+}
+
 run_without_progress() {
   sshpic_progress_line_label="$1"
   shift
@@ -131,7 +138,8 @@ abort_progress() {
   rm -f -- \
     "${sshpic_progress_log:-}" \
     "${sshpic_progress_gate:-}" || :
-  printf '\r\033[K[cancelled] %s\n' "${sshpic_progress_label:-sshpic task}" >&2 || :
+  render_progress '\r\033[K[cancelled] %s\n' \
+    "${sshpic_progress_label:-sshpic task}" >&2 || :
   exit "$sshpic_progress_abort_status"
 }
 
@@ -215,7 +223,7 @@ run_with_progress() {
       2) sshpic_progress_frame='-' ;;
       *) sshpic_progress_frame='\' ;;
     esac
-    if ! printf '\r\033[K[%s] %s (%ss)' \
+    if ! render_progress '\r\033[K[%s] %s (%ss)' \
       "$sshpic_progress_frame" "$sshpic_progress_label" "$sshpic_progress_tick"
     then
       cleanup_failed_progress
@@ -233,13 +241,13 @@ run_with_progress() {
   sshpic_progress_pid=""
   sshpic_progress_render_status=0
   if [ "$sshpic_progress_status" -eq 0 ]; then
-    printf '\r\033[K[done] %s (%ss)\n' \
+    render_progress '\r\033[K[done] %s (%ss)\n' \
       "$sshpic_progress_label" "$sshpic_progress_tick" || sshpic_progress_render_status=1
     if [ "$sshpic_progress_replay" = "show" ] && [ -s "$sshpic_progress_log" ]; then
       cat "$sshpic_progress_log" || :
     fi
   else
-    printf '\r\033[K[failed] %s (%ss)\n' \
+    render_progress '\r\033[K[failed] %s (%ss)\n' \
       "$sshpic_progress_label" "$sshpic_progress_tick" >&2 || sshpic_progress_render_status=1
     if [ -s "$sshpic_progress_log" ]; then
       cat "$sshpic_progress_log" >&2 || :

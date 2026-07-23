@@ -78,6 +78,7 @@ func TestLifecycleScriptsProvideTTYProgressAcrossPlatforms(t *testing.T) {
 			"run_with_progress()",
 			"progress_descendants()",
 			"terminate_progress_tree()",
+			"render_progress()",
 			"run_without_progress()",
 			"SSHPIC_PROGRESS_FORCE",
 			"SSHPIC_NO_PROGRESS",
@@ -264,6 +265,7 @@ func TestShellProgressShowsActivityReplaysOutputAndPreservesFailure(t *testing.T
 		"sshpic_progress_hup_status=129\n" +
 		"sshpic_progress_int_status=130\n" +
 		"sshpic_progress_term_status=143\n" +
+		installTestShellFunction(string(data), "render_progress") +
 		installTestShellFunction(string(data), "run_without_progress") +
 		runFunctionSource
 	signalFunctionSource := installTestShellFunction(string(data), "progress_descendants") +
@@ -289,7 +291,7 @@ slow_success() {
 }
 run_with_progress "Preparing test work" show slow_success
 `
-		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp)
+		cmd := installProgressShellCommand(t, shell, script, shellTemp)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("interactive progress failed: %v\n%s", err, out)
@@ -326,7 +328,7 @@ fail_now() {
 }
 run_with_progress "Failing test work" show fail_now
 `
-		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp)
+		cmd := installProgressShellCommand(t, shell, script, shellTemp)
 		out, err := cmd.CombinedOutput()
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok || exitErr.ExitCode() != 7 {
@@ -353,7 +355,7 @@ quick_success() {
 }
 run_with_progress "CI test work" show quick_success
 `
-		cmd := exec.Command(shell, "-c", script)
+		cmd := installProgressShellCommand(t, shell, script)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("non-interactive progress failed: %v\n%s", err, out)
@@ -380,7 +382,7 @@ fail_without_tty() {
 }
 run_with_progress "CI failing work" show fail_without_tty
 `
-		cmd := exec.Command(shell, "-c", script)
+		cmd := installProgressShellCommand(t, shell, script)
 		out, err := cmd.CombinedOutput()
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok || exitErr.ExitCode() != 9 {
@@ -419,7 +421,7 @@ slow_tree() {
 (sleep 1; kill -TERM "$$") &
 run_with_progress "Cancellable test work" show slow_tree "$2"
 `
-		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp, shellSentinel)
+		cmd := installProgressShellCommand(t, shell, script, shellTemp, shellSentinel)
 		out, err := cmd.CombinedOutput()
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok || exitErr.ExitCode() != 143 {
@@ -457,7 +459,7 @@ cat() {
 }
 run_with_progress "Replay cleanup work" show replay_output
 `
-		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp)
+		cmd := installProgressShellCommand(t, shell, script, shellTemp)
 		out, err := cmd.CombinedOutput()
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok || exitErr.ExitCode() != 143 {
@@ -488,7 +490,7 @@ cat() {
 }
 run_with_progress "Replay failure work" show fail_with_output
 `
-		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp)
+		cmd := installProgressShellCommand(t, shell, script, shellTemp)
 		out, err := cmd.CombinedOutput()
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok || exitErr.ExitCode() != 7 {
@@ -519,7 +521,7 @@ never_started() {
 }
 run_with_progress "Setup cancellation work" show never_started "$1"
 `
-		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp)
+		cmd := installProgressShellCommand(t, shell, script, shellTemp)
 		out, err := cmd.CombinedOutput()
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok || exitErr.ExitCode() != 143 {
@@ -552,7 +554,7 @@ slow_renderer_work() {
 exec 1>&-
 run_with_progress "Closed renderer work" show slow_renderer_work "$2"
 `
-		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp, shellSentinel)
+		cmd := installProgressShellCommand(t, shell, script, shellTemp, shellSentinel)
 		out, err := cmd.CombinedOutput()
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok || exitErr.ExitCode() != 1 {
@@ -588,7 +590,7 @@ slow_pipe_work() {
 }
 run_with_progress "Broken pipe work" show slow_pipe_work "$2"
 `
-		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp, shellSentinel)
+		cmd := installProgressShellCommand(t, shell, script, shellTemp, shellSentinel)
 		reader, writer, err := os.Pipe()
 		if err != nil {
 			t.Fatal(err)
@@ -617,6 +619,9 @@ run_with_progress "Broken pipe work" show slow_pipe_work "$2"
 	})
 
 	t.Run("worker keeps default sigpipe behavior", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows does not provide POSIX SIGPIPE process semantics")
+		}
 		temp := t.TempDir()
 		shellTemp := temp
 		if runtime.GOOS == "windows" {
@@ -637,7 +642,7 @@ pipe_sensitive_work() {
 }
 run_with_progress "Worker PIPE work" errors pipe_sensitive_work "$2"
 `
-		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp, shellSentinel)
+		cmd := installProgressShellCommand(t, shell, script, shellTemp, shellSentinel)
 		out, err := cmd.CombinedOutput()
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok || exitErr.ExitCode() != 141 {
@@ -673,7 +678,7 @@ term_resistant_work() {
 (sleep 1; kill -TERM "$$"; sleep 1; kill -TERM "$$") &
 run_with_progress "Repeated signal work" show term_resistant_work "$2"
 `
-		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp, shellSentinel)
+		cmd := installProgressShellCommand(t, shell, script, shellTemp, shellSentinel)
 		out, err := cmd.CombinedOutput()
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok || exitErr.ExitCode() != 143 {
@@ -706,7 +711,7 @@ slow_closed_stderr_work() {
 exec 2>&-
 run_with_progress "Closed stderr work" errors slow_closed_stderr_work
 `
-		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp)
+		cmd := installProgressShellCommand(t, shell, script, shellTemp)
 		out, err := cmd.CombinedOutput()
 		exitErr, ok := err.(*exec.ExitError)
 		if !ok || exitErr.ExitCode() != 143 {
@@ -743,7 +748,7 @@ slow_signal_work() {
 (sleep 1; kill -$2 "$$") &
 run_with_progress "Signal status work" errors slow_signal_work
 `
-				cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp, tc.signal)
+				cmd := installProgressShellCommand(t, shell, script, shellTemp, tc.signal)
 				out, err := cmd.CombinedOutput()
 				exitErr, ok := err.(*exec.ExitError)
 				if !ok || exitErr.ExitCode() != tc.status {
@@ -837,8 +842,8 @@ native_tree() {
 (sleep 1; kill -TERM "$$") &
 run_with_progress "Native Windows cancellation" show native_tree "$2" "$3" "$4" "$5"
 `
-		cmd := exec.Command(
-			shell, "-c", script, "progress-test",
+		cmd := installProgressShellCommand(
+			t, shell, script,
 			windowsPathForGitBash(temp),
 			windowsPathForGitBash(pwsh),
 			windowsPathForGitBash(parent),
@@ -1818,6 +1823,18 @@ func installTestShellFunction(script, name string) string {
 		return ""
 	}
 	return tail[:end+3]
+}
+
+func installProgressShellCommand(t *testing.T, shell, script string, args ...string) *exec.Cmd {
+	t.Helper()
+	scriptPath := filepath.Join(t.TempDir(), "progress-test.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		scriptPath = windowsPathForGitBash(scriptPath)
+	}
+	return exec.Command(shell, append([]string{scriptPath}, args...)...)
 }
 
 func installTestShell() string {
