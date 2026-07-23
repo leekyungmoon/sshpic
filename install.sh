@@ -11,6 +11,249 @@ bin_dir=""
 bin=""
 windows_tool_probe_attempts=8
 windows_tool_probe_delay=2
+sshpic_progress_signal_traps='trap - 1 2 13 15'
+sshpic_progress_hup_status=129
+sshpic_progress_int_status=130
+sshpic_progress_term_status=143
+
+progress_descendants() {
+  sshpic_progress_root="$1"
+  if sshpic_progress_processes="$(ps -A -o pid= -o ppid= 2>/dev/null)"; then
+    :
+  elif sshpic_progress_processes="$(ps -eo pid=,ppid= 2>/dev/null)"; then
+    :
+  elif sshpic_progress_processes="$(ps -W 2>/dev/null)"; then
+    :
+  else
+    return 0
+  fi
+  printf '%s\n' "$sshpic_progress_processes" | awk -v root="$sshpic_progress_root" '
+    $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { parent[$1] = $2 }
+    END {
+      for (pid in parent) {
+        current = pid
+        for (depth = 0; depth < 1024 && current in parent; depth++) {
+          if (parent[current] == root) {
+            print pid
+            break
+          }
+          current = parent[current]
+        }
+      }
+    }
+  '
+}
+
+terminate_progress_tree() {
+  sshpic_progress_root="$1"
+  if command -v taskkill.exe >/dev/null 2>&1; then
+    sshpic_progress_windows_pid="$(
+      ps -W 2>/dev/null | awk -v root="$sshpic_progress_root" \
+        '$1 == root && $4 ~ /^[0-9]+$/ { print $4; exit }'
+    )"
+    if [ -n "$sshpic_progress_windows_pid" ] && \
+       MSYS2_ARG_CONV_EXCL='*' taskkill.exe \
+         /PID "$sshpic_progress_windows_pid" /T /F >/dev/null 2>&1
+    then
+      return 0
+    fi
+  fi
+
+  sshpic_progress_children="$(progress_descendants "$sshpic_progress_root")" || sshpic_progress_children=""
+  for sshpic_progress_child in $sshpic_progress_children; do
+    kill -TERM "$sshpic_progress_child" 2>/dev/null || :
+  done
+  kill -TERM "$sshpic_progress_root" 2>/dev/null || :
+
+  sshpic_progress_stop_wait=0
+  while kill -0 "$sshpic_progress_root" 2>/dev/null && [ "$sshpic_progress_stop_wait" -lt 2 ]; do
+    sleep 1 || :
+    sshpic_progress_stop_wait=$((sshpic_progress_stop_wait + 1))
+  done
+  if kill -0 "$sshpic_progress_root" 2>/dev/null; then
+    kill -KILL "$sshpic_progress_root" 2>/dev/null || :
+  fi
+  for sshpic_progress_child in $sshpic_progress_children; do
+    if kill -0 "$sshpic_progress_child" 2>/dev/null; then
+      kill -KILL "$sshpic_progress_child" 2>/dev/null || :
+    fi
+  done
+}
+
+cleanup_failed_progress() {
+  trap '' 1 2 13 15
+  exec 9>&- || :
+  if [ -n "${sshpic_progress_pid:-}" ]; then
+    terminate_progress_tree "$sshpic_progress_pid"
+    wait "$sshpic_progress_pid" 2>/dev/null || :
+    sshpic_progress_pid=""
+  fi
+  rm -f -- "${sshpic_progress_log:-}" "${sshpic_progress_gate:-}" || :
+  sshpic_progress_log=""
+  sshpic_progress_gate=""
+  eval "$sshpic_progress_saved_traps"
+}
+
+run_without_progress() {
+  sshpic_progress_line_label="$1"
+  shift
+  printf '[....] %s\n' "$sshpic_progress_line_label"
+  if "$@"; then
+    printf '[done] %s\n' "$sshpic_progress_line_label"
+    return 0
+  else
+    sshpic_progress_line_status=$?
+    printf '[failed] %s\n' "$sshpic_progress_line_label" >&2
+    return "$sshpic_progress_line_status"
+  fi
+}
+
+abort_progress() {
+  sshpic_progress_abort_status="${1:-130}"
+  trap '' 1 2 13 15
+  exec 9>&- || :
+  if [ -z "${sshpic_progress_pid:-}" ] && \
+     [ "${sshpic_progress_worker_starting:-0}" -eq 1 ]
+  then
+    sshpic_progress_candidate="${!:-}"
+    if [ -n "$sshpic_progress_candidate" ] && \
+       [ "$sshpic_progress_candidate" != "${sshpic_progress_previous_background_pid:-}" ]
+    then
+      sshpic_progress_pid="$sshpic_progress_candidate"
+    fi
+  fi
+  if [ -n "${sshpic_progress_pid:-}" ]; then
+    terminate_progress_tree "$sshpic_progress_pid"
+    wait "$sshpic_progress_pid" 2>/dev/null || :
+  fi
+  rm -f -- \
+    "${sshpic_progress_log:-}" \
+    "${sshpic_progress_gate:-}" || :
+  printf '\r\033[K[cancelled] %s\n' "${sshpic_progress_label:-sshpic task}" >&2 || :
+  exit "$sshpic_progress_abort_status"
+}
+
+run_with_progress() {
+  sshpic_progress_label="$1"
+  sshpic_progress_replay="$2"
+  shift 2
+
+  sshpic_progress_interactive=0
+  if [ "${SSHPIC_PROGRESS_FORCE:-}" = "1" ]; then
+    sshpic_progress_interactive=1
+  elif [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+    sshpic_progress_interactive=1
+  fi
+  if [ "${SSHPIC_NO_PROGRESS:-}" = "1" ] || [ "$sshpic_progress_interactive" -ne 1 ]; then
+    run_without_progress "$sshpic_progress_label" "$@" || return $?
+    return 0
+  fi
+
+  sshpic_progress_tmp="${TMPDIR:-/tmp}"
+  sshpic_progress_log=""
+  sshpic_progress_gate=""
+  sshpic_progress_saved_traps="$sshpic_progress_signal_traps"
+  trap 'abort_progress "$sshpic_progress_hup_status"' 1
+  trap 'abort_progress "$sshpic_progress_int_status"' 2
+  trap '' 13
+  trap 'abort_progress "$sshpic_progress_term_status"' 15
+  if ! sshpic_progress_log="$(mktemp "${sshpic_progress_tmp%/}/sshpic-progress.XXXXXX")"; then
+    eval "$sshpic_progress_saved_traps"
+    run_without_progress "$sshpic_progress_label" "$@" || return $?
+    return 0
+  fi
+  sshpic_progress_gate="${sshpic_progress_log}.gate"
+  if ! mkfifo "$sshpic_progress_gate"; then
+    rm -f -- "$sshpic_progress_log" "$sshpic_progress_gate"
+    sshpic_progress_log=""
+    sshpic_progress_gate=""
+    eval "$sshpic_progress_saved_traps"
+    run_without_progress "$sshpic_progress_label" "$@" || return $?
+    return 0
+  fi
+
+  if ! exec 9<>"$sshpic_progress_gate"; then
+    rm -f -- "$sshpic_progress_log" "$sshpic_progress_gate"
+    sshpic_progress_log=""
+    sshpic_progress_gate=""
+    eval "$sshpic_progress_saved_traps"
+    run_without_progress "$sshpic_progress_label" "$@" || return $?
+    return 0
+  fi
+  sshpic_progress_pid=""
+  sshpic_progress_previous_background_pid="${!:-}"
+  sshpic_progress_worker_starting=1
+  (
+    if IFS= read -r sshpic_progress_start <&9 && \
+       [ "$sshpic_progress_start" = "start" ]
+    then
+      exec 9>&-
+      trap - 13
+      "$@"
+    else
+      exit 130
+    fi
+  ) >"$sshpic_progress_log" 2>&1 &
+  sshpic_progress_pid=$!
+  sshpic_progress_worker_starting=0
+  if ! printf 'start\n' >&9 || ! exec 9>&-; then
+    cleanup_failed_progress
+    return 1
+  fi
+  if rm -f -- "$sshpic_progress_gate"; then
+    sshpic_progress_gate=""
+  fi
+  sshpic_progress_tick=0
+  while kill -0 "$sshpic_progress_pid" 2>/dev/null; do
+    case $((sshpic_progress_tick % 4)) in
+      0) sshpic_progress_frame='|' ;;
+      1) sshpic_progress_frame='/' ;;
+      2) sshpic_progress_frame='-' ;;
+      *) sshpic_progress_frame='\' ;;
+    esac
+    if ! printf '\r\033[K[%s] %s (%ss)' \
+      "$sshpic_progress_frame" "$sshpic_progress_label" "$sshpic_progress_tick"
+    then
+      cleanup_failed_progress
+      return 1
+    fi
+    if ! sleep 1; then
+      cleanup_failed_progress
+      return 1
+    fi
+    sshpic_progress_tick=$((sshpic_progress_tick + 1))
+  done
+
+  sshpic_progress_status=0
+  wait "$sshpic_progress_pid" || sshpic_progress_status=$?
+  sshpic_progress_pid=""
+  sshpic_progress_render_status=0
+  if [ "$sshpic_progress_status" -eq 0 ]; then
+    printf '\r\033[K[done] %s (%ss)\n' \
+      "$sshpic_progress_label" "$sshpic_progress_tick" || sshpic_progress_render_status=1
+    if [ "$sshpic_progress_replay" = "show" ] && [ -s "$sshpic_progress_log" ]; then
+      cat "$sshpic_progress_log" || :
+    fi
+  else
+    printf '\r\033[K[failed] %s (%ss)\n' \
+      "$sshpic_progress_label" "$sshpic_progress_tick" >&2 || sshpic_progress_render_status=1
+    if [ -s "$sshpic_progress_log" ]; then
+      cat "$sshpic_progress_log" >&2 || :
+    fi
+  fi
+  sshpic_progress_cleanup_status=0
+  rm -f -- "$sshpic_progress_log" "$sshpic_progress_gate" || sshpic_progress_cleanup_status=1
+  sshpic_progress_log=""
+  sshpic_progress_gate=""
+  eval "$sshpic_progress_saved_traps"
+  if [ "$sshpic_progress_status" -ne 0 ]; then
+    return "$sshpic_progress_status"
+  fi
+  if [ "$sshpic_progress_render_status" -ne 0 ] || [ "$sshpic_progress_cleanup_status" -ne 0 ]; then
+    return 1
+  fi
+  return 0
+}
 
 detect_host_os() {
   detected_platform="$1"
@@ -424,6 +667,7 @@ case "$host_os" in
     ;;
 esac
 
+echo "Checking required tools..."
 verify_windows_terminal_version
 need_go
 if is_windows_shell; then
@@ -433,10 +677,14 @@ install_wezterm_if_needed
 install_plink_if_needed
 install_pngpaste_if_possible
 install_python_if_possible
+echo "Required tools are ready."
 
 if [ -f ./cmd/sshpic/main.go ] && [ -f ./go.mod ]; then
   if ! is_windows_shell || ! reuse_unchanged_windows_binary; then
-    "$go_cmd" install ./cmd/sshpic
+    run_with_progress \
+      "Building and installing sshpic (the first run may take a few minutes)" \
+      errors \
+      "$go_cmd" install ./cmd/sshpic
   fi
 else
   if is_windows_shell; then
@@ -444,7 +692,10 @@ else
     echo "Run: git clone https://github.com/leekyungmoon/sshpic.git && cd sshpic && ./scripts/windows/install.ps1" >&2
     exit 1
   fi
-  "$go_cmd" install "$repo/cmd/sshpic@latest"
+  run_with_progress \
+    "Downloading and installing sshpic (the first run may take a few minutes)" \
+    errors \
+    "$go_cmd" install "$repo/cmd/sshpic@latest"
 fi
 
 if ! is_windows_shell; then
@@ -467,7 +718,10 @@ fi
 
 case "$host_os" in
   macos)
-    "$bin" install iterm2
+    run_with_progress \
+      "Configuring iTerm2 paste support and its Python runtime" \
+      show \
+      "$bin" install iterm2
     echo "macOS Terminal.app direct-paste integration remains TBD; run: $bin doctor terminalapp" >&2
     ;;
   linux)
@@ -483,16 +737,36 @@ case "$host_os" in
       plink_native="$(cygpath -aw "$plink_cmd")"
       bin_native="$(cygpath -aw "$bin")"
     fi
-    SSHPIC_EXE="$bin_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-preflight-powershell-ssh-wrapper
-    SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-provision-putty-sessions
-    SSHPIC_WEZTERM_EXE="$wezterm_native" "$bin" install wezterm
-    SSHPIC_EXE="$bin_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-install-powershell-ssh-wrapper
-    "$bin" internal-verify-powershell-ssh-wrapper
+
+    windows_preflight_step() {
+      SSHPIC_EXE="$bin_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-preflight-powershell-ssh-wrapper
+    }
+    windows_putty_step() {
+      SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-provision-putty-sessions
+    }
+    windows_wezterm_step() {
+      SSHPIC_WEZTERM_EXE="$wezterm_native" "$bin" install wezterm
+    }
+    windows_powershell_install_step() {
+      SSHPIC_EXE="$bin_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" internal-install-powershell-ssh-wrapper
+    }
+    windows_powershell_verify_step() {
+      "$bin" internal-verify-powershell-ssh-wrapper
+    }
+    windows_doctor_step() {
+      SSHPIC_WEZTERM_EXE="$wezterm_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" doctor wezterm --require-installed
+    }
+
+    run_with_progress "Checking Windows SSH integration" show windows_preflight_step
+    run_with_progress "Preparing Windows SSH sessions" show windows_putty_step
+    run_with_progress "Configuring Windows Terminal and WezTerm paste support" show windows_wezterm_step
+    run_with_progress "Installing the PowerShell SSH command" show windows_powershell_install_step
+    run_with_progress "Verifying the PowerShell SSH command" show windows_powershell_verify_step
     if [ ! -x "$bin" ]; then
       echo "installed sshpic executable disappeared before post-install verification: $bin" >&2
       exit 1
     fi
-    if ! SSHPIC_WEZTERM_EXE="$wezterm_native" SSHPIC_PLINK_EXE="$plink_native" "$bin" doctor wezterm --require-installed; then
+    if ! run_with_progress "Running final Windows checks" show windows_doctor_step; then
       echo "Windows install postcondition failed: strict doctor could not verify the manifest-owned binary, WezTerm artifacts, and managed PowerShell 7 SSH wrapper." >&2
       exit 1
     fi

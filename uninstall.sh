@@ -12,6 +12,250 @@ data, and preserves the cloned source checkout.
 EOF
 }
 
+sshpic_progress_signal_traps='trap - 1 2 13 15'
+sshpic_progress_hup_status=129
+sshpic_progress_int_status=130
+sshpic_progress_term_status=143
+
+progress_descendants() {
+  sshpic_progress_root="$1"
+  if sshpic_progress_processes="$(ps -A -o pid= -o ppid= 2>/dev/null)"; then
+    :
+  elif sshpic_progress_processes="$(ps -eo pid=,ppid= 2>/dev/null)"; then
+    :
+  elif sshpic_progress_processes="$(ps -W 2>/dev/null)"; then
+    :
+  else
+    return 0
+  fi
+  printf '%s\n' "$sshpic_progress_processes" | awk -v root="$sshpic_progress_root" '
+    $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { parent[$1] = $2 }
+    END {
+      for (pid in parent) {
+        current = pid
+        for (depth = 0; depth < 1024 && current in parent; depth++) {
+          if (parent[current] == root) {
+            print pid
+            break
+          }
+          current = parent[current]
+        }
+      }
+    }
+  '
+}
+
+terminate_progress_tree() {
+  sshpic_progress_root="$1"
+  if command -v taskkill.exe >/dev/null 2>&1; then
+    sshpic_progress_windows_pid="$(
+      ps -W 2>/dev/null | awk -v root="$sshpic_progress_root" \
+        '$1 == root && $4 ~ /^[0-9]+$/ { print $4; exit }'
+    )"
+    if [ -n "$sshpic_progress_windows_pid" ] && \
+       MSYS2_ARG_CONV_EXCL='*' taskkill.exe \
+         /PID "$sshpic_progress_windows_pid" /T /F >/dev/null 2>&1
+    then
+      return 0
+    fi
+  fi
+
+  sshpic_progress_children="$(progress_descendants "$sshpic_progress_root")" || sshpic_progress_children=""
+  for sshpic_progress_child in $sshpic_progress_children; do
+    kill -TERM "$sshpic_progress_child" 2>/dev/null || :
+  done
+  kill -TERM "$sshpic_progress_root" 2>/dev/null || :
+
+  sshpic_progress_stop_wait=0
+  while kill -0 "$sshpic_progress_root" 2>/dev/null && [ "$sshpic_progress_stop_wait" -lt 2 ]; do
+    sleep 1 || :
+    sshpic_progress_stop_wait=$((sshpic_progress_stop_wait + 1))
+  done
+  if kill -0 "$sshpic_progress_root" 2>/dev/null; then
+    kill -KILL "$sshpic_progress_root" 2>/dev/null || :
+  fi
+  for sshpic_progress_child in $sshpic_progress_children; do
+    if kill -0 "$sshpic_progress_child" 2>/dev/null; then
+      kill -KILL "$sshpic_progress_child" 2>/dev/null || :
+    fi
+  done
+}
+
+cleanup_failed_progress() {
+  trap '' 1 2 13 15
+  exec 9>&- || :
+  if [ -n "${sshpic_progress_pid:-}" ]; then
+    terminate_progress_tree "$sshpic_progress_pid"
+    wait "$sshpic_progress_pid" 2>/dev/null || :
+    sshpic_progress_pid=""
+  fi
+  rm -f -- "${sshpic_progress_log:-}" "${sshpic_progress_gate:-}" || :
+  sshpic_progress_log=""
+  sshpic_progress_gate=""
+  eval "$sshpic_progress_saved_traps"
+}
+
+run_without_progress() {
+  sshpic_progress_line_label="$1"
+  shift
+  printf '[....] %s\n' "$sshpic_progress_line_label"
+  if "$@"; then
+    printf '[done] %s\n' "$sshpic_progress_line_label"
+    return 0
+  else
+    sshpic_progress_line_status=$?
+    printf '[failed] %s\n' "$sshpic_progress_line_label" >&2
+    return "$sshpic_progress_line_status"
+  fi
+}
+
+abort_progress() {
+  sshpic_progress_abort_status="${1:-130}"
+  trap '' 1 2 13 15
+  exec 9>&- || :
+  if [ -z "${sshpic_progress_pid:-}" ] && \
+     [ "${sshpic_progress_worker_starting:-0}" -eq 1 ]
+  then
+    sshpic_progress_candidate="${!:-}"
+    if [ -n "$sshpic_progress_candidate" ] && \
+       [ "$sshpic_progress_candidate" != "${sshpic_progress_previous_background_pid:-}" ]
+    then
+      sshpic_progress_pid="$sshpic_progress_candidate"
+    fi
+  fi
+  if [ -n "${sshpic_progress_pid:-}" ]; then
+    terminate_progress_tree "$sshpic_progress_pid"
+    wait "$sshpic_progress_pid" 2>/dev/null || :
+  fi
+  rm -f -- \
+    "${sshpic_progress_log:-}" \
+    "${sshpic_progress_gate:-}" || :
+  printf '\r\033[K[cancelled] %s\n' "${sshpic_progress_label:-sshpic task}" >&2 || :
+  exit "$sshpic_progress_abort_status"
+}
+
+run_with_progress() {
+  sshpic_progress_label="$1"
+  sshpic_progress_replay="$2"
+  shift 2
+
+  sshpic_progress_interactive=0
+  if [ "${SSHPIC_PROGRESS_FORCE:-}" = "1" ]; then
+    sshpic_progress_interactive=1
+  elif [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+    sshpic_progress_interactive=1
+  fi
+  if [ "${SSHPIC_NO_PROGRESS:-}" = "1" ] || [ "$sshpic_progress_interactive" -ne 1 ]; then
+    run_without_progress "$sshpic_progress_label" "$@" || return $?
+    return 0
+  fi
+
+  sshpic_progress_tmp="${TMPDIR:-/tmp}"
+  sshpic_progress_log=""
+  sshpic_progress_gate=""
+  sshpic_progress_saved_traps="$sshpic_progress_signal_traps"
+  trap 'abort_progress "$sshpic_progress_hup_status"' 1
+  trap 'abort_progress "$sshpic_progress_int_status"' 2
+  trap '' 13
+  trap 'abort_progress "$sshpic_progress_term_status"' 15
+  if ! sshpic_progress_log="$(mktemp "${sshpic_progress_tmp%/}/sshpic-progress.XXXXXX")"; then
+    eval "$sshpic_progress_saved_traps"
+    run_without_progress "$sshpic_progress_label" "$@" || return $?
+    return 0
+  fi
+  sshpic_progress_gate="${sshpic_progress_log}.gate"
+  if ! mkfifo "$sshpic_progress_gate"; then
+    rm -f -- "$sshpic_progress_log" "$sshpic_progress_gate"
+    sshpic_progress_log=""
+    sshpic_progress_gate=""
+    eval "$sshpic_progress_saved_traps"
+    run_without_progress "$sshpic_progress_label" "$@" || return $?
+    return 0
+  fi
+
+  if ! exec 9<>"$sshpic_progress_gate"; then
+    rm -f -- "$sshpic_progress_log" "$sshpic_progress_gate"
+    sshpic_progress_log=""
+    sshpic_progress_gate=""
+    eval "$sshpic_progress_saved_traps"
+    run_without_progress "$sshpic_progress_label" "$@" || return $?
+    return 0
+  fi
+  sshpic_progress_pid=""
+  sshpic_progress_previous_background_pid="${!:-}"
+  sshpic_progress_worker_starting=1
+  (
+    if IFS= read -r sshpic_progress_start <&9 && \
+       [ "$sshpic_progress_start" = "start" ]
+    then
+      exec 9>&-
+      trap - 13
+      "$@"
+    else
+      exit 130
+    fi
+  ) >"$sshpic_progress_log" 2>&1 &
+  sshpic_progress_pid=$!
+  sshpic_progress_worker_starting=0
+  if ! printf 'start\n' >&9 || ! exec 9>&-; then
+    cleanup_failed_progress
+    return 1
+  fi
+  if rm -f -- "$sshpic_progress_gate"; then
+    sshpic_progress_gate=""
+  fi
+  sshpic_progress_tick=0
+  while kill -0 "$sshpic_progress_pid" 2>/dev/null; do
+    case $((sshpic_progress_tick % 4)) in
+      0) sshpic_progress_frame='|' ;;
+      1) sshpic_progress_frame='/' ;;
+      2) sshpic_progress_frame='-' ;;
+      *) sshpic_progress_frame='\' ;;
+    esac
+    if ! printf '\r\033[K[%s] %s (%ss)' \
+      "$sshpic_progress_frame" "$sshpic_progress_label" "$sshpic_progress_tick"
+    then
+      cleanup_failed_progress
+      return 1
+    fi
+    if ! sleep 1; then
+      cleanup_failed_progress
+      return 1
+    fi
+    sshpic_progress_tick=$((sshpic_progress_tick + 1))
+  done
+
+  sshpic_progress_status=0
+  wait "$sshpic_progress_pid" || sshpic_progress_status=$?
+  sshpic_progress_pid=""
+  sshpic_progress_render_status=0
+  if [ "$sshpic_progress_status" -eq 0 ]; then
+    printf '\r\033[K[done] %s (%ss)\n' \
+      "$sshpic_progress_label" "$sshpic_progress_tick" || sshpic_progress_render_status=1
+    if [ "$sshpic_progress_replay" = "show" ] && [ -s "$sshpic_progress_log" ]; then
+      cat "$sshpic_progress_log" || :
+    fi
+  else
+    printf '\r\033[K[failed] %s (%ss)\n' \
+      "$sshpic_progress_label" "$sshpic_progress_tick" >&2 || sshpic_progress_render_status=1
+    if [ -s "$sshpic_progress_log" ]; then
+      cat "$sshpic_progress_log" >&2 || :
+    fi
+  fi
+  sshpic_progress_cleanup_status=0
+  rm -f -- "$sshpic_progress_log" "$sshpic_progress_gate" || sshpic_progress_cleanup_status=1
+  sshpic_progress_log=""
+  sshpic_progress_gate=""
+  eval "$sshpic_progress_saved_traps"
+  if [ "$sshpic_progress_status" -ne 0 ]; then
+    return "$sshpic_progress_status"
+  fi
+  if [ "$sshpic_progress_render_status" -ne 0 ] || [ "$sshpic_progress_cleanup_status" -ne 0 ]; then
+    return 1
+  fi
+  return 0
+}
+
 if [ "$#" -ne 0 ]; then
   echo "uninstall has one behavior and accepts no options" >&2
   usage >&2
@@ -132,9 +376,19 @@ uninstall_posix() {
   posix_helper="$posix_helper_dir/sshpic-uninstall-helper"
   trap 'cleanup_posix_helper' 0
   trap 'exit 130' 1 2 15
+  sshpic_progress_signal_traps="trap 'exit 130' 1 2 15; trap - 13"
+  sshpic_progress_hup_status=130
+  sshpic_progress_int_status=130
+  sshpic_progress_term_status=130
 
-  echo "Building an isolated sshpic uninstall helper..."
-  if ! (cd "$repo_root" && "$go_cmd" build -o "$posix_helper" ./cmd/sshpic); then
+  build_posix_uninstall_helper() {
+    (cd "$repo_root" && "$go_cmd" build -o "$posix_helper" ./cmd/sshpic)
+  }
+  if ! run_with_progress \
+    "Preparing the sshpic uninstaller" \
+    errors \
+    build_posix_uninstall_helper
+  then
     echo "Could not build the uninstall helper. No installed files were changed." >&2
     return 1
   fi
@@ -144,10 +398,13 @@ uninstall_posix() {
   fi
 
   uninstall_status=0
-  "$posix_helper" uninstall posix \
-    --uninstall-protocol 1 \
-    --source-root "$repo_root" \
-    --binary "$installed_binary" || uninstall_status=$?
+  run_with_progress \
+    "Restoring terminal behavior and removing sshpic" \
+    show \
+    "$posix_helper" uninstall posix \
+      --uninstall-protocol 1 \
+      --source-root "$repo_root" \
+      --binary "$installed_binary" || uninstall_status=$?
   if ! cleanup_posix_helper; then
     echo "sshpic state was processed, but the temporary uninstall helper could not be removed: $posix_helper_dir" >&2
     return 1
@@ -155,6 +412,10 @@ uninstall_posix() {
   posix_helper=""
   posix_helper_dir=""
   trap - 0 1 2 15
+  sshpic_progress_signal_traps='trap - 1 2 13 15'
+  sshpic_progress_hup_status=129
+  sshpic_progress_int_status=130
+  sshpic_progress_term_status=143
   return "$uninstall_status"
 }
 
@@ -282,6 +543,10 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+sshpic_progress_signal_traps="trap 'exit 129' HUP; trap 'exit 130' INT; trap - PIPE; trap 'exit 143' TERM"
+sshpic_progress_hup_status=129
+sshpic_progress_int_status=130
+sshpic_progress_term_status=143
 
 bin_dir="$("$go_cmd" env GOBIN)"
 if [ -z "$bin_dir" ]; then
@@ -595,6 +860,7 @@ if ! resolve_manifest_verified_helper_source; then
   exit 1
 fi
 
+echo "Preparing the verified Windows uninstaller..."
 if ! cp -- "$helper_source" "$helper"; then
   echo "Could not copy the manifest-verified sshpic binary to the isolated uninstall helper path." >&2
   exit 1
@@ -646,20 +912,30 @@ if [ "$probe_status" -ne 0 ]; then
 fi
 
 repo_native="$(to_native_path "$repo_root")"
-if ! "$helper" internal-remove-powershell-ssh-wrapper; then
+windows_remove_powershell_step() {
+  "$helper" internal-remove-powershell-ssh-wrapper
+}
+windows_remove_wezterm_step() {
+  "$helper" uninstall wezterm --uninstall-protocol 3 --source-root "$repo_native"
+}
+windows_remove_putty_step() {
+  "$helper" internal-remove-putty-sessions
+}
+
+if ! run_with_progress "Removing the managed PowerShell SSH command" show windows_remove_powershell_step; then
   echo "The managed PowerShell ssh command mapping was not removed; no other installed state was changed." >&2
   echo "Review the profile collision above, then rerun the supported PowerShell uninstall command." >&2
   echo "The source checkout was preserved." >&2
   exit 1
 fi
 
-if ! "$helper" uninstall wezterm --uninstall-protocol 3 --source-root "$repo_native"; then
+if ! run_with_progress "Removing Windows Terminal and WezTerm integration" show windows_remove_wezterm_step; then
   echo "Uninstall did not complete; review the error above and rerun the supported PowerShell uninstall command." >&2
   echo "The source checkout was preserved." >&2
   exit 1
 fi
 
-if ! "$helper" internal-remove-putty-sessions; then
+if ! run_with_progress "Removing sshpic-owned Windows SSH sessions" show windows_remove_putty_step; then
   echo "The terminal integration and binary were removed, but the sshpic-owned PuTTY sessions remain." >&2
   echo "Run the supported PowerShell install command once, then rerun the supported uninstall command to remove that exact owned state." >&2
   exit 1

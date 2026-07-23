@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -51,6 +52,818 @@ func TestInstallSHRejectsNativeWindowsWithoutPowerShellFacade(t *testing.T) {
 			t.Fatalf("install.sh missing native PowerShell gate %q", want)
 		}
 	}
+}
+
+func TestLifecycleScriptsProvideTTYProgressAcrossPlatforms(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	for name, labels := range map[string][]string{
+		"install.sh": {
+			"Building and installing sshpic",
+			"Configuring iTerm2 paste support and its Python runtime",
+			"Configuring Windows Terminal and WezTerm paste support",
+			"Running final Windows checks",
+		},
+		"uninstall.sh": {
+			"Preparing the sshpic uninstaller",
+			"Restoring terminal behavior and removing sshpic",
+			"Removing Windows Terminal and WezTerm integration",
+		},
+	} {
+		data, err := os.ReadFile(filepath.Join(repoRoot, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		for _, want := range append([]string{
+			"run_with_progress()",
+			"progress_descendants()",
+			"terminate_progress_tree()",
+			"run_without_progress()",
+			"SSHPIC_PROGRESS_FORCE",
+			"SSHPIC_NO_PROGRESS",
+			`[ -t 1 ]`,
+			`kill -0 "$sshpic_progress_pid"`,
+			`taskkill.exe`,
+			`ps -W`,
+			`kill -KILL`,
+			`mkfifo "$sshpic_progress_gate"`,
+			`sshpic_progress_signal_traps`,
+			`sshpic_progress_hup_status=129`,
+			`sshpic_progress_int_status=130`,
+			`sshpic_progress_term_status=143`,
+			`abort_progress "$sshpic_progress_hup_status"`,
+			`abort_progress "$sshpic_progress_int_status"`,
+			`abort_progress "$sshpic_progress_term_status"`,
+			`trap '' 1 2 13 15`,
+			`trap '' 13`,
+			`trap - 13`,
+			`trap - 1 2 13 15`,
+			`[done] %s (%ss)`,
+			`[failed] %s (%ss)`,
+		}, labels...) {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s missing progress contract %q", name, want)
+			}
+		}
+	}
+
+	for _, launcher := range []string{windowsInstallLauncherRelative, windowsUninstallLauncherRelative} {
+		data, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(launcher)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		for _, want := range []string{
+			`function Test-SshpicInteractiveProgress`,
+			`[Console]::IsOutputRedirected`,
+			`-NonI(?:nteractive)?`,
+			`$previousProgressState = $env:SSHPIC_PROGRESS_FORCE`,
+			`$previousNoProgressState = $env:SSHPIC_NO_PROGRESS`,
+			`$env:SSHPIC_PROGRESS_FORCE = '1'`,
+			`$env:SSHPIC_NO_PROGRESS = '1'`,
+			`Remove-Item Env:\SSHPIC_PROGRESS_FORCE`,
+			`Remove-Item Env:\SSHPIC_NO_PROGRESS`,
+			`$env:SSHPIC_PROGRESS_FORCE = $previousProgressState`,
+			`$env:SSHPIC_NO_PROGRESS = $previousNoProgressState`,
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s missing current-window progress lifecycle %q", launcher, want)
+			}
+		}
+	}
+}
+
+func TestWindowsPowerShellFacadeDisablesAnimationWhenOutputIsCaptured(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell facade output detection is Windows-only")
+	}
+	pwsh, err := exec.LookPath("pwsh.exe")
+	if err != nil {
+		t.Skip("PowerShell 7 is unavailable")
+	}
+
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	for _, tc := range []struct {
+		name   string
+		facade string
+		core   string
+		args   []string
+	}{
+		{name: "install", facade: windowsInstallLauncherRelative, core: "install.sh", args: []string{"--detect-os"}},
+		{name: "uninstall", facade: windowsUninstallLauncherRelative, core: "uninstall.sh"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			temp := t.TempDir()
+			facadeBytes, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(tc.facade)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			facadePath := filepath.Join(temp, "scripts", "windows", filepath.Base(tc.facade))
+			if err := os.MkdirAll(filepath.Dir(facadePath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(facadePath, facadeBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			core := `#!/usr/bin/env sh
+if [ "${SSHPIC_PROGRESS_FORCE:-}" = "1" ]; then
+  printf '\033[Kforced-animation\n'
+else
+  printf 'line-progress no=%s\n' "${SSHPIC_NO_PROGRESS:-}"
+fi
+exit 19
+`
+			if err := os.WriteFile(filepath.Join(temp, tc.core), []byte(core), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			args := append([]string{"-NoLogo", "-NoProfile", "-File", facadePath}, tc.args...)
+			cmd := exec.Command(pwsh, args...)
+			cmd.Env = append(os.Environ(), "SSHPIC_PROGRESS_FORCE=", "SSHPIC_NO_PROGRESS=")
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("captured facade unexpectedly ignored core failure\n%s", out)
+			}
+			if strings.Contains(string(out), "\x1b[K") || !strings.Contains(string(out), "line-progress no=1") {
+				t.Fatalf("captured facade enabled animated progress: %q", out)
+			}
+		})
+	}
+}
+
+func TestWindowsPowerShellProgressDetectionSeparatesConsoleConditions(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell progress detection is Windows-only")
+	}
+	pwsh, err := exec.LookPath("pwsh.exe")
+	if err != nil {
+		t.Skip("PowerShell 7 is unavailable")
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness := filepath.Join(t.TempDir(), "progress-detection.ps1")
+	const source = `param([string[]] $Facades)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+foreach ($path in $Facades) {
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($path, [ref] $tokens, [ref] $parseErrors)
+    if ($parseErrors.Count -ne 0) { throw "$path has parse errors" }
+    $matches = @($ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Test-SshpicInteractiveProgress'
+    }, $true))
+    if ($matches.Count -ne 1) { throw "$path progress function count=$($matches.Count)" }
+    Invoke-Expression $matches[0].Extent.Text
+    Remove-Item Env:\SSHPIC_NO_PROGRESS -ErrorAction SilentlyContinue
+    if (-not (Test-SshpicInteractiveProgress -OutputRedirected $false -CommandLine 'pwsh')) {
+        throw "$path rejected an attached interactive console"
+    }
+    if (Test-SshpicInteractiveProgress -OutputRedirected $true -CommandLine 'pwsh') {
+        throw "$path accepted redirected output"
+    }
+    if (Test-SshpicInteractiveProgress -OutputRedirected $false -CommandLine 'pwsh -NonInteractive') {
+        throw "$path accepted -NonInteractive"
+    }
+    Remove-Item Function:\Test-SshpicInteractiveProgress
+}
+`
+	if err := os.WriteFile(harness, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(
+		pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", harness,
+		filepath.Join(repoRoot, filepath.FromSlash(windowsInstallLauncherRelative)),
+		filepath.Join(repoRoot, filepath.FromSlash(windowsUninstallLauncherRelative)),
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("PowerShell progress detection contract failed: %v\n%s", err, out)
+	}
+}
+
+func TestShellProgressShowsActivityReplaysOutputAndPreservesFailure(t *testing.T) {
+	shell := installTestShell()
+	if shell == "" {
+		t.Skip("POSIX shell is unavailable")
+	}
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runFunctionSource := installTestShellFunction(string(data), "run_with_progress")
+	if runFunctionSource == "" {
+		t.Fatal("run_with_progress function not found")
+	}
+	functionSource := "set -eu\n" +
+		"sshpic_progress_signal_traps='trap - 1 2 13 15'\n" +
+		"sshpic_progress_hup_status=129\n" +
+		"sshpic_progress_int_status=130\n" +
+		"sshpic_progress_term_status=143\n" +
+		installTestShellFunction(string(data), "run_without_progress") +
+		runFunctionSource
+	signalFunctionSource := installTestShellFunction(string(data), "progress_descendants") +
+		installTestShellFunction(string(data), "terminate_progress_tree") +
+		installTestShellFunction(string(data), "cleanup_failed_progress") +
+		installTestShellFunction(string(data), "abort_progress") +
+		functionSource
+
+	t.Run("interactive success", func(t *testing.T) {
+		temp := t.TempDir()
+		shellTemp := temp
+		if runtime.GOOS == "windows" {
+			shellTemp = windowsPathForGitBash(temp)
+		}
+		script := functionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+slow_success() {
+  sleep 1
+  printf 'visible result\n'
+}
+run_with_progress "Preparing test work" show slow_success
+`
+		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("interactive progress failed: %v\n%s", err, out)
+		}
+		text := string(out)
+		for _, want := range []string{
+			"[|] Preparing test work (0s)",
+			"[done] Preparing test work",
+			"visible result",
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("interactive progress missing %q: %q", want, text)
+			}
+		}
+		if entries, err := os.ReadDir(temp); err != nil || len(entries) != 0 {
+			t.Fatalf("progress log was not cleaned up: entries=%v err=%v", entries, err)
+		}
+	})
+
+	t.Run("failure", func(t *testing.T) {
+		temp := t.TempDir()
+		shellTemp := temp
+		if runtime.GOOS == "windows" {
+			shellTemp = windowsPathForGitBash(temp)
+		}
+		script := functionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+fail_now() {
+  printf 'failure detail\n'
+  return 7
+}
+run_with_progress "Failing test work" show fail_now
+`
+		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp)
+		out, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 7 {
+			t.Fatalf("failure status=%v, want exit 7\n%s", err, out)
+		}
+		text := string(out)
+		for _, want := range []string{"[failed] Failing test work", "failure detail"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("failure progress missing %q: %q", want, text)
+			}
+		}
+		if entries, err := os.ReadDir(temp); err != nil || len(entries) != 0 {
+			t.Fatalf("failed progress log was not cleaned up: entries=%v err=%v", entries, err)
+		}
+	})
+
+	t.Run("non interactive", func(t *testing.T) {
+		script := functionSource + `
+SSHPIC_PROGRESS_FORCE=1
+SSHPIC_NO_PROGRESS=1
+TERM=dumb
+quick_success() {
+  printf 'live result\n'
+}
+run_with_progress "CI test work" show quick_success
+`
+		cmd := exec.Command(shell, "-c", script)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("non-interactive progress failed: %v\n%s", err, out)
+		}
+		text := string(out)
+		for _, want := range []string{"[....] CI test work", "live result", "[done] CI test work"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("non-interactive progress missing %q: %q", want, text)
+			}
+		}
+		if strings.Contains(text, "\x1b[K") {
+			t.Fatalf("non-interactive progress emitted terminal control codes: %q", text)
+		}
+	})
+
+	t.Run("non interactive failure", func(t *testing.T) {
+		script := functionSource + `
+unset SSHPIC_PROGRESS_FORCE
+SSHPIC_NO_PROGRESS=1
+TERM=dumb
+fail_without_tty() {
+  printf 'line failure detail\n'
+  return 9
+}
+run_with_progress "CI failing work" show fail_without_tty
+`
+		cmd := exec.Command(shell, "-c", script)
+		out, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 9 {
+			t.Fatalf("non-interactive failure status=%v, want exit 9\n%s", err, out)
+		}
+		text := string(out)
+		for _, want := range []string{"[....] CI failing work", "line failure detail", "[failed] CI failing work"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("non-interactive failure missing %q: %q", want, text)
+			}
+		}
+		if strings.Contains(text, "\x1b[K") {
+			t.Fatalf("non-interactive failure emitted terminal control codes: %q", text)
+		}
+	})
+
+	t.Run("cancellation terminates descendants", func(t *testing.T) {
+		temp := t.TempDir()
+		shellTemp := temp
+		if runtime.GOOS == "windows" {
+			shellTemp = windowsPathForGitBash(temp)
+		}
+		sentinel := filepath.Join(temp, "survived")
+		shellSentinel := sentinel
+		if runtime.GOOS == "windows" {
+			shellSentinel = windowsPathForGitBash(sentinel)
+		}
+		script := signalFunctionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+slow_tree() {
+  sh -c 'sleep 3; printf survived > "$1"' sh "$1"
+}
+(sleep 1; kill -TERM "$$") &
+run_with_progress "Cancellable test work" show slow_tree "$2"
+`
+		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp, shellSentinel)
+		out, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 143 {
+			t.Fatalf("cancel status=%v, want TERM exit 143\n%s", err, out)
+		}
+		time.Sleep(3 * time.Second)
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+			t.Fatalf("cancelled progress left a descendant running: stat=%v\n%s", err, out)
+		}
+		if entries, err := os.ReadDir(temp); err != nil || len(entries) != 0 {
+			t.Fatalf("cancelled progress log was not cleaned up: entries=%v err=%v", entries, err)
+		}
+		if !strings.Contains(string(out), "[cancelled] Cancellable test work") {
+			t.Fatalf("cancellation output missing status: %q", out)
+		}
+	})
+
+	t.Run("signal during replay cleans progress files", func(t *testing.T) {
+		temp := t.TempDir()
+		shellTemp := temp
+		if runtime.GOOS == "windows" {
+			shellTemp = windowsPathForGitBash(temp)
+		}
+		script := signalFunctionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+replay_output() {
+  printf 'replay detail\n'
+}
+cat() {
+  kill -TERM "$$"
+  command cat "$@"
+}
+run_with_progress "Replay cleanup work" show replay_output
+`
+		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp)
+		out, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 143 {
+			t.Fatalf("replay cancellation status=%v, want TERM exit 143\n%s", err, out)
+		}
+		if entries, err := os.ReadDir(temp); err != nil || len(entries) != 0 {
+			t.Fatalf("replay cancellation leaked progress files: entries=%v err=%v", entries, err)
+		}
+	})
+
+	t.Run("replay failure preserves command status and cleanup", func(t *testing.T) {
+		temp := t.TempDir()
+		shellTemp := temp
+		if runtime.GOOS == "windows" {
+			shellTemp = windowsPathForGitBash(temp)
+		}
+		script := signalFunctionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+fail_with_output() {
+  printf 'wrapped failure\n'
+  return 7
+}
+cat() {
+  return 3
+}
+run_with_progress "Replay failure work" show fail_with_output
+`
+		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp)
+		out, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 7 {
+			t.Fatalf("replay failure status=%v, want wrapped exit 7\n%s", err, out)
+		}
+		if entries, err := os.ReadDir(temp); err != nil || len(entries) != 0 {
+			t.Fatalf("replay failure leaked progress files: entries=%v err=%v", entries, err)
+		}
+	})
+
+	t.Run("signal during setup cleans progress files", func(t *testing.T) {
+		temp := t.TempDir()
+		shellTemp := temp
+		if runtime.GOOS == "windows" {
+			shellTemp = windowsPathForGitBash(temp)
+		}
+		script := signalFunctionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+mkfifo() {
+  command mkfifo "$@"
+  kill -TERM "$$"
+}
+never_started() {
+  printf started > "$1/started"
+}
+run_with_progress "Setup cancellation work" show never_started "$1"
+`
+		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp)
+		out, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 143 {
+			t.Fatalf("setup cancellation status=%v, want TERM exit 143\n%s", err, out)
+		}
+		if entries, err := os.ReadDir(temp); err != nil || len(entries) != 0 {
+			t.Fatalf("setup cancellation leaked progress files: entries=%v err=%v", entries, err)
+		}
+	})
+
+	t.Run("renderer failure terminates worker and cleans progress files", func(t *testing.T) {
+		temp := t.TempDir()
+		shellTemp := temp
+		if runtime.GOOS == "windows" {
+			shellTemp = windowsPathForGitBash(temp)
+		}
+		sentinel := filepath.Join(temp, "renderer-survived")
+		shellSentinel := sentinel
+		if runtime.GOOS == "windows" {
+			shellSentinel = windowsPathForGitBash(sentinel)
+		}
+		script := signalFunctionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+slow_renderer_work() {
+  sh -c 'sleep 3; printf survived > "$1"' sh "$1"
+}
+exec 1>&-
+run_with_progress "Closed renderer work" show slow_renderer_work "$2"
+`
+		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp, shellSentinel)
+		out, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 1 {
+			t.Fatalf("renderer failure status=%v, want exit 1\n%s", err, out)
+		}
+		time.Sleep(3 * time.Second)
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+			t.Fatalf("renderer failure left worker running: stat=%v\n%s", err, out)
+		}
+		if entries, err := os.ReadDir(temp); err != nil || len(entries) != 0 {
+			t.Fatalf("renderer failure leaked progress files: entries=%v err=%v", entries, err)
+		}
+	})
+
+	t.Run("broken pipe terminates worker and cleans progress files", func(t *testing.T) {
+		temp := t.TempDir()
+		shellTemp := temp
+		if runtime.GOOS == "windows" {
+			shellTemp = windowsPathForGitBash(temp)
+		}
+		sentinel := filepath.Join(temp, "pipe-survived")
+		shellSentinel := sentinel
+		if runtime.GOOS == "windows" {
+			shellSentinel = windowsPathForGitBash(sentinel)
+		}
+		script := signalFunctionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+slow_pipe_work() {
+  sh -c 'sleep 3; printf survived > "$1"' sh "$1"
+}
+run_with_progress "Broken pipe work" show slow_pipe_work "$2"
+`
+		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp, shellSentinel)
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := reader.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var stderr strings.Builder
+		cmd.Stdout = writer
+		cmd.Stderr = &stderr
+		runErr := cmd.Run()
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		exitErr, ok := runErr.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 1 {
+			t.Fatalf("broken-pipe status=%v, want exit 1\n%s", runErr, stderr.String())
+		}
+		time.Sleep(3 * time.Second)
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+			t.Fatalf("broken pipe left worker running: stat=%v\n%s", err, stderr.String())
+		}
+		if entries, err := os.ReadDir(temp); err != nil || len(entries) != 0 {
+			t.Fatalf("broken pipe leaked progress files: entries=%v err=%v", entries, err)
+		}
+	})
+
+	t.Run("worker keeps default sigpipe behavior", func(t *testing.T) {
+		temp := t.TempDir()
+		shellTemp := temp
+		if runtime.GOOS == "windows" {
+			shellTemp = windowsPathForGitBash(temp)
+		}
+		sentinel := filepath.Join(temp, "worker-ignored-pipe")
+		shellSentinel := sentinel
+		if runtime.GOOS == "windows" {
+			shellSentinel = windowsPathForGitBash(sentinel)
+		}
+		script := signalFunctionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+pipe_sensitive_work() {
+  sh -c 'kill -PIPE "$$"; printf survived > "$1"' sh "$1"
+}
+run_with_progress "Worker PIPE work" errors pipe_sensitive_work "$2"
+`
+		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp, shellSentinel)
+		out, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 141 {
+			t.Fatalf("worker SIGPIPE status=%v, want exit 141\n%s", err, out)
+		}
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+			t.Fatalf("worker inherited ignored SIGPIPE: stat=%v\n%s", err, out)
+		}
+		if entries, err := os.ReadDir(temp); err != nil || len(entries) != 0 {
+			t.Fatalf("worker SIGPIPE leaked progress files: entries=%v err=%v", entries, err)
+		}
+	})
+
+	t.Run("repeated signal cannot interrupt cleanup", func(t *testing.T) {
+		temp := t.TempDir()
+		shellTemp := temp
+		if runtime.GOOS == "windows" {
+			shellTemp = windowsPathForGitBash(temp)
+		}
+		sentinel := filepath.Join(temp, "repeat-survived")
+		shellSentinel := sentinel
+		if runtime.GOOS == "windows" {
+			shellSentinel = windowsPathForGitBash(sentinel)
+		}
+		script := signalFunctionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+term_resistant_work() {
+  sh -c 'trap "" TERM; sleep 4; printf survived > "$1"' sh "$1"
+}
+(sleep 1; kill -TERM "$$"; sleep 1; kill -TERM "$$") &
+run_with_progress "Repeated signal work" show term_resistant_work "$2"
+`
+		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp, shellSentinel)
+		out, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 143 {
+			t.Fatalf("repeated signal status=%v, want TERM exit 143\n%s", err, out)
+		}
+		time.Sleep(3 * time.Second)
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+			t.Fatalf("repeated signal interrupted cleanup: stat=%v\n%s", err, out)
+		}
+		if entries, err := os.ReadDir(temp); err != nil || len(entries) != 0 {
+			t.Fatalf("repeated signal leaked progress files: entries=%v err=%v", entries, err)
+		}
+	})
+
+	t.Run("closed stderr preserves signal status", func(t *testing.T) {
+		temp := t.TempDir()
+		shellTemp := temp
+		if runtime.GOOS == "windows" {
+			shellTemp = windowsPathForGitBash(temp)
+		}
+		script := signalFunctionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+slow_closed_stderr_work() {
+  sleep 3
+}
+(sleep 1; kill -TERM "$$") &
+exec 2>&-
+run_with_progress "Closed stderr work" errors slow_closed_stderr_work
+`
+		cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp)
+		out, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 143 {
+			t.Fatalf("closed-stderr status=%v, want TERM exit 143\n%s", err, out)
+		}
+		if entries, err := os.ReadDir(temp); err != nil || len(entries) != 0 {
+			t.Fatalf("closed stderr leaked progress files: entries=%v err=%v", entries, err)
+		}
+	})
+
+	t.Run("signals preserve conventional exit statuses", func(t *testing.T) {
+		for _, tc := range []struct {
+			signal string
+			status int
+		}{
+			{signal: "HUP", status: 129},
+			{signal: "INT", status: 130},
+			{signal: "TERM", status: 143},
+		} {
+			t.Run(strings.ToLower(tc.signal), func(t *testing.T) {
+				temp := t.TempDir()
+				shellTemp := temp
+				if runtime.GOOS == "windows" {
+					shellTemp = windowsPathForGitBash(temp)
+				}
+				script := signalFunctionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+slow_signal_work() {
+  sleep 3
+}
+(sleep 1; kill -$2 "$$") &
+run_with_progress "Signal status work" errors slow_signal_work
+`
+				cmd := exec.Command(shell, "-c", script, "progress-test", shellTemp, tc.signal)
+				out, err := cmd.CombinedOutput()
+				exitErr, ok := err.(*exec.ExitError)
+				if !ok || exitErr.ExitCode() != tc.status {
+					t.Fatalf("%s status=%v, want %d\n%s", tc.signal, err, tc.status, out)
+				}
+				if entries, err := os.ReadDir(temp); err != nil || len(entries) != 0 {
+					t.Fatalf("%s leaked progress files: entries=%v err=%v", tc.signal, entries, err)
+				}
+			})
+		}
+	})
+
+	t.Run("dash restores previous signal trap", func(t *testing.T) {
+		dash, err := exec.LookPath("dash")
+		if err != nil {
+			t.Skip("dash is unavailable")
+		}
+		temp := t.TempDir()
+		marker := filepath.Join(temp, "restored")
+		script := functionSource + `
+restored_marker="$1"
+restored_term() {
+  printf restored > "$restored_marker"
+  exit 42
+}
+trap 'restored_term' TERM
+sshpic_progress_signal_traps="trap 'restored_term' TERM; trap - 13"
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$2
+quick_success() {
+  printf 'done\n'
+}
+run_with_progress "Trap restoration work" errors quick_success
+kill -TERM "$$"
+exit 99
+`
+		cmd := exec.Command(dash, "-c", script, "progress-test", marker, temp)
+		out, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 42 {
+			t.Fatalf("restored trap status=%v, want exit 42\n%s", err, out)
+		}
+		if content, err := os.ReadFile(marker); err != nil || string(content) != "restored" {
+			t.Fatalf("previous TERM trap was not restored: content=%q err=%v", content, err)
+		}
+		entries, err := os.ReadDir(temp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "sshpic-progress.") {
+				t.Fatalf("trap restoration leaked progress file %s", entry.Name())
+			}
+		}
+	})
+
+	t.Run("windows cancellation terminates native descendants", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("native Windows process-tree cancellation is Windows-only")
+		}
+		pwsh, err := exec.LookPath("pwsh.exe")
+		if err != nil {
+			t.Skip("PowerShell 7 is unavailable")
+		}
+		temp := t.TempDir()
+		leaf := filepath.Join(temp, "native-leaf.ps1")
+		parent := filepath.Join(temp, "native-parent.ps1")
+		sentinel := filepath.Join(temp, "native-survived")
+		if err := os.WriteFile(leaf, []byte(`param([string] $Sentinel)
+Start-Sleep -Seconds 3
+[IO.File]::WriteAllText($Sentinel, 'survived')
+`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(parent, []byte(`param([string] $Leaf, [string] $Sentinel)
+& (Get-Command pwsh.exe -CommandType Application).Source -NoLogo -NoProfile -NonInteractive -File $Leaf $Sentinel
+exit $LASTEXITCODE
+`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		script := signalFunctionSource + `
+SSHPIC_PROGRESS_FORCE=1
+unset SSHPIC_NO_PROGRESS
+TERM=dumb
+TMPDIR=$1
+native_tree() {
+  "$1" -NoLogo -NoProfile -NonInteractive -File "$2" "$3" "$4"
+}
+(sleep 1; kill -TERM "$$") &
+run_with_progress "Native Windows cancellation" show native_tree "$2" "$3" "$4" "$5"
+`
+		cmd := exec.Command(
+			shell, "-c", script, "progress-test",
+			windowsPathForGitBash(temp),
+			windowsPathForGitBash(pwsh),
+			windowsPathForGitBash(parent),
+			windowsPathForGitBash(leaf),
+			windowsPathForGitBash(sentinel),
+		)
+		out, err := cmd.CombinedOutput()
+		exitErr, ok := err.(*exec.ExitError)
+		if !ok || exitErr.ExitCode() != 143 {
+			t.Fatalf("native cancellation status=%v, want TERM exit 143\n%s", err, out)
+		}
+		time.Sleep(3 * time.Second)
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+			t.Fatalf("cancelled native Windows descendant survived: stat=%v\n%s", err, out)
+		}
+		entries, err := os.ReadDir(temp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "sshpic-progress.") {
+				t.Fatalf("native cancellation leaked progress file %s", entry.Name())
+			}
+		}
+	})
 }
 
 func TestWindowsPowerShellFacadeRunsCanonicalInstallInCurrentProcess(t *testing.T) {

@@ -5,6 +5,20 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     throw 'sshpic Windows installation requires PowerShell 7. Open PowerShell 7, then run ./scripts/windows/install.ps1.'
 }
 
+function Test-SshpicInteractiveProgress {
+    param(
+        [bool] $OutputRedirected = [Console]::IsOutputRedirected,
+        [string] $CommandLine = [Environment]::CommandLine
+    )
+    if ($env:SSHPIC_NO_PROGRESS -eq '1' -or $OutputRedirected) {
+        return $false
+    }
+    if ($CommandLine -match '(?i)(?:^|\s)-NonI(?:nteractive)?(?:\s|$)') {
+        return $false
+    }
+    return $true
+}
+
 $script:SshpicProfileManifestOwner = 'github.com/leekyungmoon/sshpic:powershell-profile:v2'
 $script:SshpicProfileManifestVersion = 2
 $script:SshpicProfileMaximumBytes = 2MB
@@ -638,9 +652,18 @@ try {
     }
     $gitSh = Resolve-SshpicGitSh
     $previousFacadeState = $env:SSHPIC_INSTALL_POWERSHELL_FACADE
+    $previousProgressState = $env:SSHPIC_PROGRESS_FORCE
+    $previousNoProgressState = $env:SSHPIC_NO_PROGRESS
+    $interactiveProgress = Test-SshpicInteractiveProgress
     Push-Location -LiteralPath $repoRoot
     try {
         $env:SSHPIC_INSTALL_POWERSHELL_FACADE = '1'
+        if ($interactiveProgress) {
+            $env:SSHPIC_PROGRESS_FORCE = '1'
+        }
+        elseif ($previousProgressState -ne '1') {
+            $env:SSHPIC_NO_PROGRESS = '1'
+        }
         & $gitSh './install.sh' @args
         $installStatus = $LASTEXITCODE
     }
@@ -650,6 +673,18 @@ try {
         }
         else {
             $env:SSHPIC_INSTALL_POWERSHELL_FACADE = $previousFacadeState
+        }
+        if ($null -eq $previousProgressState) {
+            Remove-Item Env:\SSHPIC_PROGRESS_FORCE -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:SSHPIC_PROGRESS_FORCE = $previousProgressState
+        }
+        if ($null -eq $previousNoProgressState) {
+            Remove-Item Env:\SSHPIC_NO_PROGRESS -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:SSHPIC_NO_PROGRESS = $previousNoProgressState
         }
         Pop-Location
     }
