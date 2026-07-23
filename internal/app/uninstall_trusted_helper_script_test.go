@@ -189,6 +189,7 @@ func (fixture *trustedHelperScriptFixture) run(t *testing.T) uninstallScriptResu
 	cmd.Env = append([]string{}, os.Environ()...)
 	cmd.Env = append(cmd.Env,
 		uninstallHelperEnv+"=1",
+		"SSHPIC_UNINSTALL_POWERSHELL_FACADE=1",
 		"SSHPIC_TEST_GOBIN_POSIX="+windowsPathForGitBash(fixture.helperBin),
 		"SSHPIC_TEST_GO_LOG="+windowsPathForGitBash(fixture.goLog),
 		"SSHPIC_TEST_REVISION="+fixture.revision,

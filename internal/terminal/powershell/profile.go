@@ -33,6 +33,7 @@ const (
 	manifestOwner          = "github.com/leekyungmoon/sshpic:powershell-profile:v2"
 	manifestName           = "powershell-profile-install-v2.json"
 	powerShellUTF8Preamble = `$sshpicUtf8=[System.Text.UTF8Encoding]::new($false);[Console]::OutputEncoding=$sshpicUtf8;$OutputEncoding=$sshpicUtf8;`
+	powerShellProbeTimeout = 15 * time.Second
 )
 
 // Result summarizes an operation without exposing profile contents.
@@ -486,7 +487,7 @@ func probeSSHCommand(ctx context.Context, executable, terminalEnvironment string
 }
 
 func runPowerShell(ctx context.Context, executable, terminalEnvironment string, noProfile bool, script string) ([]byte, error) {
-	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	queryCtx, cancel := context.WithTimeout(ctx, powerShellProbeTimeout)
 	defer cancel()
 	args := []string{"-NoLogo"}
 	if noProfile {

@@ -288,15 +288,19 @@ func TestRestoreRemovesOwnedPythonRuntimeAndPreservesOtherVersions(t *testing.T)
 	if err := os.WriteFile(metadata, []byte(`{"version":72,"managed_by":"sshpic"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := Restore(context.Background(), RestoreOptions{HomeDir: home})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.PythonRuntimeVersionPaths) != 1 || result.PythonRuntimeVersionPaths[0] != filepath.Join(base, "versions", "sshpic") {
+	if len(result.PythonRuntimeVersionPaths) != 1 || result.PythonRuntimeVersionPaths[0] != filepath.Join(canonicalBase, "versions", "sshpic") {
 		t.Fatalf("owned runtime version not reported removed: %+v", result)
 	}
-	if len(result.PythonRuntimeMetadataPaths) != 1 || result.PythonRuntimeMetadataPaths[0] != metadata {
+	if len(result.PythonRuntimeMetadataPaths) != 1 || result.PythonRuntimeMetadataPaths[0] != filepath.Join(canonicalBase, "iterm2env-metadata.json") {
 		t.Fatalf("owned runtime metadata not reported removed: %+v", result)
 	}
 	if _, err := os.Stat(filepath.Join(base, "versions", "sshpic")); !os.IsNotExist(err) {
