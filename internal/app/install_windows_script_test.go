@@ -1088,6 +1088,7 @@ if (-not $managed.Definition.Contains($script:SshpicFunctionMarker, [StringCompa
 }
 
 Invoke-Expression (Get-FacadeFunctionSource $UninstallFacade 'Get-SshpicManagedFunctionDefinition')
+Invoke-Expression (Get-FacadeFunctionSource $UninstallFacade 'Test-SshpicInteractiveProgress')
 function Resolve-SshpicGitSh { return $FakeSh }
 function Get-SshpicVerifiedOwnedBlock { return $script:FakeOwnedBlock }
 function Get-SshpicConsoleUtf8RemovalPlan { return $null }

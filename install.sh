@@ -46,20 +46,22 @@ progress_descendants() {
 
 terminate_progress_tree() {
   sshpic_progress_root="$1"
+  sshpic_progress_children="$(progress_descendants "$sshpic_progress_root")" || sshpic_progress_children=""
   if command -v taskkill.exe >/dev/null 2>&1; then
-    sshpic_progress_windows_pid="$(
-      ps -W 2>/dev/null | awk -v root="$sshpic_progress_root" \
-        '$1 == root && $4 ~ /^[0-9]+$/ { print $4; exit }'
-    )"
-    if [ -n "$sshpic_progress_windows_pid" ] && \
-       MSYS2_ARG_CONV_EXCL='*' taskkill.exe \
-         /PID "$sshpic_progress_windows_pid" /T /F >/dev/null 2>&1
-    then
-      return 0
-    fi
+    sshpic_progress_windows_processes="$(ps -W 2>/dev/null || :)"
+    for sshpic_progress_process in $sshpic_progress_children "$sshpic_progress_root"; do
+      sshpic_progress_windows_pid="$(
+        printf '%s\n' "$sshpic_progress_windows_processes" |
+          awk -v target="$sshpic_progress_process" \
+            '$1 == target && $4 ~ /^[0-9]+$/ { print $4; exit }'
+      )"
+      if [ -n "$sshpic_progress_windows_pid" ]; then
+        MSYS2_ARG_CONV_EXCL='*' taskkill.exe \
+          /PID "$sshpic_progress_windows_pid" /T /F >/dev/null 2>&1 || :
+      fi
+    done
   fi
 
-  sshpic_progress_children="$(progress_descendants "$sshpic_progress_root")" || sshpic_progress_children=""
   for sshpic_progress_child in $sshpic_progress_children; do
     kill -TERM "$sshpic_progress_child" 2>/dev/null || :
   done
@@ -115,7 +117,7 @@ abort_progress() {
   if [ -z "${sshpic_progress_pid:-}" ] && \
      [ "${sshpic_progress_worker_starting:-0}" -eq 1 ]
   then
-    sshpic_progress_candidate="${!:-}"
+    sshpic_progress_candidate=$!
     if [ -n "$sshpic_progress_candidate" ] && \
        [ "$sshpic_progress_candidate" != "${sshpic_progress_previous_background_pid:-}" ]
     then
@@ -153,6 +155,9 @@ run_with_progress() {
   sshpic_progress_log=""
   sshpic_progress_gate=""
   sshpic_progress_saved_traps="$sshpic_progress_signal_traps"
+  : &
+  sshpic_progress_previous_background_pid=$!
+  wait "$sshpic_progress_previous_background_pid" 2>/dev/null || :
   trap 'abort_progress "$sshpic_progress_hup_status"' 1
   trap 'abort_progress "$sshpic_progress_int_status"' 2
   trap '' 13
@@ -181,7 +186,6 @@ run_with_progress() {
     return 0
   fi
   sshpic_progress_pid=""
-  sshpic_progress_previous_background_pid="${!:-}"
   sshpic_progress_worker_starting=1
   (
     if IFS= read -r sshpic_progress_start <&9 && \
