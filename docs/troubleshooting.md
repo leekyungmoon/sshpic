@@ -27,10 +27,10 @@ The initial password path intentionally accepts a direct hostname or IP with an 
 If the installer just added Go, WezTerm, or PuTTY through `winget`, rerun it from PowerShell with the same synchronous, current-pane command:
 
 ```powershell
-./install.sh
+./scripts/windows/install.ps1
 ```
 
-`install.sh` detects Windows and continues through the bundled PowerShell launcher, which activates only the manifest-owned profile block. Wait for `SSHPIC_CURRENT_POWERSHELL_ACTIVATED`, then verify `Get-Command ssh` before connecting. Reload WezTerm as directed if its configuration has not refreshed.
+`install.ps1` runs the shared installer synchronously without opening another PowerShell window, then activates only the manifest-owned profile block in the current process. Wait for `SSHPIC_CURRENT_POWERSHELL_ACTIVATED`, then verify `Get-Command ssh` before connecting. Reload WezTerm as directed if its configuration has not refreshed.
 
 ## Windows clipboard checks fail
 

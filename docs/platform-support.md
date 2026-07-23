@@ -14,7 +14,7 @@
 
 The Windows release-candidate rows are intentionally narrow:
 
-- run `./install.sh`; it detects native Windows, continues through the bundled PowerShell launcher, and activates the manifest-verified managed `ssh` function in the PowerShell 7 session it opens or reuses;
+- run `./scripts/windows/install.ps1` from PowerShell 7; it runs the shared installer synchronously and activates the manifest-verified managed `ssh` function in that same PowerShell process without opening another window;
 - run Windows Terminal 1.24.10921+ or WezTerm with PowerShell 7 (`pwsh`) for the normal `ssh user@host` command, or use `sshpic ssh user@host` explicitly from another native shell hosted by one of those terminals;
 - enter the server password only at Plink's interactive prompt; on the Windows Terminal route Plink reads it directly from the console before sshpic starts its post-authentication stdin proxy, so its bytes never enter sshpic memory, logs, files, or arguments;
 - use Windows Terminal 1.24.10921+ for its empty bracketed-paste image signal, or a current WezTerm release with the required Lua APIs, plus PuTTY 0.84 connection-sharing controls;

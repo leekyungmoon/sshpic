@@ -2,15 +2,24 @@
 
 ## Install
 
-Use the same command on macOS, Linux, and Windows:
-
 ```sh
 git clone https://github.com/leekyungmoon/sshpic.git
 cd sshpic
+```
+
+On macOS or Linux:
+
+```sh
 ./install.sh
 ```
 
-`install.sh` detects Windows, macOS, Linux, and WSL before changing anything. On native Windows it continues through the bundled PowerShell launcher and keeps the ready PowerShell 7 session open. On macOS and Linux it continues in the current shell. If a required tool is newly installed and setup asks for another attempt, run `./install.sh` again.
+On Windows, use PowerShell 7:
+
+```powershell
+./scripts/windows/install.ps1
+```
+
+Both entry points detect the host before changing anything. Windows installation and activation happen synchronously in the PowerShell 7 process that ran `./scripts/windows/install.ps1`; no second PowerShell window is opened. On macOS and Linux, `./install.sh` continues in the current shell. If setup asks for another attempt after installing a required tool, repeat the same command for your OS.
 
 PowerShell 7 (`pwsh`) is the managed runtime shell inside Windows Terminal 1.24.10921+ or WezTerm after installation. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the installer only cleans an exact recognized legacy sshpic block there. When `SSHPIC_CURRENT_POWERSHELL_ACTIVATED` appears, `Get-Command ssh` must already report `Function` in that same session; `ssh.exe` remains the explicit native recovery command.
 

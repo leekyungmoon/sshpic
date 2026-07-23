@@ -42,7 +42,7 @@ func VerifyManagedSessions(plinkPath string) error {
 		return err
 	}
 	if err := verifyManagedSessionsPlatform(specs); err != nil {
-		return fmt.Errorf("verify sshpic PuTTY sessions (rerun ./install.sh): %w", err)
+		return fmt.Errorf("verify sshpic PuTTY sessions (rerun ./scripts/windows/install.ps1): %w", err)
 	}
 	return nil
 }

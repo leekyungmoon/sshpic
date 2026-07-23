@@ -27,17 +27,20 @@ func newUninstallFixture(t *testing.T, binaryInSource bool) uninstallFixture {
 	t.Setenv("WEZTERM_CONFIG_FILE", "")
 	root := t.TempDir()
 	sourceRoot := filepath.Join(root, "source checkout")
-	for _, dir := range []string{filepath.Join(sourceRoot, ".git"), filepath.Join(sourceRoot, "cmd", "sshpic")} {
+	for _, dir := range []string{
+		filepath.Join(sourceRoot, ".git"),
+		filepath.Join(sourceRoot, "cmd", "sshpic"),
+		filepath.Join(sourceRoot, "scripts", "windows"),
+	} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for path, data := range map[string][]byte{
-		filepath.Join(sourceRoot, "go.mod"):           []byte("module example.invalid/sshpic\n"),
-		filepath.Join(sourceRoot, "uninstall.sh.ps1"): []byte("return\r\n"),
-		filepath.Join(sourceRoot, "uninstall.sh.cmd"): []byte("@exit /b 0\r\n"),
-		filepath.Join(sourceRoot, "uninstall.sh"):     []byte("#!/bin/sh\n"),
-		filepath.Join(sourceRoot, ".git", "HEAD"):     []byte("ref: refs/heads/test\n"),
+		filepath.Join(sourceRoot, "go.mod"):                              []byte("module example.invalid/sshpic\n"),
+		filepath.Join(sourceRoot, "scripts", "windows", "uninstall.ps1"): []byte("return\r\n"),
+		filepath.Join(sourceRoot, "uninstall.sh"):                        []byte("#!/bin/sh\n"),
+		filepath.Join(sourceRoot, ".git", "HEAD"):                        []byte("ref: refs/heads/test\n"),
 	} {
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)

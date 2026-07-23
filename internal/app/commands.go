@@ -584,8 +584,15 @@ func runRestoreWezTerm(ctx context.Context, stdout, stderr io.Writer) int {
 }
 
 func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int {
+	if len(pa.Positionals) >= 2 && pa.Positionals[1] == "posix" {
+		return runPosixUninstall(ctx, pa, stdout, stderr)
+	}
+	return runWindowsUninstall(ctx, pa, stdout, stderr)
+}
+
+func runWindowsUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) int {
 	if len(pa.Positionals) != 2 || (pa.Positionals[1] != "wezterm" && pa.Positionals[1] != "windows-wezterm") {
-		fmt.Fprintln(stderr, "internal uninstall helper; run ./uninstall.sh from PowerShell in the source checkout")
+		fmt.Fprintln(stderr, "internal uninstall helper; run ./scripts/windows/uninstall.ps1 from PowerShell 7 in the source checkout")
 		return 2
 	}
 	for name := range pa.Bools {
@@ -723,7 +730,7 @@ func runUninstall(ctx context.Context, pa parsedArgs, stdout, stderr io.Writer) 
 	if result.NothingToDo {
 		fprintNoExtraBlank(stdout, wezterm.UninstallSummary(result))
 		fmt.Fprintln(stderr, "complete uninstall could not be proven because no owned WezTerm manifest or resumable uninstall journal was found")
-		fmt.Fprintln(stderr, "If sshpic may still be installed, run ./install.sh once from PowerShell and then rerun ./uninstall.sh.")
+		fmt.Fprintln(stderr, "If sshpic may still be installed, run ./scripts/windows/install.ps1 once and then rerun ./scripts/windows/uninstall.ps1.")
 		return 1
 	}
 	if !localExecuted {
@@ -1205,7 +1212,7 @@ func sourceFromConfig(cfg config.Config) provider.LocalImageSource {
 func parseArgs(args []string) (parsedArgs, error) {
 	pa := parsedArgs{Values: map[string]string{}, Bools: map[string]bool{}}
 	boolFlags := map[string]bool{"help": true, "debug": true, "json": true, "dry-run": true, "yes": true, "force": true, "no-copy": true, "insert-newline": true, "no-verify": true, "no-open": true, "require-installed": true}
-	valueFlags := map[string]bool{"config": true, "wezterm-config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true, "term-program": true, "foreground-bundle-id": true, "action-file": true, "payload-file": true, "process-json": true, "pane-id": true, "result-file": true, "source-root": true, "uninstall-protocol": true, "install-generation-protocol": true, "install-generation": true}
+	valueFlags := map[string]bool{"config": true, "wezterm-config": true, "remote-host": true, "remote-dir": true, "copy-to-clipboard": true, "filename-template": true, "output": true, "mode": true, "terminal": true, "shortcut": true, "text-passthrough": true, "macos-clipboard-tool": true, "macos-screenshot-tool": true, "macos-text-clipboard-tool": true, "macos-copy-tool": true, "upload-method": true, "verify-sha256": true, "session-id": true, "session-tty": true, "session-command-line": true, "session-job-pid": true, "term-program": true, "foreground-bundle-id": true, "action-file": true, "payload-file": true, "process-json": true, "pane-id": true, "result-file": true, "source-root": true, "uninstall-protocol": true, "binary": true, "install-generation-protocol": true, "install-generation": true}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {

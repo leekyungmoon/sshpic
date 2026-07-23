@@ -178,7 +178,7 @@ func Verify(ctx context.Context) (Result, error) {
 	}
 	manifestPlink := plinkBinding{Anchor: manifest.PlinkAnchor, Path: manifest.PlinkPath}
 	if manifestPlink.Anchor == "" || manifestPlink.Path == "" {
-		return Result{}, errors.New("managed PowerShell profile does not pin a PuTTY Plink executable; rerun ./install.sh")
+		return Result{}, errors.New("managed PowerShell profile does not pin a PuTTY Plink executable; rerun ./scripts/windows/install.ps1")
 	}
 	resolvedPlink, err := resolveManagedPlinkBinding(home, manifestPlink)
 	if err != nil {
@@ -592,10 +592,10 @@ func renderPinnedManagedBlock(relativeBinary string, plink plinkBinding, windows
 		"        $sshpic = Join-Path ([Environment]::GetFolderPath('UserProfile')) '" + relativeBinary + "'",
 		plinkAssignment,
 		"        if (-not (Test-Path -LiteralPath $sshpic -PathType Leaf)) {",
-		"            throw 'sshpic.exe is unavailable; rerun ./install.sh or use ssh.exe explicitly'",
+		"            throw 'sshpic.exe is unavailable; rerun ./scripts/windows/install.ps1 or use ssh.exe explicitly'",
 		"        }",
 		"        if (-not (Test-Path -LiteralPath $sshpicPlink -PathType Leaf)) {",
-		"            throw 'the installer-verified plink.exe is unavailable; rerun ./install.sh or use ssh.exe explicitly'",
+		"            throw 'the installer-verified plink.exe is unavailable; rerun ./scripts/windows/install.ps1 or use ssh.exe explicitly'",
 		"        }",
 		"        $hadSshpicPlink = Test-Path -LiteralPath Env:\\SSHPIC_PLINK_EXE",
 		"        $previousSshpicPlink = $env:SSHPIC_PLINK_EXE",
@@ -625,7 +625,7 @@ func renderUnpinnedManagedBlock(relativeBinary string) string {
 		"if ($env:WEZTERM_PANE) {", "    function global:ssh {", "        " + functionMarker,
 		"        $sshpic = Join-Path ([Environment]::GetFolderPath('UserProfile')) '" + relativeBinary + "'",
 		"        if (-not (Test-Path -LiteralPath $sshpic -PathType Leaf)) {",
-		"            throw 'sshpic.exe is unavailable; rerun ./install.sh or use ssh.exe explicitly'",
+		"            throw 'sshpic.exe is unavailable; rerun ./scripts/windows/install.ps1 or use ssh.exe explicitly'",
 		"        }", "        & $sshpic ssh @args", "    }", "}", endMarker,
 	}, "\n")
 }
@@ -638,7 +638,7 @@ func renderPriorManagedBlock(relativeBinary string) string {
 		"if ($env:WEZTERM_PANE) {", "    function global:ssh {",
 		"        $sshpic = Join-Path ([Environment]::GetFolderPath('UserProfile')) '" + relativeBinary + "'",
 		"        if (-not (Test-Path -LiteralPath $sshpic -PathType Leaf)) {",
-		"            throw 'sshpic.exe is unavailable; rerun ./install.sh or use ssh.exe explicitly'",
+		"            throw 'sshpic.exe is unavailable; rerun ./scripts/windows/install.ps1 or use ssh.exe explicitly'",
 		"        }", "        & $sshpic ssh @args", "    }", "}", endMarker,
 	}, "\n")
 }

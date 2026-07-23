@@ -35,78 +35,16 @@ if [ "${1:-}" = "--detect-os" ]; then
   exit 0
 fi
 
-pwsh_cmd=""
+if [ "$host_os" = "windows" ] && [ "${SSHPIC_INSTALL_POWERSHELL_FACADE:-}" != "1" ]; then
+  echo "Windows installation must run from PowerShell 7: ./scripts/windows/install.ps1" >&2
+  echo "No files were changed." >&2
+  exit 1
+fi
 
-use_windows_pwsh() {
-  candidate="$1"
-  [ -x "$candidate" ] || return 1
-  "$candidate" -NoLogo -NoProfile -NonInteractive -Command \
-    'if ($PSVersionTable.PSVersion.Major -lt 7) { exit 1 }' >/dev/null 2>&1 || return 1
-  pwsh_cmd="$candidate"
-  return 0
-}
-
-find_windows_pwsh() {
-  if command -v pwsh.exe >/dev/null 2>&1; then
-    use_windows_pwsh "$(command -v pwsh.exe)" && return 0
-  fi
-  for candidate in \
-    "/c/Program Files/PowerShell/7/pwsh.exe" \
-    "/c/Users/${USERNAME:-}/AppData/Local/Microsoft/WindowsApps/pwsh.exe"
-  do
-    use_windows_pwsh "$candidate" && return 0
-  done
-  return 1
-}
-
-ensure_windows_pwsh() {
-  find_windows_pwsh && return 0
-  if ! command -v winget.exe >/dev/null 2>&1; then
-    echo "PowerShell 7 is required. Install it or make winget available, then run ./install.sh again." >&2
-    return 1
-  fi
-  echo "PowerShell 7 was not found; installing it with winget..."
-  winget_status=0
-  winget.exe install --id Microsoft.PowerShell --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
-  pwsh_probe_attempt=1
-  while [ "$pwsh_probe_attempt" -le 8 ]; do
-    if find_windows_pwsh; then
-      return 0
-    fi
-    [ "$pwsh_probe_attempt" -eq 8 ] || sleep 2
-    pwsh_probe_attempt=$((pwsh_probe_attempt + 1))
-  done
-  echo "winget finished with exit $winget_status, but PowerShell 7 could not be started." >&2
-  echo "Run ./install.sh again after PowerShell 7 finishes installing." >&2
-  return 1
-}
-
-launch_windows_facade() {
-  [ "$host_os" = "windows" ] || return 0
-  [ "${SSHPIC_INSTALL_POWERSHELL_FACADE:-}" != "1" ] || return 0
-
-  install_script="$0"
-  case "$install_script" in
-    */*) ;;
-    *) install_script="$(command -v "$install_script" 2>/dev/null || printf '%s' "$install_script")" ;;
-  esac
-  install_dir="$(CDPATH= cd -- "$(dirname -- "$install_script")" && pwd -P)"
-  facade="$install_dir/install.sh.ps1"
-  if [ ! -f "$facade" ]; then
-    echo "Windows installation requires the cloned sshpic checkout; install.sh.ps1 is missing." >&2
-    return 1
-  fi
-  ensure_windows_pwsh || return 1
-
-  echo "Detected OS: Windows"
-  echo "Continuing in PowerShell 7..."
-  if [ "${SSHPIC_INSTALL_KEEP_POWERSHELL:-}" = "1" ] || { [ -t 0 ] && [ -t 1 ]; }; then
-    exec "$pwsh_cmd" -NoLogo -NoProfile -ExecutionPolicy Bypass -NoExit -File "$facade" "$@"
-  fi
-  exec "$pwsh_cmd" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$facade" "$@"
-}
-
-launch_windows_facade "$@"
+install_command="./install.sh"
+if [ "$host_os" = "windows" ]; then
+  install_command="./scripts/windows/install.ps1"
+fi
 
 is_windows_shell() {
   [ "$host_os" = "windows" ]
@@ -136,7 +74,7 @@ verify_windows_terminal_version() {
       if [ -n "${WT_SESSION:-}" ] && [ -z "${WEZTERM_PANE:-}" ]; then
         printf 'Windows Terminal %s is too old for image-only Ctrl+V. Version 1.24.10921 or newer is required.\n' \
           "${terminal_probe#UNSUPPORTED:}" >&2
-        echo "Update Windows Terminal, then rerun ./install.sh; no sshpic files were changed." >&2
+        echo "Update Windows Terminal, then rerun $install_command; no sshpic files were changed." >&2
         return 1
       fi
       printf 'warning: installed Windows Terminal %s is too old for image-only Ctrl+V; continuing with the separate WezTerm adapter.\n' \
@@ -236,7 +174,7 @@ prepare_windows_binary_paths() {
   fi
   if [ "$overlap_status" -eq 0 ]; then
     echo "refusing Windows installation because the Go binary directory is inside the source checkout: $bin_dir" >&2
-    echo "Unset GOBIN or set it outside this checkout, then rerun ./install.sh." >&2
+    echo "Unset GOBIN or set it outside this checkout, then rerun $install_command." >&2
     exit 1
   fi
 }
@@ -309,7 +247,7 @@ need_go() {
     winget.exe install --id GoLang.Go --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
     if ! find_go; then
       echo "winget finished with exit $winget_status, but Go could not be found." >&2
-      echo 'Close and reopen the terminal, then rerun ./install.sh.' >&2
+      echo "Close and reopen the terminal, then rerun $install_command." >&2
       exit 1
     fi
     if ! wait_for_windows_tool "Go ($go_cmd)" "$go_cmd" version; then
@@ -317,7 +255,7 @@ need_go() {
     fi
     return 0
   fi
-  echo "go is required to install sshpic from source; install it and rerun ./install.sh" >&2
+  echo "go is required to install sshpic from source; install it and rerun $install_command" >&2
   exit 1
 }
 
@@ -351,7 +289,7 @@ install_wezterm_if_needed() {
     return 0
   fi
   if ! command -v winget.exe >/dev/null 2>&1; then
-    echo "WezTerm is required for safe focused-pane image paste on Windows; install WezTerm and rerun ./install.sh" >&2
+    echo "WezTerm is required for safe focused-pane image paste on Windows; install WezTerm and rerun $install_command" >&2
     exit 1
   fi
   echo "WezTerm was not found; installing it for Windows with winget..."
@@ -359,7 +297,7 @@ install_wezterm_if_needed() {
   winget.exe install --id wez.wezterm --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
   if ! find_wezterm; then
     echo "winget finished with exit $winget_status, but WezTerm could not be found." >&2
-    echo 'Close and reopen the terminal, then rerun ./install.sh.' >&2
+    echo "Close and reopen the terminal, then rerun $install_command." >&2
     exit 1
   fi
   if ! wait_for_windows_tool "WezTerm ($wezterm_cmd)" "$wezterm_cmd" --version; then
@@ -402,7 +340,7 @@ verify_plink_min_version() {
       ;;
   esac
   if [ "$plink_major" -eq 0 ] && [ "$plink_minor" -lt 84 ]; then
-    printf 'PuTTY Plink %s is too old; install PuTTY 0.84 or newer and rerun ./install.sh.\n' "$plink_version" >&2
+    printf 'PuTTY Plink %s is too old; install PuTTY 0.84 or newer and rerun %s.\n' "$plink_version" "$install_command" >&2
     return 1
   fi
   printf 'PuTTY Plink compatibility: %s (minimum 0.84)\n' "$plink_version"
@@ -418,7 +356,7 @@ install_plink_if_needed() {
     return 0
   fi
   if ! command -v winget.exe >/dev/null 2>&1; then
-    echo "PuTTY Plink is required for password-authenticated shared SSH sessions; install PuTTY and rerun ./install.sh" >&2
+    echo "PuTTY Plink is required for password-authenticated shared SSH sessions; install PuTTY and rerun $install_command" >&2
     exit 1
   fi
   echo "PuTTY Plink was not found; installing PuTTY with winget..."
@@ -426,7 +364,7 @@ install_plink_if_needed() {
   winget.exe install --id PuTTY.PuTTY --exact --accept-package-agreements --accept-source-agreements || winget_status=$?
   if ! find_plink; then
     echo "winget finished with exit $winget_status, but Plink could not be found." >&2
-    echo 'Close and reopen the terminal, then rerun ./install.sh.' >&2
+    echo "Close and reopen the terminal, then rerun $install_command." >&2
     exit 1
   fi
   if ! wait_for_windows_tool "PuTTY Plink ($plink_cmd)" "$plink_cmd" -V; then
@@ -469,7 +407,7 @@ case "$host_os" in
     script_dir="$(CDPATH= cd -- "$(dirname -- "$install_script")" && pwd -P)"
     cd "$script_dir"
     echo "Detected OS: Windows (Git Bash/MSYS)"
-    echo "Installer entry point: ./install.sh"
+    echo "Installer entry point: ./scripts/windows/install.ps1"
     echo 'Windows setup selected.'
     ;;
   macos) echo "Detected OS: macOS" ;;
@@ -477,7 +415,7 @@ case "$host_os" in
   wsl)
     echo "Detected OS: WSL" >&2
     echo 'Windows direct-paste installation must run on native Windows, not WSL.' >&2
-    echo 'From native Windows, run ./install.sh outside WSL.' >&2
+    echo 'From native Windows PowerShell 7, run ./scripts/windows/install.ps1 outside WSL.' >&2
     exit 1
     ;;
   *)
@@ -503,7 +441,7 @@ if [ -f ./cmd/sshpic/main.go ] && [ -f ./go.mod ]; then
 else
   if is_windows_shell; then
     echo "Windows source installation requires a cloned sshpic checkout." >&2
-    echo "Run: git clone https://github.com/leekyungmoon/sshpic.git && cd sshpic && ./install.sh" >&2
+    echo "Run: git clone https://github.com/leekyungmoon/sshpic.git && cd sshpic && ./scripts/windows/install.ps1" >&2
     exit 1
   fi
   "$go_cmd" install "$repo/cmd/sshpic@latest"

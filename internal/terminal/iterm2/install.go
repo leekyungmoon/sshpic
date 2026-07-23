@@ -74,11 +74,13 @@ type RestoreOptions struct {
 }
 
 type RestoreResult struct {
-	HomeDir                   string
-	CmdVRestored              bool
-	ScriptRemoved             string
-	LegacyDynamicProfilePaths []string
-	Warnings                  []string
+	HomeDir                    string
+	CmdVRestored               bool
+	ScriptRemoved              string
+	PythonRuntimeVersionPaths  []string
+	PythonRuntimeMetadataPaths []string
+	LegacyDynamicProfilePaths  []string
+	Warnings                   []string
 }
 
 type PythonRuntimeStatus struct {
@@ -224,6 +226,14 @@ func Restore(ctx context.Context, opts RestoreOptions) (RestoreResult, error) {
 		result.Warnings = append(result.Warnings, "could not remove iTerm2 sshpic paste helper: "+err.Error())
 	} else {
 		result.ScriptRemoved = removed
+	}
+	runtimeVersions, runtimeMetadata, runtimeWarnings, err := RemoveSSHpicPythonRuntime(home)
+	result.Warnings = append(result.Warnings, runtimeWarnings...)
+	if err != nil {
+		result.Warnings = append(result.Warnings, "could not remove sshpic iTerm2 Python runtime: "+err.Error())
+	} else {
+		result.PythonRuntimeVersionPaths = runtimeVersions
+		result.PythonRuntimeMetadataPaths = runtimeMetadata
 	}
 	if disabled, err := DisableLegacyDynamicProfiles(home); err != nil {
 		result.Warnings = append(result.Warnings, "could not disable legacy iTerm2 DynamicProfiles: "+err.Error())
@@ -596,6 +606,171 @@ func safeRemoveProvisionTarget(base, target string) error {
 		return fmt.Errorf("refusing to remove unexpected runtime target: %s", target)
 	}
 	return os.RemoveAll(targetClean)
+}
+
+func RemoveSSHpicPythonRuntime(home string) ([]string, []string, []string, error) {
+	var removedVersions []string
+	var removedMetadata []string
+	var warnings []string
+	bases, baseWarnings := uniqueExistingRuntimeBases(home)
+	warnings = append(warnings, baseWarnings...)
+	for _, base := range bases {
+		versionPath := filepath.Join(base, "versions", "sshpic")
+		versionInfo, versionWarning, err := inspectRuntimeVersion(versionPath)
+		if err != nil {
+			return removedVersions, removedMetadata, warnings, err
+		}
+		if versionWarning != "" {
+			warnings = append(warnings, versionWarning)
+			continue
+		}
+		metadataPath := filepath.Join(base, "iterm2env-metadata.json")
+		metadataInfo, metadataOwned, metadataWarning, err := inspectOwnedRuntimeMetadata(metadataPath)
+		if err != nil {
+			return removedVersions, removedMetadata, warnings, err
+		}
+		if versionInfo != nil && !metadataOwned {
+			if metadataWarning == "" {
+				metadataWarning = "refusing to remove iTerm2 Python runtime version without sshpic ownership metadata: " + versionPath
+			}
+			warnings = append(warnings, metadataWarning)
+			continue
+		}
+		if metadataWarning != "" && versionInfo != nil {
+			warnings = append(warnings, metadataWarning)
+			continue
+		}
+		if !metadataOwned {
+			continue
+		}
+		if versionInfo != nil {
+			if err := removeOwnedRuntimeVersion(base, versionPath, versionInfo); err != nil {
+				return removedVersions, removedMetadata, warnings, err
+			}
+			removedVersions = append(removedVersions, versionPath)
+		}
+		if metadataInfo != nil {
+			if err := removeOwnedRuntimeMetadata(metadataPath, metadataInfo); err != nil {
+				return removedVersions, removedMetadata, warnings, err
+			}
+			removedMetadata = append(removedMetadata, metadataPath)
+		}
+	}
+	return removedVersions, removedMetadata, warnings, nil
+}
+
+func uniqueExistingRuntimeBases(home string) ([]string, []string) {
+	seen := map[string]bool{}
+	var bases []string
+	var warnings []string
+	for _, candidate := range pythonRuntimeCandidates(home) {
+		info, err := os.Lstat(candidate)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				warnings = append(warnings, "could not inspect iTerm2 Python runtime base: "+candidate+": "+err.Error())
+			}
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			warnings = append(warnings, "refusing to inspect symlinked iTerm2 Python runtime base: "+candidate)
+			continue
+		}
+		if !info.IsDir() {
+			continue
+		}
+		base := filepath.Clean(candidate)
+		if real, err := filepath.EvalSymlinks(candidate); err == nil {
+			base = filepath.Clean(real)
+		}
+		if seen[base] {
+			continue
+		}
+		seen[base] = true
+		bases = append(bases, base)
+	}
+	return bases, warnings
+}
+
+func inspectRuntimeVersion(versionPath string) (os.FileInfo, string, error) {
+	info, err := os.Lstat(versionPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, "", nil
+		}
+		return nil, "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, "refusing to remove symlinked iTerm2 Python runtime version: " + versionPath, nil
+	}
+	if !info.IsDir() {
+		return nil, "refusing to remove non-directory iTerm2 Python runtime version: " + versionPath, nil
+	}
+	return info, "", nil
+}
+
+func removeOwnedRuntimeVersion(base, versionPath string, expected os.FileInfo) error {
+	current, err := os.Lstat(versionPath)
+	if err != nil {
+		return err
+	}
+	if current.Mode()&os.ModeSymlink != 0 || !current.IsDir() || !os.SameFile(expected, current) {
+		return fmt.Errorf("iTerm2 Python runtime version identity changed before removal: %s", versionPath)
+	}
+	if err := safeRemoveProvisionTarget(base, versionPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func inspectOwnedRuntimeMetadata(metadataPath string) (os.FileInfo, bool, string, error) {
+	info, err := os.Lstat(metadataPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, "", nil
+		}
+		return nil, false, "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, false, "refusing to remove symlinked iTerm2 Python runtime metadata: " + metadataPath, nil
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, "refusing to remove non-regular iTerm2 Python runtime metadata: " + metadataPath, nil
+	}
+	if info.Size() > 64<<10 {
+		return nil, false, "refusing to read oversized iTerm2 Python runtime metadata: " + metadataPath, nil
+	}
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return nil, false, "", err
+	}
+	var metadata struct {
+		ManagedBy string `json:"managed_by"`
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return info, false, "refusing to remove iTerm2 Python runtime metadata with invalid ownership JSON: " + metadataPath, nil
+	}
+	if metadata.ManagedBy != "sshpic" {
+		return info, false, "", nil
+	}
+	current, err := os.Lstat(metadataPath)
+	if err != nil || current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() || !os.SameFile(info, current) {
+		return nil, false, "", fmt.Errorf("iTerm2 Python runtime metadata identity changed during validation: %s", metadataPath)
+	}
+	return info, true, "", nil
+}
+
+func removeOwnedRuntimeMetadata(metadataPath string, expected os.FileInfo) error {
+	current, err := os.Lstat(metadataPath)
+	if err != nil {
+		return err
+	}
+	if current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() || !os.SameFile(expected, current) {
+		return fmt.Errorf("iTerm2 Python runtime metadata identity changed before removal: %s", metadataPath)
+	}
+	if err := os.Remove(metadataPath); err != nil {
+		return err
+	}
+	return nil
 }
 
 func runProvisionCommand(ctx context.Context, name string, args ...string) error {
@@ -1036,10 +1211,16 @@ func RestoreSummary(result RestoreResult) string {
 	if result.ScriptRemoved != "" {
 		b.WriteString("iTerm2 paste helper removed: " + result.ScriptRemoved + "\n")
 	}
+	if len(result.PythonRuntimeVersionPaths) > 0 {
+		b.WriteString(fmt.Sprintf("iTerm2 Python runtime versions removed: %d\n", len(result.PythonRuntimeVersionPaths)))
+	}
+	if len(result.PythonRuntimeMetadataPaths) > 0 {
+		b.WriteString(fmt.Sprintf("iTerm2 Python runtime metadata files removed: %d\n", len(result.PythonRuntimeMetadataPaths)))
+	}
 	if len(result.LegacyDynamicProfilePaths) > 0 {
 		b.WriteString(fmt.Sprintf("legacy DynamicProfiles disabled: %d\n", len(result.LegacyDynamicProfilePaths)))
 	}
-	if !result.CmdVRestored && result.ScriptRemoved == "" && len(result.LegacyDynamicProfilePaths) == 0 {
+	if !result.CmdVRestored && result.ScriptRemoved == "" && len(result.PythonRuntimeVersionPaths) == 0 && len(result.PythonRuntimeMetadataPaths) == 0 && len(result.LegacyDynamicProfilePaths) == 0 {
 		b.WriteString("no sshpic iTerm2 integration state found\n")
 	}
 	for _, warning := range result.Warnings {

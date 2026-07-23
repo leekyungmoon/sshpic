@@ -7,6 +7,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw "PowerShell 7 is required to verify the native Windows install/uninstall entry points."
+}
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $IsWindowsHost = $env:OS -eq "Windows_NT"
@@ -41,12 +44,10 @@ function Resolve-WezTerm {
 
 function Assert-RepoContract {
     $required = @(
-        (Join-Path $RepoRoot "install.sh.ps1"),
-        (Join-Path $RepoRoot "install.sh.cmd"),
         (Join-Path $RepoRoot "install.sh"),
-        (Join-Path $RepoRoot "uninstall.sh.ps1"),
-        (Join-Path $RepoRoot "uninstall.sh.cmd"),
         (Join-Path $RepoRoot "uninstall.sh"),
+        (Join-Path $RepoRoot "scripts\windows\install.ps1"),
+        (Join-Path $RepoRoot "scripts\windows\uninstall.ps1"),
         (Join-Path $RepoRoot ".github\workflows\ci.yml"),
         (Join-Path $RepoRoot "internal\terminal\wezterm\lua.go"),
         (Join-Path $RepoRoot "internal\terminal\wezterm\install.go")
@@ -56,51 +57,52 @@ function Assert-RepoContract {
             throw "required repository file is missing: $path"
         }
     }
+    foreach ($obsoleteName in @(
+        "install.ps1", "install.sh.ps1", "install.sh.cmd",
+        "uninstall.ps1", "uninstall.sh.ps1", "uninstall.sh.cmd"
+    )) {
+        $obsoletePath = Join-Path $RepoRoot $obsoleteName
+        if (Test-Path -LiteralPath $obsoletePath) {
+            throw "obsolete compatibility launcher must be removed: $obsoletePath"
+        }
+    }
 
-    $installLauncher = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh.ps1"))
+    $installLauncher = [IO.File]::ReadAllText((Join-Path $RepoRoot "scripts\windows\install.ps1"))
     foreach ($sentinel in @(
         "function Resolve-SshpicGitSh",
         "function Read-SshpicBoundedFile",
         "function Get-SshpicVerifiedOwnedBlock",
         "function Get-SshpicManagedFunctionDefinition",
-        "Join-Path `$PSScriptRoot 'install.sh'",
+        "Join-Path `$repoRoot 'install.sh'",
         "owned_bytes",
         "SSHPIC_CURRENT_POWERSHELL_ACTIVATED"
     )) {
         if (-not $installLauncher.Contains($sentinel)) {
-            throw "install.sh.ps1 same-runspace activation sentinel is missing: $sentinel"
+            throw "install.ps1 same-runspace activation sentinel is missing: $sentinel"
         }
     }
-    $uninstallLauncher = [IO.File]::ReadAllText((Join-Path $RepoRoot "uninstall.sh.ps1"))
+    $uninstallLauncher = [IO.File]::ReadAllText((Join-Path $RepoRoot "scripts\windows\uninstall.ps1"))
     foreach ($sentinel in @(
         "function Resolve-SshpicGitSh",
         "function Read-SshpicBoundedFile",
         "function Get-SshpicVerifiedOwnedBlock",
         "function Get-SshpicManagedFunctionDefinition",
-        "Join-Path `$PSScriptRoot 'uninstall.sh'",
+        "Join-Path `$repoRoot 'uninstall.sh'",
         "owned_bytes",
         "SSHPIC_CURRENT_POWERSHELL_DEACTIVATED",
         "Remove-Item"
     )) {
         if (-not $uninstallLauncher.Contains($sentinel)) {
-            throw "uninstall.sh.ps1 same-runspace deactivation sentinel is missing: $sentinel"
+            throw "uninstall.ps1 same-runspace deactivation sentinel is missing: $sentinel"
         }
     }
     foreach ($launcherContract in @(
-        @{ name = "install.sh.ps1"; text = $installLauncher },
-        @{ name = "uninstall.sh.ps1"; text = $uninstallLauncher }
+        @{ name = "install.ps1"; text = $installLauncher },
+        @{ name = "uninstall.ps1"; text = $uninstallLauncher }
     )) {
         if ($launcherContract.text -match '(?im)\b(?:Start-Process|git-bash\.exe|wt\.exe|new-tab|pwsh\.exe|powershell\.exe)\b') {
             throw "$($launcherContract.name) may open another window or nested PowerShell process"
         }
-    }
-    $installFallback = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh.cmd"))
-    if ($installFallback -notmatch '"\./install\.sh"' -or $installFallback -match '(?im)\b(?:start|git-bash\.exe|wt\.exe)\b') {
-        throw "install.sh.cmd is not the synchronous fallback launcher"
-    }
-    $uninstallFallback = [IO.File]::ReadAllText((Join-Path $RepoRoot "uninstall.sh.cmd"))
-    if ($uninstallFallback -notmatch '"\./uninstall\.sh"' -or $uninstallFallback -match '(?im)\b(?:start|git-bash\.exe|wt\.exe)\b') {
-        throw "uninstall.sh.cmd is not the synchronous fallback launcher"
     }
     $installer = [IO.File]::ReadAllText((Join-Path $RepoRoot "install.sh"))
     if ($installer -notmatch 'install wezterm') {
@@ -120,7 +122,7 @@ function Assert-RepoContract {
 
 function Resolve-PowerShellLauncher {
     param([string]$Name)
-    $launcher = [IO.Path]::GetFullPath((Join-Path $RepoRoot ($Name + ".ps1")))
+    $launcher = [IO.Path]::GetFullPath((Join-Path $RepoRoot ("scripts\windows\" + $Name + ".ps1")))
     if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
         throw "PowerShell launcher is missing: $launcher"
     }
@@ -150,7 +152,7 @@ function Resolve-GitSh {
             return [IO.Path]::GetFullPath($candidate)
         }
     }
-    throw "Git for Windows sh.exe is required to run ./install.sh"
+    throw "Git for Windows sh.exe is required by ./scripts/windows/install.ps1"
 }
 
 function Test-PublicInstallOSDetection {
@@ -174,11 +176,11 @@ function Test-PublicInstallOSDetection {
 }
 
 function Resolve-InstallLauncher {
-    return Resolve-PowerShellLauncher "install.sh"
+    return Resolve-PowerShellLauncher "install"
 }
 
 function Resolve-UninstallLauncher {
-    return Resolve-PowerShellLauncher "uninstall.sh"
+    return Resolve-PowerShellLauncher "uninstall"
 }
 
 if ($PreflightOnly) {
@@ -186,20 +188,20 @@ if ($PreflightOnly) {
         throw "-PreflightOnly must run on Windows"
     }
     Assert-RepoContract
-    $publicInstallCommand = Join-Path $RepoRoot "install.sh"
+    $publicInstallCommand = Join-Path $RepoRoot "scripts\windows\install.ps1"
     $publicDetectedOS = Test-PublicInstallOSDetection
     $installLauncher = Resolve-InstallLauncher
     $uninstallLauncher = Resolve-UninstallLauncher
-    $powerShellTool = Get-App @("powershell.exe", "pwsh.exe")
+    $powerShellTool = Get-App @("pwsh.exe")
     $sshTool = Get-App @("ssh.exe")
     $wezTermTool = Resolve-WezTerm
     Write-Host "sshpic Windows WezTerm E2E harness preflight: PASS"
     Write-Host "powershell: $(if ($powerShellTool) { $powerShellTool } else { 'not found (runtime prerequisite)' })"
     Write-Host "ssh.exe: $(if ($sshTool) { $sshTool } else { 'not found (runtime prerequisite)' })"
     Write-Host "WezTerm: $(if ($wezTermTool) { $wezTermTool } else { 'not installed (allowed in CI preflight)' })"
-    Write-Host "public ./install.sh command: $publicInstallCommand"
-    Write-Host "public ./install.sh detected OS: $publicDetectedOS"
-    Write-Host "internal PowerShell installer: $installLauncher"
+    Write-Host "public ./scripts/windows/install.ps1 command: $publicInstallCommand"
+    Write-Host "install.sh core detected OS: $publicDetectedOS"
+    Write-Host "PowerShell installer: $installLauncher"
     Write-Host "PowerShell uninstaller: $uninstallLauncher"
     Write-Host "No clipboard, WezTerm config, winget, or SSH target was accessed."
     exit 0
@@ -606,7 +608,7 @@ if ($existingManaged.Count -gt 0) {
 
 $GitBash = Resolve-GitBash
 $InstallLauncher = Resolve-InstallLauncher
-$PowerShellExe = Get-App @("powershell.exe", "pwsh.exe")
+$PowerShellExe = Get-App @("pwsh.exe")
 $SshExe = Get-App @("ssh.exe")
 $Sshpic = $null
 $InstallAttempted = $false
@@ -627,7 +629,7 @@ $ExitCode = 1
 
 try {
     if (-not $GitBash) { throw "Git Bash was not found; install Git for Windows or set SSHPIC_E2E_GIT_BASH" }
-    if (-not $PowerShellExe) { throw "powershell.exe or pwsh.exe is required" }
+    if (-not $PowerShellExe) { throw "pwsh.exe (PowerShell 7) is required" }
     if (-not $SshExe) { throw "native Windows OpenSSH ssh.exe is required" }
 
     if ($SshTarget -match '^(?:[^@]+@)?(?:\d{1,3}\.){3}\d{1,3}$' -or $SshTarget -match '^(?:[^@]+@)?\[[0-9a-fA-F:]+\]$') {
@@ -642,12 +644,17 @@ try {
     $SshPreflightResult = "pass"
 
     $InstallAttempted = $true
+    $installCallerPid = $PID
     $installExit = Invoke-Logged $InstallLauncher @() $InstallLog $RepoRoot
-    if ($installExit -ne 0) { throw "install.sh exited $installExit" }
+    if ($installExit -ne 0) { throw "install.ps1 exited $installExit" }
+    if ($PID -ne $installCallerPid) {
+        $SameRunspaceActivationResult = "fail"
+        throw "install.ps1 changed the caller PowerShell process"
+    }
     $currentSsh = Get-Command ssh -CommandType Function -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($null -eq $currentSsh -or $currentSsh.Definition -notmatch 'sshpic-managed-function-version:\s*2') {
         $SameRunspaceActivationResult = "fail"
-        throw "install.sh did not activate the manifest-verified managed ssh function in this PowerShell runspace"
+        throw "install.ps1 did not activate the manifest-verified managed ssh function in this PowerShell runspace"
     }
     $SameRunspaceActivationResult = "pass"
     $Sshpic = Resolve-Sshpic

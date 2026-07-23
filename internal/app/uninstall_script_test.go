@@ -111,13 +111,15 @@ func copyTestExecutable(destination string) error {
 	return closeErr
 }
 
-func TestWindowsUninstallScriptHasOneSourcePreservingBehavior(t *testing.T) {
+func TestUninstallScriptHasOneCrossPlatformSourcePreservingBehavior(t *testing.T) {
 	text := readRepoFile(t, "uninstall.sh")
 	for _, forbidden := range []string{
-		"--dry-run", "--yes", "--binary", "--config", "--wezterm-config",
+		"--dry-run", "--yes", "--config", "--wezterm-config",
 		"--purge-source", "source-purge-receipt", "FinalizeSource", "git status",
 		"--sshpic-windows-file-association", "run_windows_file_association_uninstaller",
 		"PowerShell ./uninstall.sh launch detected", "Press Enter to close this uninstaller window",
+		`Usage: .\uninstall.ps1`,
+		"uninstall.sh.cmd",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("uninstall.sh still exposes obsolete behavior %q", forbidden)
@@ -125,8 +127,13 @@ func TestWindowsUninstallScriptHasOneSourcePreservingBehavior(t *testing.T) {
 	}
 	for _, required := range []string{
 		"uninstall has one behavior and accepts no options",
-		`Usage: .\uninstall.sh.ps1 (PowerShell 7) or ./uninstall.sh (Git Bash)`,
-		"Run one of these commands in the cloned checkout.",
+		"Usage: ./uninstall.sh",
+		"detect_host_os()",
+		`macos|linux`,
+		`uninstall_posix`,
+		`uninstall posix`,
+		`--uninstall-protocol 1`,
+		`"$go_cmd" build -o "$posix_helper" ./cmd/sshpic`,
 		"internal-remove-powershell-ssh-wrapper",
 		"uninstall wezterm --uninstall-protocol 3 --source-root",
 		"internal-remove-putty-sessions",
@@ -137,6 +144,9 @@ func TestWindowsUninstallScriptHasOneSourcePreservingBehavior(t *testing.T) {
 		`if [ -e "$helper" ] || [ -L "$helper" ]; then`,
 		`helper_owned=1`,
 		"SSHPIC_WINDOWS_UNINSTALL_VERIFIED",
+		"SSHPIC_UNINSTALL_POWERSHELL_FACADE",
+		"Windows uninstall must run from PowerShell 7: ./scripts/windows/uninstall.ps1",
+		"No files were changed.",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("uninstall.sh is missing %q", required)
@@ -146,12 +156,17 @@ func TestWindowsUninstallScriptHasOneSourcePreservingBehavior(t *testing.T) {
 
 func TestWindowsPowerShellUninstallLauncherUsesExplicitPS1InCurrentRunspace(t *testing.T) {
 	repoRoot := repositoryRoot(t)
-	for _, required := range []string{"uninstall.sh", "uninstall.sh.ps1", "uninstall.sh.cmd"} {
-		if info, err := os.Stat(filepath.Join(repoRoot, required)); err != nil || info.IsDir() {
+	for _, required := range []string{"uninstall.sh", windowsUninstallLauncherRelative} {
+		if info, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(required))); err != nil || info.IsDir() {
 			t.Fatalf("required uninstaller entry %s is unavailable: %v", required, err)
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(repoRoot, "uninstall.sh.ps1"))
+	for _, obsolete := range []string{"uninstall.ps1", "uninstall.sh.ps1", "uninstall.sh.cmd"} {
+		if _, err := os.Stat(filepath.Join(repoRoot, obsolete)); !os.IsNotExist(err) {
+			t.Fatalf("obsolete root uninstaller %s must be absent, stat error=%v", obsolete, err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(windowsUninstallLauncherRelative)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +176,11 @@ func TestWindowsPowerShellUninstallLauncherUsesExplicitPS1InCurrentRunspace(t *t
 		`function Read-SshpicBoundedFile`,
 		`function Get-SshpicVerifiedOwnedBlock`,
 		`function Get-SshpicManagedFunctionDefinition`,
-		`$corePath = Join-Path $PSScriptRoot 'uninstall.sh'`,
+		`$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))`,
+		`$corePath = Join-Path $repoRoot 'uninstall.sh'`,
+		`Push-Location -LiteralPath $repoRoot`,
+		`if ($PSVersionTable.PSVersion.Major -lt 7)`,
+		`$env:SSHPIC_UNINSTALL_POWERSHELL_FACADE = '1'`,
 		`owned_bytes`,
 		`$current.Definition.Contains($script:SshpicFunctionMarker`,
 		`$ownedBlock = Get-SshpicVerifiedOwnedBlock`,
@@ -185,14 +204,14 @@ func TestWindowsPowerShellUninstallLauncherUsesExplicitPS1InCurrentRunspace(t *t
 		`the manifest-owned console UTF-8 bytes do not match the exact sshpic block`,
 	} {
 		if !strings.Contains(launcher, want) {
-			t.Fatalf("uninstall.sh.ps1 missing same-runspace deactivation contract %q", want)
+			t.Fatalf("uninstall.ps1 missing same-runspace deactivation contract %q", want)
 		}
 	}
 	for _, forbidden := range []string{
 		"Start-Process", "git-bash.exe", "wt.exe", "new-tab", "pwsh.exe", "powershell.exe", "ReadAllBytes",
 	} {
 		if strings.Contains(strings.ToLower(launcher), strings.ToLower(forbidden)) {
-			t.Fatalf("uninstall.sh.ps1 may open another window or PowerShell process via %q", forbidden)
+			t.Fatalf("uninstall.ps1 may open another window or PowerShell process via %q", forbidden)
 		}
 	}
 	ownershipIndex := strings.LastIndex(launcher, `$ownedBlock = Get-SshpicVerifiedOwnedBlock`)
@@ -200,34 +219,13 @@ func TestWindowsPowerShellUninstallLauncherUsesExplicitPS1InCurrentRunspace(t *t
 	statusIndex := strings.LastIndex(launcher, `if ($uninstallStatus -ne 0)`)
 	removeIndex := strings.LastIndex(launcher, `Remove-Item -LiteralPath Function:\ssh -Force`)
 	if ownershipIndex < 0 || coreIndex <= ownershipIndex || statusIndex <= coreIndex || removeIndex <= statusIndex {
-		t.Fatal("uninstall.sh.ps1 must verify ownership before uninstall and remove only the same managed function after core success")
+		t.Fatal("uninstall.ps1 must verify ownership before uninstall and remove only the same managed function after core success")
 	}
 	consolePlanIndex := strings.LastIndex(launcher, `$consoleRemovalPlan = Get-SshpicConsoleUtf8RemovalPlan`)
 	consoleRemoveIndex := strings.LastIndex(launcher, `Remove-SshpicConsoleUtf8Profile -Plan $consoleRemovalPlan`)
 	consoleDisableIndex := strings.LastIndex(launcher, `Disable-SshpicConsoleUtf8InCurrentPowerShell`)
 	if consolePlanIndex < 0 || consolePlanIndex >= coreIndex || consoleRemoveIndex <= statusIndex || consoleDisableIndex <= consoleRemoveIndex {
-		t.Fatal("uninstall.sh.ps1 must pin UTF-8 ownership before core removal, then restore the profile and current runspace")
-	}
-
-	cmdData, err := os.ReadFile(filepath.Join(repoRoot, "uninstall.sh.cmd"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmdLauncher := strings.ToLower(string(cmdData))
-	for _, want := range []string{
-		`setlocal enableextensions disabledelayedexpansion`,
-		`pushd "%~dp0"`,
-		`"%sshpic_git_sh%" "./uninstall.sh" %*`,
-		`exit /b %sshpic_status%`,
-	} {
-		if !strings.Contains(cmdLauncher, want) {
-			t.Fatalf("uninstall.sh.cmd fallback missing synchronous launcher contract %q", want)
-		}
-	}
-	for _, forbidden := range []string{"git-bash.exe", "start ", "wt.exe", "new-tab"} {
-		if strings.Contains(cmdLauncher, forbidden) {
-			t.Fatalf("uninstall.sh.cmd fallback may open another window via %q", forbidden)
-		}
+		t.Fatal("uninstall.ps1 must pin UTF-8 ownership before core removal, then restore the profile and current runspace")
 	}
 
 	if runtime.GOOS != "windows" {
@@ -235,17 +233,14 @@ func TestWindowsPowerShellUninstallLauncherUsesExplicitPS1InCurrentRunspace(t *t
 	}
 	powerShell, err := exec.LookPath("pwsh.exe")
 	if err != nil {
-		powerShell, err = exec.LookPath("powershell.exe")
+		t.Skip("PowerShell 7 is unavailable")
 	}
-	if err != nil {
-		t.Skip("PowerShell is unavailable")
-	}
-	command := `$resolved = Get-Command .\uninstall.sh.ps1 -CommandType ExternalScript -ErrorAction Stop | Select-Object -First 1; ` +
-		`if ($resolved.Name -ne 'uninstall.sh.ps1' -or $resolved.CommandType -ne 'ExternalScript') { throw "resolved=$($resolved.Name):$($resolved.CommandType)" }`
+	command := `$resolved = Get-Command .\scripts\windows\uninstall.ps1 -CommandType ExternalScript -ErrorAction Stop | Select-Object -First 1; ` +
+		`if ($resolved.Name -ne 'uninstall.ps1' -or $resolved.CommandType -ne 'ExternalScript') { throw "resolved=$($resolved.Name):$($resolved.CommandType)" }`
 	cmd := exec.Command(powerShell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command)
 	cmd.Dir = repoRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("explicit PowerShell uninstall.sh.ps1 launcher was unavailable: %v\n%s", err, out)
+		t.Fatalf("explicit PowerShell uninstall.ps1 launcher was unavailable: %v\n%s", err, out)
 	}
 }
 
@@ -273,6 +268,22 @@ func TestWindowsUninstallPreservesUnownedLegacyHelperNames(t *testing.T) {
 		if err != nil || string(data) != content {
 			t.Fatalf("unowned legacy helper %s changed: data=%q err=%v", name, data, err)
 		}
+	}
+}
+
+func TestWindowsUninstallSHRejectsDirectGitBashRun(t *testing.T) {
+	requireWindowsGitBash(t)
+	shell := windowsGitBash(t)
+	repoRoot := repositoryRoot(t)
+	cmd := exec.Command(shell, "./uninstall.sh")
+	cmd.Dir = repoRoot
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("direct Windows uninstall.sh unexpectedly succeeded\n%s", out)
+	}
+	if !strings.Contains(string(out), "Windows uninstall must run from PowerShell 7: ./scripts/windows/uninstall.ps1") ||
+		!strings.Contains(string(out), "No files were changed.") {
+		t.Fatalf("direct Windows uninstall.sh did not fail closed with the native command\n%s", out)
 	}
 }
 
@@ -366,31 +377,150 @@ func TestWindowsUninstallScriptHelperFailurePreservesCheckout(t *testing.T) {
 	}
 }
 
-func TestWindowsUninstallScriptRejectsNonWindowsBeforeBuild(t *testing.T) {
-	requireWindowsGitBash(t)
-	repoRoot := repositoryRoot(t)
-	logPath := filepath.Join(t.TempDir(), "must-not-run.txt")
-	result := runWindowsUninstallScript(t, repoRoot, nil, map[string]string{
-		"SSHPIC_TEST_UNAME":         "Darwin",
-		"SSHPIC_TEST_UNINSTALL_LOG": logPath,
-	})
-	if result.err == nil || !strings.Contains(result.output, "This uninstaller is for native Windows") {
-		t.Fatalf("non-Windows invocation was not rejected: %v\n%s", result.err, result.output)
+func TestUninstallScriptRoutesMacOSAndLinuxThroughPOSIXHelper(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell routing is covered by Linux and macOS CI")
 	}
-	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
-		t.Fatalf("helper ran on non-Windows host: %v", err)
+	repoRoot := repositoryRoot(t)
+	for _, platform := range []string{"Darwin", "Linux"} {
+		t.Run(platform, func(t *testing.T) {
+			logPath := filepath.Join(t.TempDir(), "posix-helper.log")
+			gobin := filepath.Join(t.TempDir(), "go-bin")
+			result := runPosixUninstallScriptWithFakeTools(t, repoRoot, map[string]string{
+				"SSHPIC_TEST_UNAME":         platform,
+				"SSHPIC_TEST_UNINSTALL_LOG": logPath,
+				"SSHPIC_TEST_GOBIN":         gobin,
+			})
+			if result.err != nil {
+				t.Fatalf("POSIX uninstall routing failed: %v\n%s", result.err, result.output)
+			}
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			call := strings.TrimSpace(string(data))
+			if !strings.HasPrefix(call, "uninstall\tposix\t--uninstall-protocol\t1\t--source-root\t") {
+				t.Fatalf("unexpected POSIX helper call: %q", call)
+			}
+			if !strings.Contains(call, "\t--binary\t"+filepath.Join(gobin, "sshpic")) {
+				t.Fatalf("POSIX helper did not receive the Go install target: %q", call)
+			}
+		})
 	}
 }
 
-func TestWindowsUninstallHasOnlyShellEntryPoint(t *testing.T) {
-	if _, err := os.Stat(filepath.Join(repositoryRoot(t), "uninstall.ps1")); !os.IsNotExist(err) {
-		t.Fatalf("uninstall.ps1 must not exist: %v", err)
+func TestPosixUninstallRejectsTemporaryDirectoryInsideCheckoutBeforeBuild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell routing is covered by Linux and macOS CI")
+	}
+	repoRoot := repositoryRoot(t)
+	tempParent := filepath.Join(repoRoot, ".omx", "uninstall-tmp-safety-test")
+	if err := os.MkdirAll(tempParent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(tempParent); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove temporary safety-test directory: %v", err)
+		}
+	})
+	logPath := filepath.Join(t.TempDir(), "must-not-run.log")
+	result := runPosixUninstallScriptWithFakeTools(t, repoRoot, map[string]string{
+		"SSHPIC_TEST_UNAME":         "Linux",
+		"SSHPIC_TEST_UNINSTALL_LOG": logPath,
+		"SSHPIC_TEST_GOBIN":         filepath.Join(t.TempDir(), "go-bin"),
+		"TMPDIR":                    tempParent,
+	})
+	if result.err == nil || !strings.Contains(result.output, "temporary directory must be outside the source checkout") {
+		t.Fatalf("source-contained TMPDIR was not rejected: %v\n%s", result.err, result.output)
+	}
+	matches, err := filepath.Glob(filepath.Join(tempParent, "sshpic-uninstall.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("uninstall helper artifacts were created inside checkout: %v", matches)
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("uninstall helper ran despite unsafe TMPDIR: %v", err)
+	}
+}
+
+func TestRootLaunchersUseNativeShellNamesWithoutCompatibilityWrappers(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, required := range []string{"install.sh", "uninstall.sh"} {
+		if info, err := os.Stat(filepath.Join(root, required)); err != nil || info.IsDir() {
+			t.Fatalf("required root launcher %s is unavailable: %v", required, err)
+		}
+	}
+	for _, obsolete := range []string{
+		"install.ps1", "install.sh.ps1", "install.sh.cmd",
+		"uninstall.ps1", "uninstall.sh.ps1", "uninstall.sh.cmd",
+	} {
+		if _, err := os.Stat(filepath.Join(root, obsolete)); !os.IsNotExist(err) {
+			t.Fatalf("obsolete root launcher %s must be absent, stat error=%v", obsolete, err)
+		}
+	}
+	for _, required := range []string{windowsInstallLauncherRelative, windowsUninstallLauncherRelative} {
+		if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(required))); err != nil || info.IsDir() {
+			t.Fatalf("required Windows helper %s is unavailable: %v", required, err)
+		}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var launchers []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), "install") || strings.HasPrefix(entry.Name(), "uninstall") {
+			launchers = append(launchers, entry.Name())
+		}
+	}
+	if got := strings.Join(launchers, ","); got != "install.sh,uninstall.sh" {
+		t.Fatalf("root lifecycle launchers=%q want install.sh,uninstall.sh", got)
 	}
 }
 
 type uninstallScriptResult struct {
 	output string
 	err    error
+}
+
+func runPosixUninstallScriptWithFakeTools(t *testing.T, repoRoot string, extraEnv map[string]string) uninstallScriptResult {
+	t.Helper()
+	fakeBin := filepath.Join(t.TempDir(), "fake-bin")
+	if err := os.MkdirAll(fakeBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"uname", "go"} {
+		if err := copyTestExecutable(filepath.Join(fakeBin, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tempRoot := filepath.Join(t.TempDir(), "script-temp")
+	if err := os.MkdirAll(tempRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", `PATH="$1:$PATH"; export PATH; exec ./uninstall.sh`, "sshpic-posix-uninstall-test", fakeBin)
+	cmd.Dir = repoRoot
+	env := append([]string{}, os.Environ()...)
+	env = append(env,
+		uninstallHelperEnv+"=1",
+		"TMP="+tempRoot,
+		"TEMP="+tempRoot,
+		"TMPDIR="+tempRoot,
+	)
+	for key, value := range extraEnv {
+		env = append(env, key+"="+value)
+	}
+	cmd.Env = env
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	return uninstallScriptResult{output: output.String(), err: err}
 }
 
 func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, extraEnv map[string]string) uninstallScriptResult {
@@ -464,6 +594,7 @@ func runWindowsUninstallScript(t *testing.T, repoRoot string, args []string, ext
 	env := append([]string{}, os.Environ()...)
 	env = append(env,
 		uninstallHelperEnv+"=1",
+		"SSHPIC_UNINSTALL_POWERSHELL_FACADE=1",
 		"TMP="+windowsPathForGitBash(tempRoot),
 		"TEMP="+windowsPathForGitBash(tempRoot),
 		"TMPDIR="+windowsPathForGitBash(filepath.Join(t.TempDir(), "must-not-be-used")),

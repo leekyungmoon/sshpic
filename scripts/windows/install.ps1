@@ -1,8 +1,10 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-# The uninstall facade verifies the same ownership manifest before it removes
-# an sshpic function from this already-running PowerShell session.
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw 'sshpic Windows installation requires PowerShell 7. Open PowerShell 7, then run ./scripts/windows/install.ps1.'
+}
+
 $script:SshpicProfileManifestOwner = 'github.com/leekyungmoon/sshpic:powershell-profile:v2'
 $script:SshpicProfileManifestVersion = 2
 $script:SshpicProfileMaximumBytes = 2MB
@@ -72,7 +74,10 @@ function Get-SshpicConsoleUtf8Paths {
         [string] $HomePath = [Environment]::GetFolderPath('UserProfile'),
         [string] $ProfilePath = $PROFILE.CurrentUserCurrentHost
     )
-    if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 (pwsh) is required for the Windows console UTF-8 profile' }
+
+    if ($PSVersionTable.PSVersion.Major -lt 7) {
+        throw 'PowerShell 7 (pwsh) is required for the Windows console UTF-8 profile'
+    }
     $homeRoot = [IO.Path]::GetFullPath($HomePath)
     $profileTarget = [IO.Path]::GetFullPath($ProfilePath)
     $homePrefix = $homeRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
@@ -114,7 +119,9 @@ function Read-SshpicConsoleBoundedFile {
         [Parameter(Mandatory)][string] $Label,
         [Parameter(Mandatory)][long] $MaximumBytes
     )
-    if (-not (Test-SshpicConsoleRegularFile -Path $Path -Label $Label)) { throw "$Label is missing" }
+    if (-not (Test-SshpicConsoleRegularFile -Path $Path -Label $Label)) {
+        throw "$Label is missing"
+    }
     $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
         if ($stream.Length -gt $MaximumBytes) { throw "$Label exceeds its safety limit" }
@@ -137,6 +144,38 @@ function ConvertFrom-SshpicConsoleStrictUtf8 {
     catch { throw "$Label is not strict UTF-8 text" }
 }
 
+function Get-SshpicConsoleSha256Hex {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][byte[]] $Bytes)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { return ([Convert]::ToHexString($sha256.ComputeHash($Bytes))).ToLowerInvariant() }
+    finally { $sha256.Dispose() }
+}
+
+function Write-SshpicConsoleAtomicFile {
+    param(
+        [Parameter(Mandatory)][string] $Path,
+        [Parameter(Mandatory)][AllowEmptyCollection()][byte[]] $Bytes,
+        [switch] $CreateNew
+    )
+    $directory = Split-Path -Parent $Path
+    [IO.Directory]::CreateDirectory($directory) | Out-Null
+    $temporary = Join-Path $directory ('.sshpic-console-utf8-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [IO.File]::WriteAllBytes($temporary, $Bytes)
+        if ($CreateNew) {
+            [IO.File]::Move($temporary, $Path)
+        }
+        elseif (Test-Path -LiteralPath $Path) {
+            if (-not (Test-SshpicConsoleRegularFile -Path $Path -Label 'managed destination')) {
+                throw 'managed destination disappeared before replacement'
+            }
+            [IO.File]::Move($temporary, $Path, $true)
+        }
+        else { [IO.File]::Move($temporary, $Path) }
+    }
+    finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+}
+
 function New-SshpicConsoleOwnedBytes {
     param([Parameter(Mandatory)][AllowEmptyCollection()][byte[]] $BeforeBytes, [Parameter(Mandatory)][string] $Block)
     $beforeText = ConvertFrom-SshpicConsoleStrictUtf8 -Bytes $BeforeBytes -Label 'CurrentUserCurrentHost PowerShell profile'
@@ -151,29 +190,63 @@ function New-SshpicConsoleOwnedBytes {
     return ,[Text.UTF8Encoding]::new($false).GetBytes($prefix + $normalizedBlock + $newline)
 }
 
-function Get-SshpicConsoleSha256Hex {
-    param([Parameter(Mandatory)][AllowEmptyCollection()][byte[]] $Bytes)
-    $sha256 = [Security.Cryptography.SHA256]::Create()
-    try { return ([Convert]::ToHexString($sha256.ComputeHash($Bytes))).ToLowerInvariant() }
-    finally { $sha256.Dispose() }
-}
-
-function Write-SshpicConsoleAtomicFile {
-    param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][AllowEmptyCollection()][byte[]] $Bytes)
-    $directory = Split-Path -Parent $Path
-    [IO.Directory]::CreateDirectory($directory) | Out-Null
-    $temporary = Join-Path $directory ('.sshpic-console-utf8-' + [Guid]::NewGuid().ToString('N') + '.tmp')
-    try {
-        [IO.File]::WriteAllBytes($temporary, $Bytes)
-        if (Test-Path -LiteralPath $Path) {
-            if (-not (Test-SshpicConsoleRegularFile -Path $Path -Label 'managed destination')) {
-                throw 'managed destination disappeared before replacement'
-            }
-            [IO.File]::Move($temporary, $Path, $true)
-        }
-        else { [IO.File]::Move($temporary, $Path) }
+function Install-SshpicConsoleUtf8Profile {
+    param(
+        [string] $HomePath = [Environment]::GetFolderPath('UserProfile'),
+        [string] $ProfilePath = $PROFILE.CurrentUserCurrentHost
+    )
+    $paths = Get-SshpicConsoleUtf8Paths -HomePath $HomePath -ProfilePath $ProfilePath
+    $block = Get-SshpicConsoleUtf8Block
+    if (Test-Path -LiteralPath $paths.Manifest) {
+        $verified = Get-SshpicVerifiedConsoleUtf8Install -HomePath $HomePath -ProfilePath $ProfilePath
+        return [pscustomobject]@{ Changed = $false; Paths = $paths; BeforeBytes = $null; ProfileExisted = $verified.ProfileExisted }
     }
-    finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+    $profileExisted = Test-SshpicConsoleRegularFile -Path $paths.Profile -Label 'CurrentUserCurrentHost PowerShell profile'
+    $before = [byte[]]::new(0)
+    if ($profileExisted) {
+        $before = Read-SshpicConsoleBoundedFile -Path $paths.Profile -Label 'CurrentUserCurrentHost PowerShell profile' -MaximumBytes $script:SshpicProfileMaximumBytes
+    }
+    $beforeText = ConvertFrom-SshpicConsoleStrictUtf8 -Bytes $before -Label 'CurrentUserCurrentHost PowerShell profile'
+    foreach ($marker in @($script:SshpicConsoleBeginMarker, $script:SshpicConsoleEndMarker, $script:SshpicConsoleVersionMarker)) {
+        if ($beforeText.Contains($marker, [StringComparison]::Ordinal)) {
+            throw "the CurrentUserCurrentHost profile contains an unowned sshpic console marker: $marker"
+        }
+    }
+    $owned = New-SshpicConsoleOwnedBytes -BeforeBytes $before -Block $block
+    if ($before.Length + $owned.Length -gt $script:SshpicProfileMaximumBytes) {
+        throw 'the installed CurrentUserCurrentHost PowerShell profile would exceed 2 MiB'
+    }
+    $after = [byte[]]::new($before.Length + $owned.Length)
+    if ($before.Length -gt 0) { [Buffer]::BlockCopy($before, 0, $after, 0, $before.Length) }
+    [Buffer]::BlockCopy($owned, 0, $after, $before.Length, $owned.Length)
+    $manifestObject = [ordered]@{
+        version = $script:SshpicConsoleProfileManifestVersion
+        owner = $script:SshpicConsoleProfileManifestOwner
+        profile_relative_path = $paths.ProfileRelative
+        profile_existed = $profileExisted
+        before_length = $before.Length
+        before_sha256 = Get-SshpicConsoleSha256Hex -Bytes $before
+        installed_sha256 = Get-SshpicConsoleSha256Hex -Bytes $after
+        owned_bytes = [Convert]::ToBase64String($owned)
+    }
+    $manifestBytes = [Text.UTF8Encoding]::new($false).GetBytes(($manifestObject | ConvertTo-Json -Depth 3) + "`n")
+    $profileWritten = $false
+    try {
+        Write-SshpicConsoleAtomicFile -Path $paths.Profile -Bytes $after
+        $profileWritten = $true
+        if (Test-Path -LiteralPath $paths.Manifest) { throw 'the console UTF-8 ownership manifest path became occupied during installation' }
+        Write-SshpicConsoleAtomicFile -Path $paths.Manifest -Bytes $manifestBytes -CreateNew
+        Get-SshpicVerifiedConsoleUtf8Install -HomePath $HomePath -ProfilePath $ProfilePath | Out-Null
+    }
+    catch {
+        if ($profileWritten) {
+            if ($profileExisted) { Write-SshpicConsoleAtomicFile -Path $paths.Profile -Bytes $before }
+            else { Remove-Item -LiteralPath $paths.Profile -Force -ErrorAction SilentlyContinue }
+        }
+        Remove-Item -LiteralPath $paths.Manifest -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    return [pscustomobject]@{ Changed = $true; Paths = $paths; BeforeBytes = $before; ProfileExisted = $profileExisted }
 }
 
 function Assert-SshpicConsoleManifestShape {
@@ -247,48 +320,37 @@ function Get-SshpicVerifiedConsoleUtf8Install {
     return [pscustomobject]@{ Paths = $paths; ManifestBytes = $manifestBytes; ProfileBytes = $profileBytes; BeforeBytes = $before; OwnedBytes = $owned; ProfileExisted = [bool] $manifest.profile_existed }
 }
 
-function Get-SshpicConsoleUtf8RemovalPlan {
-    param(
-        [string] $HomePath = [Environment]::GetFolderPath('UserProfile'),
-        [string] $ProfilePath = $PROFILE.CurrentUserCurrentHost
-    )
-    $paths = Get-SshpicConsoleUtf8Paths -HomePath $HomePath -ProfilePath $ProfilePath
-    if (Test-Path -LiteralPath $paths.Manifest) {
-        return Get-SshpicVerifiedConsoleUtf8Install -HomePath $HomePath -ProfilePath $ProfilePath
-    }
-    if (Test-Path -LiteralPath $paths.Profile) {
-        $profileBytes = Read-SshpicConsoleBoundedFile -Path $paths.Profile -Label 'CurrentUserCurrentHost PowerShell profile' -MaximumBytes $script:SshpicProfileMaximumBytes
-        $profileText = ConvertFrom-SshpicConsoleStrictUtf8 -Bytes $profileBytes -Label 'CurrentUserCurrentHost PowerShell profile'
-        foreach ($marker in @($script:SshpicConsoleBeginMarker, $script:SshpicConsoleEndMarker, $script:SshpicConsoleVersionMarker)) {
-            if ($profileText.Contains($marker, [StringComparison]::Ordinal)) {
-                throw "the CurrentUserCurrentHost profile contains an unowned sshpic console marker: $marker"
-            }
-        }
-    }
-    return $null
-}
-
-function Remove-SshpicConsoleUtf8Profile {
-    param([Parameter(Mandatory)] $Plan)
-    $current = Get-SshpicVerifiedConsoleUtf8Install -HomePath $Plan.Paths.Home -ProfilePath $Plan.Paths.Profile
-    if (-not [Linq.Enumerable]::SequenceEqual([byte[]] $current.ManifestBytes, [byte[]] $Plan.ManifestBytes) -or
-        -not [Linq.Enumerable]::SequenceEqual([byte[]] $current.ProfileBytes, [byte[]] $Plan.ProfileBytes)) {
-        throw 'the console UTF-8 profile or ownership manifest changed during uninstall'
-    }
+function Undo-SshpicConsoleUtf8ProfileInstall {
+    param([Parameter(Mandatory)] $Receipt)
+    if (-not $Receipt.Changed) { return }
+    $verified = Get-SshpicVerifiedConsoleUtf8Install -HomePath $Receipt.Paths.Home -ProfilePath $Receipt.Paths.Profile
     $profileRestored = $false
     try {
-        if ($current.ProfileExisted) { Write-SshpicConsoleAtomicFile -Path $current.Paths.Profile -Bytes $current.BeforeBytes }
-        else { Remove-Item -LiteralPath $current.Paths.Profile -Force }
+        if ($Receipt.ProfileExisted) { Write-SshpicConsoleAtomicFile -Path $Receipt.Paths.Profile -Bytes $Receipt.BeforeBytes }
+        else { Remove-Item -LiteralPath $Receipt.Paths.Profile -Force }
         $profileRestored = $true
-        Remove-Item -LiteralPath $current.Paths.Manifest -Force
+        Remove-Item -LiteralPath $Receipt.Paths.Manifest -Force
     }
     catch {
         if ($profileRestored) {
-            try { Write-SshpicConsoleAtomicFile -Path $current.Paths.Profile -Bytes $current.ProfileBytes }
-            catch { throw 'console UTF-8 uninstall failed and its profile rollback also failed' }
+            try { Write-SshpicConsoleAtomicFile -Path $Receipt.Paths.Profile -Bytes $verified.ProfileBytes }
+            catch { throw 'console UTF-8 install rollback failed and its installed profile recovery also failed' }
         }
         throw
     }
+}
+
+function Enable-SshpicConsoleUtf8InCurrentPowerShell {
+    if ($PSVersionTable.PSVersion.Major -lt 7 -or
+        ([string]::IsNullOrWhiteSpace($env:WT_SESSION) -and [string]::IsNullOrWhiteSpace($env:WEZTERM_PANE))) { return }
+    & ([ScriptBlock]::Create((Get-SshpicConsoleUtf8Block)))
+    $state = Get-Variable -Name $script:SshpicConsoleRuntimeStateName -Scope Global -ValueOnly -ErrorAction SilentlyContinue
+    if ($null -eq $state -or [string] $state.Owner -cne $script:SshpicConsoleRuntimeOwner -or
+        [Console]::InputEncoding.CodePage -ne 65001 -or [Console]::OutputEncoding.CodePage -ne 65001 -or
+        (Get-Variable -Name OutputEncoding -Scope Global -ValueOnly).CodePage -ne 65001) {
+        throw 'the Windows console UTF-8 state did not activate in the current PowerShell session'
+    }
+    Write-Output 'SSHPIC_CURRENT_POWERSHELL_UTF8_ACTIVATED'
 }
 
 function Disable-SshpicConsoleUtf8InCurrentPowerShell {
@@ -302,7 +364,6 @@ function Disable-SshpicConsoleUtf8InCurrentPowerShell {
         if ((Get-Variable -Name OutputEncoding -Scope Global -ValueOnly).CodePage -eq 65001) { $global:OutputEncoding = $state.NativeOutputEncoding }
     }
     finally { Remove-Variable -Name $script:SshpicConsoleRuntimeStateName -Scope Global -Force }
-    Write-Output 'SSHPIC_CURRENT_POWERSHELL_UTF8_DEACTIVATED'
 }
 
 function Resolve-SshpicGitSh {
@@ -317,30 +378,52 @@ function Resolve-SshpicGitSh {
     if (-not [string]::IsNullOrWhiteSpace($programFilesX86)) {
         $candidates.Add((Join-Path $programFilesX86 'Git\bin\sh.exe'))
     }
+
     $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -ne $git -and -not [string]::IsNullOrWhiteSpace($git.Source)) {
         $gitRoot = Split-Path -Parent (Split-Path -Parent $git.Source)
         $candidates.Add((Join-Path $gitRoot 'bin\sh.exe'))
     }
+
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
             return [IO.Path]::GetFullPath($candidate)
         }
     }
-    throw 'Git for Windows sh.exe was not found. Install Git for Windows, then rerun ./uninstall.sh from PowerShell.'
+    throw 'Git for Windows sh.exe was not found. Install Git for Windows, then rerun ./scripts/windows/install.ps1.'
 }
 
 function ConvertFrom-SshpicStrictUtf8 {
-    param([Parameter(Mandatory)][byte[]] $Bytes, [Parameter(Mandatory)][string] $Label)
-    if ($Bytes.Length -gt $script:SshpicProfileMaximumBytes) { throw "$Label exceeds the 2 MiB safety limit" }
-    if ($Bytes -contains [byte]0) { throw "$Label contains a NUL byte" }
-    try { return [Text.UTF8Encoding]::new($false, $true).GetString($Bytes) }
-    catch { throw "$Label is not strict UTF-8 text" }
+    param(
+        [Parameter(Mandatory)]
+        [byte[]] $Bytes,
+        [Parameter(Mandatory)]
+        [string] $Label
+    )
+
+    if ($Bytes.Length -gt $script:SshpicProfileMaximumBytes) {
+        throw "$Label exceeds the 2 MiB safety limit"
+    }
+    if ($Bytes -contains [byte]0) {
+        throw "$Label contains a NUL byte"
+    }
+    try {
+        return [Text.UTF8Encoding]::new($false, $true).GetString($Bytes)
+    }
+    catch {
+        throw "$Label is not strict UTF-8 text"
+    }
 }
 
 function Read-SshpicBoundedFile {
-    param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $Label)
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path,
+        [Parameter(Mandatory)]
+        [string] $Label
+    )
+
     $capacity = [int] $script:SshpicProfileMaximumBytes + 1
     $buffer = [byte[]]::new($capacity)
     $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
@@ -348,12 +431,18 @@ function Read-SshpicBoundedFile {
         $total = 0
         while ($total -lt $buffer.Length) {
             $read = $stream.Read($buffer, $total, $buffer.Length - $total)
-            if ($read -eq 0) { break }
+            if ($read -eq 0) {
+                break
+            }
             $total += $read
         }
-        if ($total -gt $script:SshpicProfileMaximumBytes) { throw "$Label exceeds the 2 MiB safety limit" }
+        if ($total -gt $script:SshpicProfileMaximumBytes) {
+            throw "$Label exceeds the 2 MiB safety limit"
+        }
         $result = [byte[]]::new($total)
-        if ($total -gt 0) { [Buffer]::BlockCopy($buffer, 0, $result, 0, $total) }
+        if ($total -gt 0) {
+            [Buffer]::BlockCopy($buffer, 0, $result, 0, $total)
+        }
         return ,$result
     }
     finally {
@@ -363,24 +452,44 @@ function Read-SshpicBoundedFile {
 }
 
 function Get-SshpicSha256Hex {
-    param([Parameter(Mandatory)][byte[]] $Bytes)
+    param(
+        [Parameter(Mandatory)]
+        [byte[]] $Bytes
+    )
+
     $sha256 = [Security.Cryptography.SHA256]::Create()
-    try { return ([Convert]::ToHexString($sha256.ComputeHash($Bytes))).ToLowerInvariant() }
-    finally { $sha256.Dispose() }
+    try {
+        return ([Convert]::ToHexString($sha256.ComputeHash($Bytes))).ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
 }
 
 function Get-SshpicManagedFunctionDefinition {
-    param([Parameter(Mandatory)][string] $OwnedBlock)
+    param(
+        [Parameter(Mandatory)]
+        [string] $OwnedBlock
+    )
+
     $tokens = $null
     $parseErrors = $null
-    $ast = [Management.Automation.Language.Parser]::ParseInput($OwnedBlock, [ref] $tokens, [ref] $parseErrors)
-    if ($parseErrors.Count -ne 0) { throw 'the managed PowerShell block is not valid PowerShell syntax' }
+    $ast = [Management.Automation.Language.Parser]::ParseInput(
+        $OwnedBlock,
+        [ref] $tokens,
+        [ref] $parseErrors
+    )
+    if ($parseErrors.Count -ne 0) {
+        throw 'the managed PowerShell block is not valid PowerShell syntax'
+    }
     $functions = @($ast.FindAll({
         param($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
             [string]::Equals($node.Name, 'global:ssh', [StringComparison]::OrdinalIgnoreCase)
     }, $true))
-    if ($functions.Count -ne 1) { throw 'the managed PowerShell block does not contain exactly one ssh function' }
+    if ($functions.Count -ne 1) {
+        throw 'the managed PowerShell block does not contain exactly one ssh function'
+    }
     $body = $functions[0].Body.Extent.Text
     if ($body.Length -lt 2 -or $body[0] -ne '{' -or $body[$body.Length - 1] -ne '}') {
         throw 'the managed ssh function body is invalid'
@@ -391,17 +500,26 @@ function Get-SshpicManagedFunctionDefinition {
 function Get-SshpicVerifiedOwnedBlock {
     $homePath = [IO.Path]::GetFullPath([Environment]::GetFolderPath('UserProfile'))
     $manifestPath = Join-Path $homePath '.config\sshpic\powershell-profile-install-v2.json'
-    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'the managed PowerShell ownership manifest is missing' }
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw 'the managed PowerShell ownership manifest is missing'
+    }
+
     $manifestBytes = Read-SshpicBoundedFile -Path $manifestPath -Label 'PowerShell ownership manifest'
     $manifestText = ConvertFrom-SshpicStrictUtf8 -Bytes $manifestBytes -Label 'PowerShell ownership manifest'
-    try { $manifest = $manifestText | ConvertFrom-Json -ErrorAction Stop }
-    catch { throw 'the managed PowerShell ownership manifest is invalid JSON' }
+    try {
+        $manifest = $manifestText | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw 'the managed PowerShell ownership manifest is invalid JSON'
+    }
     if ([int] $manifest.version -ne $script:SshpicProfileManifestVersion -or
         [string] $manifest.owner -cne $script:SshpicProfileManifestOwner) {
         throw 'the managed PowerShell ownership manifest has an unexpected owner or version'
     }
+
     $profileRelative = [string] $manifest.profile_relative_path
-    if ([string]::IsNullOrWhiteSpace($profileRelative) -or [IO.Path]::IsPathRooted($profileRelative) -or
+    if ([string]::IsNullOrWhiteSpace($profileRelative) -or
+        [IO.Path]::IsPathRooted($profileRelative) -or
         -not [string]::IsNullOrEmpty([IO.Path]::GetPathRoot($profileRelative))) {
         throw 'the managed PowerShell profile path is unsafe'
     }
@@ -414,7 +532,10 @@ function Get-SshpicVerifiedOwnedBlock {
     if (-not [string]::Equals($profilePath, $expectedProfile, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'the current PowerShell profile path differs from the verified install target'
     }
-    if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) { throw 'the managed PowerShell profile is missing' }
+    if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
+        throw 'the managed PowerShell profile is missing'
+    }
+
     $profileBytes = Read-SshpicBoundedFile -Path $profilePath -Label 'PowerShell profile'
     $profileText = ConvertFrom-SshpicStrictUtf8 -Bytes $profileBytes -Label 'PowerShell profile'
     $installedHash = [string] $manifest.installed_sha256
@@ -422,82 +543,136 @@ function Get-SshpicVerifiedOwnedBlock {
         -not [string]::Equals((Get-SshpicSha256Hex -Bytes $profileBytes), $installedHash, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'the managed PowerShell profile hash changed after installation'
     }
-    try { $ownedBytes = [Convert]::FromBase64String([string] $manifest.owned_bytes) }
-    catch { throw 'the managed PowerShell ownership bytes are invalid base64' }
-    if ($ownedBytes.Length -eq 0) { throw 'the managed PowerShell ownership bytes are empty' }
+
+    try {
+        $ownedBytes = [Convert]::FromBase64String([string] $manifest.owned_bytes)
+    }
+    catch {
+        throw 'the managed PowerShell ownership bytes are invalid base64'
+    }
+    if ($ownedBytes.Length -eq 0) {
+        throw 'the managed PowerShell ownership bytes are empty'
+    }
     $ownedText = ConvertFrom-SshpicStrictUtf8 -Bytes $ownedBytes -Label 'managed PowerShell block'
     $firstOwned = $profileText.IndexOf($ownedText, [StringComparison]::Ordinal)
     $lastOwned = $profileText.LastIndexOf($ownedText, [StringComparison]::Ordinal)
     if ($firstOwned -lt 0 -or $firstOwned -ne $lastOwned) {
         throw 'the managed PowerShell ownership bytes are not present exactly once'
     }
-    foreach ($required in @($script:SshpicBeginMarker, $script:SshpicEndMarker, $script:SshpicVersionMarker,
-        $script:SshpicFunctionMarker, 'function global:ssh {')) {
+    foreach ($required in @(
+        $script:SshpicBeginMarker,
+        $script:SshpicEndMarker,
+        $script:SshpicVersionMarker,
+        $script:SshpicFunctionMarker,
+        'function global:ssh {'
+    )) {
         if (-not $ownedText.Contains($required, [StringComparison]::Ordinal)) {
             throw "the managed PowerShell block is missing: $required"
         }
     }
+    if ($ownedText.IndexOf($script:SshpicBeginMarker, [StringComparison]::Ordinal) -ne
+        $ownedText.LastIndexOf($script:SshpicBeginMarker, [StringComparison]::Ordinal) -or
+        $ownedText.IndexOf($script:SshpicEndMarker, [StringComparison]::Ordinal) -ne
+        $ownedText.LastIndexOf($script:SshpicEndMarker, [StringComparison]::Ordinal)) {
+        throw 'the managed PowerShell block contains duplicate ownership markers'
+    }
     return $ownedText
+}
+
+function Enable-SshpicInCurrentPowerShell {
+    if ($PSVersionTable.PSVersion.Major -lt 7) {
+        throw 'PowerShell 7 (pwsh) is required to activate the managed ssh command'
+    }
+    if ([string]::IsNullOrWhiteSpace($env:WT_SESSION) -and
+        [string]::IsNullOrWhiteSpace($env:WEZTERM_PANE)) {
+        return
+    }
+
+    $ownedBlock = Get-SshpicVerifiedOwnedBlock
+    $expectedDefinition = Get-SshpicManagedFunctionDefinition -OwnedBlock $ownedBlock
+    $current = Get-Command ssh -ErrorAction SilentlyContinue
+    if ($null -ne $current -and $current.CommandType -ne [Management.Automation.CommandTypes]::Application) {
+        if ($current.CommandType -ne [Management.Automation.CommandTypes]::Function -or
+            -not [string]::Equals($current.Definition.Trim(), $expectedDefinition, [StringComparison]::Ordinal)) {
+            throw "the current PowerShell session already owns ssh as $($current.CommandType); it was not overwritten"
+        }
+    }
+
+    $native = Get-Command ssh.exe -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -eq $native) {
+        throw 'the explicit native ssh.exe recovery command is unavailable'
+    }
+    $hadManagedFunction = $null -ne $current -and
+        $current.CommandType -eq [Management.Automation.CommandTypes]::Function
+    $callerPid = $PID
+    try {
+        & ([ScriptBlock]::Create($ownedBlock))
+        if ($PID -ne $callerPid) {
+            throw 'the managed ssh command was not activated in the caller PowerShell process'
+        }
+        $activated = Get-Command ssh -CommandType Function -ErrorAction SilentlyContinue
+        if ($null -eq $activated -or
+            -not [string]::Equals($activated.Definition.Trim(), $expectedDefinition, [StringComparison]::Ordinal)) {
+            throw 'the managed ssh function did not activate in the current PowerShell session'
+        }
+    }
+    catch {
+        if (-not $hadManagedFunction) {
+            $partial = Get-Command ssh -CommandType Function -ErrorAction SilentlyContinue
+            if ($null -ne $partial -and
+                [string]::Equals($partial.Definition.Trim(), $expectedDefinition, [StringComparison]::Ordinal)) {
+                Remove-Item -LiteralPath Function:\ssh -Force
+            }
+        }
+        throw
+    }
+    Write-Output 'SSHPIC_CURRENT_POWERSHELL_ACTIVATED'
 }
 
 $script:SshpicFacadeExitCode = 1
 try {
-    if ($args.Count -ne 0) {
-        throw 'uninstall has one behavior and accepts no options'
+    $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+    $corePath = Join-Path $repoRoot 'install.sh'
+    if (-not (Test-Path -LiteralPath $corePath -PathType Leaf)) {
+        throw "the installer core is missing: $corePath"
     }
-    $consoleRemovalPlan = Get-SshpicConsoleUtf8RemovalPlan
-    $ownedDefinition = $null
-    if ($PSVersionTable.PSVersion.Major -ge 7) {
-        $current = Get-Command ssh -ErrorAction SilentlyContinue
-        if ($null -ne $current -and $current.CommandType -eq [Management.Automation.CommandTypes]::Function -and
-            $current.Definition.Contains($script:SshpicFunctionMarker, [StringComparison]::Ordinal)) {
-            $ownedBlock = Get-SshpicVerifiedOwnedBlock
-            $ownedDefinition = Get-SshpicManagedFunctionDefinition -OwnedBlock $ownedBlock
-            if (-not [string]::Equals($current.Definition.Trim(), $ownedDefinition, [StringComparison]::Ordinal)) {
-                throw 'the current ssh function differs from the manifest-owned sshpic function; it was preserved'
-            }
-        }
-    }
-
-    $corePath = Join-Path $PSScriptRoot 'uninstall.sh'
-    if (-not (Test-Path -LiteralPath $corePath -PathType Leaf)) { throw "the uninstaller core is missing: $corePath" }
     $gitSh = Resolve-SshpicGitSh
-    Push-Location -LiteralPath $PSScriptRoot
+    $previousFacadeState = $env:SSHPIC_INSTALL_POWERSHELL_FACADE
+    Push-Location -LiteralPath $repoRoot
     try {
-        & $gitSh './uninstall.sh'
-        $uninstallStatus = $LASTEXITCODE
+        $env:SSHPIC_INSTALL_POWERSHELL_FACADE = '1'
+        & $gitSh './install.sh' @args
+        $installStatus = $LASTEXITCODE
     }
     finally {
+        if ($null -eq $previousFacadeState) {
+            Remove-Item Env:\SSHPIC_INSTALL_POWERSHELL_FACADE -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:SSHPIC_INSTALL_POWERSHELL_FACADE = $previousFacadeState
+        }
         Pop-Location
     }
-    if ($uninstallStatus -ne 0) {
-        $script:SshpicFacadeExitCode = [int] $uninstallStatus
-        $global:LASTEXITCODE = $uninstallStatus
-        throw "uninstaller core exited with status $uninstallStatus"
+    if ($installStatus -ne 0) {
+        $script:SshpicFacadeExitCode = [int] $installStatus
+        $global:LASTEXITCODE = $installStatus
+        throw "installer core exited with status $installStatus"
     }
-
-    if ($null -ne $consoleRemovalPlan) {
-        Remove-SshpicConsoleUtf8Profile -Plan $consoleRemovalPlan
-    }
-
-    if ($null -ne $ownedDefinition) {
-        $current = Get-Command ssh -CommandType Function -ErrorAction SilentlyContinue
-        if ($null -eq $current -or
-            -not [string]::Equals($current.Definition.Trim(), $ownedDefinition, [StringComparison]::Ordinal)) {
-            throw 'the current ssh function changed during uninstall; it was preserved'
+    if ($args.Count -eq 0) {
+        $consoleReceipt = Install-SshpicConsoleUtf8Profile
+        try {
+            Enable-SshpicConsoleUtf8InCurrentPowerShell
+            Enable-SshpicInCurrentPowerShell
         }
-        Remove-Item -LiteralPath Function:\ssh -Force
-        $remaining = Get-Command ssh -ErrorAction SilentlyContinue
-        if ($null -ne $remaining -and $remaining.CommandType -eq [Management.Automation.CommandTypes]::Function -and
-            $remaining.Definition.Contains($script:SshpicFunctionMarker, [StringComparison]::Ordinal)) {
-            throw 'the current-session sshpic function was not removed'
+        catch {
+            try { Disable-SshpicConsoleUtf8InCurrentPowerShell }
+            finally { Undo-SshpicConsoleUtf8ProfileInstall -Receipt $consoleReceipt }
+            throw
         }
-        Write-Output 'SSHPIC_CURRENT_POWERSHELL_DEACTIVATED'
     }
-    Disable-SshpicConsoleUtf8InCurrentPowerShell
     $global:LASTEXITCODE = 0
 }
 catch {
     $global:LASTEXITCODE = $script:SshpicFacadeExitCode
-    throw [InvalidOperationException]::new("sshpic uninstall failed: $($_.Exception.Message)", $_.Exception)
+    throw [InvalidOperationException]::new("sshpic installation failed: $($_.Exception.Message)", $_.Exception)
 }

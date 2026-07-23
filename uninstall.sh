@@ -3,15 +3,12 @@ set -eu
 
 usage() {
   cat <<'EOF'
-Usage: .\uninstall.sh.ps1 (PowerShell 7) or ./uninstall.sh (Git Bash)
+Usage: ./uninstall.sh (macOS/Linux)
+       ./scripts/windows/uninstall.ps1 (Windows PowerShell 7)
 
-Run one of these commands in the cloned checkout.
-
-Removes the Windows sshpic installation. This removes the managed PowerShell
-SSH command and PuTTY sessions, restores the manifest-owned WezTerm
-configuration, removes the installed sshpic.exe, and deletes sshpic
-configuration, cache, logs, and local images. The cloned source checkout is
-preserved.
+Run the command for your OS in the cloned checkout. It restores sshpic-owned
+terminal behavior, removes the installed sshpic executable and local sshpic
+data, and preserves the cloned source checkout.
 EOF
 }
 
@@ -21,13 +18,169 @@ if [ "$#" -ne 0 ]; then
   exit 2
 fi
 
+detect_host_os() {
+  detected_platform="$1"
+  detected_release="$2"
+  case "$detected_platform" in
+    MINGW*|MSYS*|CYGWIN*) printf '%s\n' "windows" ;;
+    Darwin) printf '%s\n' "macos" ;;
+    Linux)
+      case "$detected_release" in
+        *[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]*|*[Ww][Ss][Ll]*) printf '%s\n' "wsl" ;;
+        *) printf '%s\n' "linux" ;;
+      esac
+      ;;
+    *) printf '%s\n' "unsupported" ;;
+  esac
+}
+
+resolve_script_root() {
+  resolved_script="$0"
+  case "$resolved_script" in
+    */*) ;;
+    *) resolved_script="$(command -v "$resolved_script" 2>/dev/null || printf '%s' "$resolved_script")" ;;
+  esac
+  CDPATH= cd -P -- "$(dirname -- "$resolved_script")" && pwd -P
+}
+
+cleanup_posix_helper() {
+  cleanup_status=0
+  if [ -n "${posix_helper:-}" ] && [ -e "$posix_helper" ]; then
+    rm -f -- "$posix_helper" || cleanup_status=1
+  fi
+  if [ -n "${posix_helper_dir:-}" ] && [ -d "$posix_helper_dir" ]; then
+    rmdir -- "$posix_helper_dir" || cleanup_status=1
+  fi
+  return "$cleanup_status"
+}
+
+uninstall_posix() {
+  repo_root="$(resolve_script_root)"
+  for required in ".git" "go.mod" "uninstall.sh" "cmd/sshpic"; do
+    if [ ! -e "$repo_root/$required" ]; then
+      echo "refusing to run outside the sshpic source checkout; missing: $repo_root/$required" >&2
+      return 1
+    fi
+  done
+  if ! command -v go >/dev/null 2>&1; then
+    echo "Go is required to build the isolated sshpic uninstall helper." >&2
+    echo "No installed files were changed. Install Go, then run ./uninstall.sh again." >&2
+    return 1
+  fi
+  go_cmd="$(command -v go)"
+  if ! "$go_cmd" version >/dev/null 2>&1; then
+    echo "Go was found but could not run. No installed files were changed." >&2
+    return 1
+  fi
+
+  bin_dir="$("$go_cmd" env GOBIN)"
+  if [ -z "$bin_dir" ]; then
+    go_path="$("$go_cmd" env GOPATH)"
+    case "$go_path" in
+      *:*) go_path="${go_path%%:*}" ;;
+    esac
+    bin_dir="$go_path/bin"
+  fi
+  case "$bin_dir" in
+    /*) ;;
+    *)
+      echo "Go returned a non-absolute install directory; refusing unsafe executable removal: $bin_dir" >&2
+      return 1
+      ;;
+  esac
+  installed_binary="$bin_dir/sshpic"
+  if [ ! -e "$installed_binary" ] && [ ! -L "$installed_binary" ] && command -v sshpic >/dev/null 2>&1; then
+    command_binary="$(command -v sshpic)"
+    case "$command_binary" in
+      /*)
+        case "$command_binary" in
+          "$repo_root"|"$repo_root"/*) ;;
+          *) installed_binary="$command_binary" ;;
+        esac
+        ;;
+    esac
+  fi
+
+  posix_temp_parent="${TMPDIR:-/tmp}"
+  case "$posix_temp_parent" in
+    /*) ;;
+    *)
+      echo "temporary directory must be absolute; no installed files were changed: $posix_temp_parent" >&2
+      return 1
+      ;;
+  esac
+  if [ ! -d "$posix_temp_parent" ]; then
+    echo "temporary directory is unavailable: $posix_temp_parent" >&2
+    return 1
+  fi
+  posix_temp_parent="$(CDPATH= cd -P -- "$posix_temp_parent" && pwd -P)" || {
+    echo "temporary directory could not be resolved safely; no installed files were changed." >&2
+    return 1
+  }
+  case "$posix_temp_parent" in
+    /|"$repo_root"|"$repo_root"/*)
+      echo "temporary directory must be outside the source checkout; no installed files were changed: $posix_temp_parent" >&2
+      return 1
+      ;;
+  esac
+  TMPDIR="$posix_temp_parent"
+  export TMPDIR
+  posix_helper_dir="$(mktemp -d "${posix_temp_parent%/}/sshpic-uninstall.XXXXXX")" || {
+    echo "could not create an isolated uninstall helper directory" >&2
+    return 1
+  }
+  posix_helper="$posix_helper_dir/sshpic-uninstall-helper"
+  trap 'cleanup_posix_helper' 0
+  trap 'exit 130' 1 2 15
+
+  echo "Building an isolated sshpic uninstall helper..."
+  if ! (cd "$repo_root" && "$go_cmd" build -o "$posix_helper" ./cmd/sshpic); then
+    echo "Could not build the uninstall helper. No installed files were changed." >&2
+    return 1
+  fi
+  if ! "$posix_helper" version >/dev/null 2>&1; then
+    echo "The isolated uninstall helper could not run. No installed files were changed." >&2
+    return 1
+  fi
+
+  uninstall_status=0
+  "$posix_helper" uninstall posix \
+    --uninstall-protocol 1 \
+    --source-root "$repo_root" \
+    --binary "$installed_binary" || uninstall_status=$?
+  if ! cleanup_posix_helper; then
+    echo "sshpic state was processed, but the temporary uninstall helper could not be removed: $posix_helper_dir" >&2
+    return 1
+  fi
+  posix_helper=""
+  posix_helper_dir=""
+  trap - 0 1 2 15
+  return "$uninstall_status"
+}
+
 platform="$(uname -s 2>/dev/null || printf 'unknown')"
-case "$platform" in
-  MINGW*|MSYS*|CYGWIN*) ;;
+kernel_release="$(uname -r 2>/dev/null || printf 'unknown')"
+host_os="$(detect_host_os "$platform" "$kernel_release")"
+case "$host_os" in
+  macos|linux)
+    echo "Detected OS: $host_os"
+    uninstall_posix
+    exit $?
+    ;;
+  windows)
+    if [ "${SSHPIC_UNINSTALL_POWERSHELL_FACADE:-}" != "1" ]; then
+      echo "Windows uninstall must run from PowerShell 7: ./scripts/windows/uninstall.ps1" >&2
+      echo "No files were changed." >&2
+      exit 1
+    fi
+    ;;
+  wsl)
+    echo "WSL is not the native Windows installation target; no files were changed." >&2
+    echo "From native Windows PowerShell 7, run ./scripts/windows/uninstall.ps1 outside WSL." >&2
+    exit 1
+    ;;
   *)
-    echo "This uninstaller is for native Windows and must run through Git for Windows sh." >&2
-    echo 'From native Windows PowerShell 7, run .\uninstall.sh.ps1.' >&2
-    echo "No files were changed." >&2
+    echo "Unsupported uninstall OS: $platform ($kernel_release). No files were changed." >&2
     exit 1
     ;;
 esac
@@ -38,7 +191,7 @@ case "$script_path" in
   *) script_path="$(command -v "$script_path" 2>/dev/null || printf '%s' "$script_path")" ;;
 esac
 repo_root="$(CDPATH= cd -P -- "$(dirname -- "$script_path")" && pwd -P)"
-for required in ".git" "go.mod" "uninstall.sh.ps1" "uninstall.sh.cmd" "uninstall.sh" "cmd/sshpic"; do
+for required in ".git" "go.mod" "scripts/windows/uninstall.ps1" "uninstall.sh" "cmd/sshpic"; do
   if [ ! -e "$repo_root/$required" ]; then
     echo "refusing to run outside the sshpic source checkout; missing: $repo_root/$required" >&2
     exit 1
@@ -418,7 +571,7 @@ if [ "$overlap_status" -eq 2 ]; then
 fi
 if [ "$overlap_status" -eq 0 ]; then
   echo "Refusing uninstall helper creation because GOBIN is inside the source checkout: $bin_dir" >&2
-  echo 'Unset GOBIN or set it outside this checkout, then rerun .\uninstall.sh.ps1. No files were changed.' >&2
+  echo 'Unset GOBIN or set it outside this checkout, then rerun ./scripts/windows/uninstall.ps1. No files were changed.' >&2
   exit 1
 fi
 if ! mkdir -p -- "$bin_dir"; then
@@ -512,7 +665,7 @@ if ! "$helper" internal-remove-putty-sessions; then
   exit 1
 fi
 
-for required in ".git" "go.mod" "uninstall.sh.ps1" "uninstall.sh.cmd" "uninstall.sh" "cmd/sshpic"; do
+for required in ".git" "go.mod" "scripts/windows/uninstall.ps1" "uninstall.sh" "cmd/sshpic"; do
   if [ ! -e "$repo_root/$required" ]; then
     echo "Uninstall removed installed state but the source checkout verification failed: $repo_root/$required" >&2
     exit 1

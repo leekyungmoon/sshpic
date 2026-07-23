@@ -26,12 +26,25 @@ After:  screenshot → stay in Codex → Cmd+V → remote image path appears
 ```bash
 git clone https://github.com/leekyungmoon/sshpic.git
 cd sshpic
+```
+
+macOS / Linux:
+
+```bash
 ./install.sh
 ```
 
-Use the same command on macOS, Linux, and Windows. `install.sh` detects the host OS and chooses the right setup automatically. On Windows it continues in PowerShell 7 and can use `winget` for missing tools. On macOS it sets up iTerm2 and the clipboard helper. On Linux it installs the CLI without claiming an unsupported terminal shortcut.
+Windows PowerShell 7:
+
+```powershell
+./scripts/windows/install.ps1
+```
+
+Use the installer for your OS. Each script verifies the host before changing anything. On Windows, installation and activation finish in the PowerShell 7 window where you ran `./scripts/windows/install.ps1`. On macOS it sets up iTerm2 and the clipboard helper. On Linux it installs the CLI without claiming an unsupported terminal shortcut.
 
 If setup cannot be completed safely, the installer stops without replacing your normal paste shortcut.
+
+To uninstall later, run `./uninstall.sh` on macOS/Linux or `./scripts/windows/uninstall.ps1` in Windows PowerShell 7.
 
 ## ⚡ Quick Start
 

@@ -271,6 +271,196 @@ exit 0
 	}
 }
 
+func TestRestoreRemovesOwnedPythonRuntimeAndPreservesOtherVersions(t *testing.T) {
+	home := t.TempDir()
+	base := filepath.Join(home, "Library", "Application Support", "iTerm2", "iterm2env")
+	ownedPython := filepath.Join(base, "versions", "sshpic", "bin", "python3")
+	otherPython := filepath.Join(base, "versions", "3.11.0", "bin", "python3")
+	for _, path := range []string{ownedPython, otherPython} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	metadata := filepath.Join(base, "iterm2env-metadata.json")
+	if err := os.WriteFile(metadata, []byte(`{"version":72,"managed_by":"sshpic"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Restore(context.Background(), RestoreOptions{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.PythonRuntimeVersionPaths) != 1 || result.PythonRuntimeVersionPaths[0] != filepath.Join(base, "versions", "sshpic") {
+		t.Fatalf("owned runtime version not reported removed: %+v", result)
+	}
+	if len(result.PythonRuntimeMetadataPaths) != 1 || result.PythonRuntimeMetadataPaths[0] != metadata {
+		t.Fatalf("owned runtime metadata not reported removed: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(base, "versions", "sshpic")); !os.IsNotExist(err) {
+		t.Fatalf("owned sshpic runtime version should be removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(metadata); !os.IsNotExist(err) {
+		t.Fatalf("sshpic-owned metadata should be removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(otherPython); err != nil {
+		t.Fatalf("unrelated iTerm2 runtime version should remain: %v", err)
+	}
+}
+
+func TestRestorePreservesUnownedPythonRuntimeMetadata(t *testing.T) {
+	home := t.TempDir()
+	base := filepath.Join(home, "Library", "Application Support", "iTerm2", "iterm2env")
+	ownedPython := filepath.Join(base, "versions", "sshpic", "bin", "python3")
+	if err := os.MkdirAll(filepath.Dir(ownedPython), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ownedPython, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	metadata := filepath.Join(base, "iterm2env-metadata.json")
+	if err := os.WriteFile(metadata, []byte(`{"version":72}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Restore(context.Background(), RestoreOptions{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.PythonRuntimeVersionPaths) != 0 {
+		t.Fatalf("runtime without sshpic-owned metadata must not be removed: %+v", result)
+	}
+	if len(result.PythonRuntimeMetadataPaths) != 0 {
+		t.Fatalf("unowned metadata must not be removed: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(base, "versions", "sshpic")); err != nil {
+		t.Fatalf("runtime without ownership metadata should remain: %v", err)
+	}
+	if _, err := os.Stat(metadata); err != nil {
+		t.Fatalf("unowned runtime metadata should remain: %v", err)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "without sshpic ownership metadata") {
+		t.Fatalf("missing ownership refusal warning: %v", result.Warnings)
+	}
+}
+
+func TestRestorePreservesPythonRuntimeWhenOwnershipMetadataIsMissingOrInvalid(t *testing.T) {
+	invalidMetadata := "{not-json"
+	for _, tc := range []struct {
+		name     string
+		metadata *string
+		want     string
+	}{
+		{name: "missing", want: "without sshpic ownership metadata"},
+		{name: "invalid", metadata: &invalidMetadata, want: "invalid ownership JSON"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			base := filepath.Join(home, "Library", "Application Support", "iTerm2", "iterm2env")
+			runtimePath := filepath.Join(base, "versions", "sshpic", "bin", "python3")
+			if err := os.MkdirAll(filepath.Dir(runtimePath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(runtimePath, []byte("#!/bin/sh\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			metadataPath := filepath.Join(base, "iterm2env-metadata.json")
+			if tc.metadata != nil {
+				if err := os.WriteFile(metadataPath, []byte(*tc.metadata), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			result, err := Restore(context.Background(), RestoreOptions{HomeDir: home})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.PythonRuntimeVersionPaths) != 0 || len(result.PythonRuntimeMetadataPaths) != 0 {
+				t.Fatalf("ambiguous runtime ownership must be preserved: %+v", result)
+			}
+			if _, err := os.Stat(runtimePath); err != nil {
+				t.Fatalf("runtime should remain for manual inspection: %v", err)
+			}
+			if !strings.Contains(strings.Join(result.Warnings, "\n"), tc.want) {
+				t.Fatalf("warning %q missing: %v", tc.want, result.Warnings)
+			}
+		})
+	}
+}
+
+func TestRestorePreservesPythonRuntimeWhenMetadataIsSymlinked(t *testing.T) {
+	home := t.TempDir()
+	base := filepath.Join(home, "Library", "Application Support", "iTerm2", "iterm2env")
+	runtimePath := filepath.Join(base, "versions", "sshpic", "bin", "python3")
+	if err := os.MkdirAll(filepath.Dir(runtimePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runtimePath, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outsideMetadata := filepath.Join(t.TempDir(), "metadata.json")
+	if err := os.WriteFile(outsideMetadata, []byte(`{"version":72,"managed_by":"sshpic"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(base, "iterm2env-metadata.json")
+	if err := os.Symlink(outsideMetadata, metadataPath); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Restore(context.Background(), RestoreOptions{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.PythonRuntimeVersionPaths) != 0 || len(result.PythonRuntimeMetadataPaths) != 0 {
+		t.Fatalf("symlinked ownership metadata must preserve runtime state: %+v", result)
+	}
+	if _, err := os.Stat(runtimePath); err != nil {
+		t.Fatalf("runtime should remain when ownership metadata is symlinked: %v", err)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "symlinked iTerm2 Python runtime metadata") {
+		t.Fatalf("symlink refusal warning missing: %v", result.Warnings)
+	}
+}
+
+func TestRestoreRefusesSymlinkedPythonRuntimeVersion(t *testing.T) {
+	home := t.TempDir()
+	base := filepath.Join(home, "Library", "Application Support", "iTerm2", "iterm2env")
+	versions := filepath.Join(base, "versions")
+	if err := os.MkdirAll(versions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside-runtime")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(versions, "sshpic")); err != nil {
+		t.Fatal(err)
+	}
+	metadata := filepath.Join(base, "iterm2env-metadata.json")
+	if err := os.WriteFile(metadata, []byte(`{"version":72,"managed_by":"sshpic"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Restore(context.Background(), RestoreOptions{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.PythonRuntimeVersionPaths) != 0 || len(result.PythonRuntimeMetadataPaths) != 0 {
+		t.Fatalf("ambiguous symlinked runtime state must not be removed: %+v", result)
+	}
+	if len(result.Warnings) == 0 || !strings.Contains(strings.Join(result.Warnings, "\n"), "refusing to remove symlinked iTerm2 Python runtime version") {
+		t.Fatalf("expected symlink refusal warning, warnings=%v", result.Warnings)
+	}
+	if _, err := os.Lstat(filepath.Join(versions, "sshpic")); err != nil {
+		t.Fatalf("symlinked runtime version should remain for manual inspection: %v", err)
+	}
+	if _, err := os.Stat(metadata); err != nil {
+		t.Fatalf("metadata should remain when runtime cleanup is ambiguous: %v", err)
+	}
+}
+
 func TestInstallDisablesAllLegacySSHpicDynamicProfiles(t *testing.T) {
 	home := t.TempDir()
 	libraryProfile := legacyDynamicProfilePath(home)

@@ -14,7 +14,7 @@ All of the following are required:
 
 WSL terminals, SSH launched inside WSL, plain unmanaged PuTTY sessions, headless Windows sessions, Windows services, and unsupported wrappers are outside these candidates. They remain `TBD`.
 
-For image-paste runtime, PowerShell 7 (`pwsh`) is the managed shell inside Windows Terminal or WezTerm. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the lifecycle code recognizes it only to remove an exact legacy sshpic block. The top-level `install.sh` contains the shared OS detection and platform-specific installation paths. On Windows it invokes the bundled PowerShell facade internally, then activates the exact manifest-owned `ssh` function in the ready PowerShell process. The companion launcher files are implementation details rather than separate installation commands.
+For image-paste runtime, PowerShell 7 (`pwsh`) is the managed shell inside Windows Terminal or WezTerm. Windows PowerShell 5.1 is unsupported for the managed normal-`ssh` command; the lifecycle code recognizes it only to remove an exact legacy sshpic block. Run `./scripts/windows/install.ps1` from PowerShell 7. It invokes the top-level `install.sh` core synchronously and then activates the exact manifest-owned `ssh` function in that same PowerShell process; it never opens a second PowerShell window.
 
 The Windows provider reads an image already present on the clipboard. `sshpic shot` and `sshpic full` screen capture are not implemented on Windows.
 
@@ -22,15 +22,15 @@ The installer verifies WezTerm and Plink and rejects Plink releases older than 0
 
 ## Install
 
-Clone the repository and run the same installer used on every supported host:
+Clone the repository and run the Windows installer from PowerShell 7:
 
 ```powershell
 git clone https://github.com/leekyungmoon/sshpic.git
 cd sshpic
-./install.sh
+./scripts/windows/install.ps1
 ```
 
-`install.sh` detects native Windows and continues through the bundled PowerShell launcher. That launcher waits for the shared installer to finish, validates the profile ownership manifest and exact installed bytes, and activates only that managed block in the ready PowerShell 7 process. It does not re-run the user's full profile.
+`install.ps1` runs the shared installer in place, validates the profile ownership manifest and exact installed bytes, and activates only that managed block in the current PowerShell 7 process. It does not start another terminal or re-run the user's full profile.
 
 The installer:
 
@@ -131,7 +131,7 @@ sshpic restore wezterm
 - `install wezterm` is idempotent only while the manifest and managed files still match. If you intentionally edited managed state, restore or reconcile it before reinstalling.
 - `restore wezterm` uses the ownership manifest and hashes to remove the owned module/block and recover the saved config. It refuses destructive guesses when ownership or file contents no longer match.
 
-`restore wezterm` rolls back only the terminal integration. It does not uninstall WezTerm, PuTTY, Go, `sshpic.exe`, the managed PowerShell 7 command block, or the inert sshpic PuTTY policy sessions, including packages that `winget` installed as prerequisites. The complete `.\uninstall.sh.ps1` flow removes the exact owned PowerShell 7 block, exact recognized legacy cleanup blocks, and policy sessions around the verified integration removal.
+`restore wezterm` rolls back only the terminal integration. It does not uninstall WezTerm, PuTTY, Go, `sshpic.exe`, the managed PowerShell 7 command block, or the inert sshpic PuTTY policy sessions, including packages that `winget` installed as prerequisites. The complete `.\scripts\windows\uninstall.ps1` flow removes the exact owned PowerShell 7 block, exact recognized legacy cleanup blocks, and policy sessions around the verified integration removal.
 
 Preserve the output of `doctor wezterm` and `restore wezterm` before manually changing a failed installation. The backup may contain personal WezTerm settings; do not attach it to a public issue without reviewing it.
 
@@ -140,14 +140,14 @@ Preserve the output of `doctor wezterm` and `restore wezterm` before manually ch
 Inside the cloned checkout, run the one supported Windows uninstall command from PowerShell:
 
 ```powershell
-.\uninstall.sh.ps1
+.\scripts\windows\uninstall.ps1
 ```
 
-There are no dry-run, purge, keep-source, binary-selection, or confirmation modes. From PowerShell 7, run `.\uninstall.sh.ps1`; that facade runs `uninstall.sh` synchronously and removes the current-process `ssh` function only when it exactly matches the pre-uninstall manifest-owned definition. Git Bash can run `./uninstall.sh` directly, but it cannot remove a function from a separate PowerShell process.
+There are no dry-run, purge, keep-source, binary-selection, or confirmation modes. From PowerShell 7, run `.\scripts\windows\uninstall.ps1`; it runs the shared `uninstall.sh` core synchronously and removes the current-process `ssh` function only when it exactly matches the pre-uninstall manifest-owned definition. Direct Windows execution of `./uninstall.sh` is rejected because Git Bash cannot remove a function from the caller's PowerShell process.
 
 The uninstaller performs these operations in order:
 
-1. builds and read-only probes a separate helper from the current checkout, so the installed executable never tries to delete itself;
+1. verifies the manifest-owned installed `sshpic.exe`, copies it byte-for-byte to a private temporary path, and probes that copy so the installed executable never tries to delete itself;
 2. removes the exact manifest-owned block from the PowerShell 7 profile and only exact recognized legacy sshpic blocks from Windows PowerShell 5.1, failing closed if an owned block was edited;
 3. reads the owned WezTerm manifest and verifies the recorded binary path and SHA-256 against both the module and current executable;
 4. records a resumable uninstall journal and restores only the manifest-owned WezTerm integration;
@@ -160,7 +160,7 @@ The cloned source checkout is never deleted or modified. Dirty, untracked, ignor
 
 If `WEZTERM_CONFIG_FILE` was set during installation, set the same variable when uninstalling so the owned WezTerm manifest can be found. `SSHPIC_CONFIG` is deliberately ignored by uninstall: the standard sshpic config is removed, while an arbitrary environment-selected file is never treated as a deletion target. There are still no alternate uninstall modes. With no manifest or resumable journal, uninstall fails closed instead of claiming that a possibly installed executable was removed. Reinstall once with the supported PowerShell command above to recreate ownership evidence, then rerun the supported uninstall command.
 
-Go is required to build the separate helper. If Windows keeps the installed executable locked, close the named process and rerun; the journal preserves the validated binary identity for that retry.
+Go is required to verify the installed executable's build identity against the current checkout. If Windows keeps the installed executable locked, close the named process and rerun; the journal preserves the validated binary identity for that retry.
 
 Go, WezTerm, the PuTTY application and host-key cache, winget package records, SSH configuration/keys, the current clipboard value, and remote images are not removed. They are shared or host-specific state that sshpic cannot safely claim as exclusively owned.
 
