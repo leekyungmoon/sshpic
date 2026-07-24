@@ -17,86 +17,6 @@ sshpic_progress_hup_status=129
 sshpic_progress_int_status=130
 sshpic_progress_term_status=143
 
-progress_descendants() {
-  sshpic_progress_root="$1"
-  if sshpic_progress_processes="$(ps -A -o pid= -o ppid= 2>/dev/null)"; then
-    :
-  elif sshpic_progress_processes="$(ps -eo pid=,ppid= 2>/dev/null)"; then
-    :
-  elif sshpic_progress_processes="$(ps -W 2>/dev/null)"; then
-    :
-  else
-    return 0
-  fi
-  printf '%s\n' "$sshpic_progress_processes" | awk -v root="$sshpic_progress_root" '
-    $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { parent[$1] = $2 }
-    END {
-      for (pid in parent) {
-        current = pid
-        for (depth = 0; depth < 1024 && current in parent; depth++) {
-          if (parent[current] == root) {
-            print pid
-            break
-          }
-          current = parent[current]
-        }
-      }
-    }
-  '
-}
-
-terminate_progress_tree() {
-  sshpic_progress_root="$1"
-  sshpic_progress_children="$(progress_descendants "$sshpic_progress_root")" || sshpic_progress_children=""
-  if command -v taskkill.exe >/dev/null 2>&1; then
-    sshpic_progress_windows_processes="$(ps -W 2>/dev/null || :)"
-    for sshpic_progress_process in $sshpic_progress_children "$sshpic_progress_root"; do
-      sshpic_progress_windows_pid="$(
-        printf '%s\n' "$sshpic_progress_windows_processes" |
-          awk -v target="$sshpic_progress_process" \
-            '$1 == target && $4 ~ /^[0-9]+$/ { print $4; exit }'
-      )"
-      if [ -n "$sshpic_progress_windows_pid" ]; then
-        MSYS2_ARG_CONV_EXCL='*' taskkill.exe \
-          /PID "$sshpic_progress_windows_pid" /T /F >/dev/null 2>&1 || :
-      fi
-    done
-  fi
-
-  for sshpic_progress_child in $sshpic_progress_children; do
-    kill -TERM "$sshpic_progress_child" 2>/dev/null || :
-  done
-  kill -TERM "$sshpic_progress_root" 2>/dev/null || :
-
-  sshpic_progress_stop_wait=0
-  while kill -0 "$sshpic_progress_root" 2>/dev/null && [ "$sshpic_progress_stop_wait" -lt 2 ]; do
-    sleep 1 || :
-    sshpic_progress_stop_wait=$((sshpic_progress_stop_wait + 1))
-  done
-  if kill -0 "$sshpic_progress_root" 2>/dev/null; then
-    kill -KILL "$sshpic_progress_root" 2>/dev/null || :
-  fi
-  for sshpic_progress_child in $sshpic_progress_children; do
-    if kill -0 "$sshpic_progress_child" 2>/dev/null; then
-      kill -KILL "$sshpic_progress_child" 2>/dev/null || :
-    fi
-  done
-}
-
-cleanup_failed_progress() {
-  trap '' 1 2 13 15
-  exec 9>&- || :
-  if [ -n "${sshpic_progress_pid:-}" ]; then
-    terminate_progress_tree "$sshpic_progress_pid"
-    wait "$sshpic_progress_pid" 2>/dev/null || :
-    sshpic_progress_pid=""
-  fi
-  rm -f -- "${sshpic_progress_log:-}" "${sshpic_progress_gate:-}" || :
-  sshpic_progress_log=""
-  sshpic_progress_gate=""
-  eval "$sshpic_progress_saved_traps"
-}
-
 render_progress() {
   (
     trap - 13
@@ -118,30 +38,31 @@ run_without_progress() {
   fi
 }
 
-abort_progress() {
-  sshpic_progress_abort_status="${1:-130}"
-  trap '' 1 2 13 15
-  exec 9>&- || :
-  if [ -z "${sshpic_progress_pid:-}" ] && \
-     [ "${sshpic_progress_worker_starting:-0}" -eq 1 ]
-  then
-    sshpic_progress_candidate=$!
-    if [ -n "$sshpic_progress_candidate" ] && \
-       [ "$sshpic_progress_candidate" != "${sshpic_progress_previous_background_pid:-}" ]
-    then
-      sshpic_progress_pid="$sshpic_progress_candidate"
-    fi
+mark_progress_cancelled() {
+  if [ "${sshpic_progress_cancel_status:-0}" -eq 0 ]; then
+    sshpic_progress_cancel_status="$1"
   fi
-  if [ -n "${sshpic_progress_pid:-}" ]; then
-    terminate_progress_tree "$sshpic_progress_pid"
-    wait "$sshpic_progress_pid" 2>/dev/null || :
-  fi
-  rm -f -- \
-    "${sshpic_progress_log:-}" \
-    "${sshpic_progress_gate:-}" || :
-  render_progress '\r\033[K[cancelled] %s\n' \
-    "${sshpic_progress_label:-sshpic task}" >&2 || :
-  exit "$sshpic_progress_abort_status"
+}
+
+progress_renderer() {
+  sshpic_progress_renderer_label="$1"
+  sshpic_progress_renderer_stop="$2"
+  sshpic_progress_renderer_tick=0
+  trap - 1 2 13 15
+  while [ ! -e "$sshpic_progress_renderer_stop" ]; do
+    case $((sshpic_progress_renderer_tick % 4)) in
+      0) sshpic_progress_renderer_frame='|' ;;
+      1) sshpic_progress_renderer_frame='/' ;;
+      2) sshpic_progress_renderer_frame='-' ;;
+      *) sshpic_progress_renderer_frame='\' ;;
+    esac
+    render_progress '\r\033[K[%s] %s (%ss)' \
+      "$sshpic_progress_renderer_frame" \
+      "$sshpic_progress_renderer_label" \
+      "$sshpic_progress_renderer_tick" || return 0
+    sleep 1 || return 0
+    sshpic_progress_renderer_tick=$((sshpic_progress_renderer_tick + 1))
+  done
 }
 
 run_with_progress() {
@@ -161,109 +82,77 @@ run_with_progress() {
   fi
 
   sshpic_progress_tmp="${TMPDIR:-/tmp}"
-  sshpic_progress_log=""
-  sshpic_progress_gate=""
-  sshpic_progress_saved_traps="$sshpic_progress_signal_traps"
-  : &
-  sshpic_progress_previous_background_pid=$!
-  wait "$sshpic_progress_previous_background_pid" 2>/dev/null || :
-  trap 'abort_progress "$sshpic_progress_hup_status"' 1
-  trap 'abort_progress "$sshpic_progress_int_status"' 2
-  trap '' 13
-  trap 'abort_progress "$sshpic_progress_term_status"' 15
   if ! sshpic_progress_log="$(mktemp "${sshpic_progress_tmp%/}/sshpic-progress.XXXXXX")"; then
-    eval "$sshpic_progress_saved_traps"
     run_without_progress "$sshpic_progress_label" "$@" || return $?
     return 0
   fi
-  sshpic_progress_gate="${sshpic_progress_log}.gate"
-  if ! mkfifo "$sshpic_progress_gate"; then
-    rm -f -- "$sshpic_progress_log" "$sshpic_progress_gate"
-    sshpic_progress_log=""
-    sshpic_progress_gate=""
-    eval "$sshpic_progress_saved_traps"
+  sshpic_progress_stop="${sshpic_progress_log}.stop"
+  if ! rm -f -- "$sshpic_progress_stop"; then
+    rm -f -- "$sshpic_progress_log" || :
     run_without_progress "$sshpic_progress_label" "$@" || return $?
     return 0
   fi
 
-  if ! exec 9<>"$sshpic_progress_gate"; then
-    rm -f -- "$sshpic_progress_log" "$sshpic_progress_gate"
-    sshpic_progress_log=""
-    sshpic_progress_gate=""
-    eval "$sshpic_progress_saved_traps"
-    run_without_progress "$sshpic_progress_label" "$@" || return $?
-    return 0
-  fi
-  sshpic_progress_pid=""
-  sshpic_progress_worker_starting=1
-  (
-    if IFS= read -r sshpic_progress_start <&9 && \
-       [ "$sshpic_progress_start" = "start" ]
-    then
-      exec 9>&-
-      trap - 13
-      "$@"
-    else
-      exit 130
-    fi
-  ) >"$sshpic_progress_log" 2>&1 &
-  sshpic_progress_pid=$!
-  sshpic_progress_worker_starting=0
-  if ! printf 'start\n' >&9 || ! exec 9>&-; then
-    cleanup_failed_progress
-    return 1
-  fi
-  if rm -f -- "$sshpic_progress_gate"; then
-    sshpic_progress_gate=""
-  fi
-  sshpic_progress_tick=0
-  while kill -0 "$sshpic_progress_pid" 2>/dev/null; do
-    case $((sshpic_progress_tick % 4)) in
-      0) sshpic_progress_frame='|' ;;
-      1) sshpic_progress_frame='/' ;;
-      2) sshpic_progress_frame='-' ;;
-      *) sshpic_progress_frame='\' ;;
-    esac
-    if ! render_progress '\r\033[K[%s] %s (%ss)' \
-      "$sshpic_progress_frame" "$sshpic_progress_label" "$sshpic_progress_tick"
-    then
-      cleanup_failed_progress
-      return 1
-    fi
-    if ! sleep 1; then
-      cleanup_failed_progress
-      return 1
-    fi
-    sshpic_progress_tick=$((sshpic_progress_tick + 1))
-  done
-
+  sshpic_progress_saved_traps="$sshpic_progress_signal_traps"
+  sshpic_progress_cancel_status=0
+  trap 'mark_progress_cancelled "$sshpic_progress_hup_status"' 1
+  trap 'mark_progress_cancelled "$sshpic_progress_int_status"' 2
+  trap 'mark_progress_cancelled "$sshpic_progress_term_status"' 15
+  sshpic_progress_started_at="$(date +%s 2>/dev/null || printf '0')"
+  progress_renderer "$sshpic_progress_label" "$sshpic_progress_stop" &
+  sshpic_progress_renderer_pid=$!
   sshpic_progress_status=0
-  wait "$sshpic_progress_pid" || sshpic_progress_status=$?
-  sshpic_progress_pid=""
-  sshpic_progress_render_status=0
-  if [ "$sshpic_progress_status" -eq 0 ]; then
-    render_progress '\r\033[K[done] %s (%ss)\n' \
-      "$sshpic_progress_label" "$sshpic_progress_tick" || sshpic_progress_render_status=1
+  "$@" >"$sshpic_progress_log" 2>&1 || sshpic_progress_status=$?
+
+  if ! : >"$sshpic_progress_stop"; then
+    kill "$sshpic_progress_renderer_pid" 2>/dev/null || :
+  fi
+  wait "$sshpic_progress_renderer_pid" 2>/dev/null || :
+  sshpic_progress_finished_at="$(date +%s 2>/dev/null || printf '0')"
+  case "$sshpic_progress_started_at:$sshpic_progress_finished_at" in
+    *[!0-9:]*|:*|*:) sshpic_progress_elapsed=0 ;;
+    *) sshpic_progress_elapsed=$((sshpic_progress_finished_at - sshpic_progress_started_at)) ;;
+  esac
+
+  if [ "$sshpic_progress_cancel_status" -ne 0 ]; then
+    if [ -s "$sshpic_progress_log" ]; then
+      cat "$sshpic_progress_log" >&2 || :
+    fi
+  elif [ "$sshpic_progress_status" -eq 0 ]; then
     if [ "$sshpic_progress_replay" = "show" ] && [ -s "$sshpic_progress_log" ]; then
       cat "$sshpic_progress_log" || :
     fi
   else
-    render_progress '\r\033[K[failed] %s (%ss)\n' \
-      "$sshpic_progress_label" "$sshpic_progress_tick" >&2 || sshpic_progress_render_status=1
     if [ -s "$sshpic_progress_log" ]; then
       cat "$sshpic_progress_log" >&2 || :
     fi
   fi
+
   sshpic_progress_cleanup_status=0
-  rm -f -- "$sshpic_progress_log" "$sshpic_progress_gate" || sshpic_progress_cleanup_status=1
+  rm -f -- "$sshpic_progress_log" "$sshpic_progress_stop" || sshpic_progress_cleanup_status=1
   sshpic_progress_log=""
-  sshpic_progress_gate=""
-  eval "$sshpic_progress_saved_traps"
-  if [ "$sshpic_progress_status" -ne 0 ]; then
-    return "$sshpic_progress_status"
+  sshpic_progress_stop=""
+
+  if [ "$sshpic_progress_cancel_status" -ne 0 ]; then
+    render_progress '\r\033[K[cancelled] %s (%ss)\n' \
+      "$sshpic_progress_label" "$sshpic_progress_elapsed" >&2 || :
+  elif [ "$sshpic_progress_status" -eq 0 ]; then
+    render_progress '\r\033[K[done] %s (%ss)\n' \
+      "$sshpic_progress_label" "$sshpic_progress_elapsed" || :
+  else
+    render_progress '\r\033[K[failed] %s (%ss)\n' \
+      "$sshpic_progress_label" "$sshpic_progress_elapsed" >&2 || :
   fi
-  if [ "$sshpic_progress_render_status" -ne 0 ] || [ "$sshpic_progress_cleanup_status" -ne 0 ]; then
-    return 1
+
+  sshpic_progress_result="$sshpic_progress_status"
+  if [ "$sshpic_progress_cancel_status" -ne 0 ]; then
+    sshpic_progress_result="$sshpic_progress_cancel_status"
+  elif [ "$sshpic_progress_result" -eq 0 ] && [ "$sshpic_progress_cleanup_status" -ne 0 ]; then
+    sshpic_progress_result=1
+  fi
+  eval "$sshpic_progress_saved_traps"
+  if [ "$sshpic_progress_result" -ne 0 ]; then
+    return "$sshpic_progress_result"
   fi
   return 0
 }
