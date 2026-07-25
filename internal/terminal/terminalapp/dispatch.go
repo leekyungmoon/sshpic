@@ -23,7 +23,7 @@ type SessionContext struct {
 
 func BuildDispatch(ctx context.Context, cfg config.Config, src provider.LocalImageSource, sess SessionContext, materializeLocalImage func(provider.LocalImage) (string, error), log func(string)) dispatch.Result {
 	return BuildDispatchWithUploader(ctx, cfg, src, sess, materializeLocalImage, func(target dispatch.SSHTarget) paste.RemoteUploader {
-		return upload.SSHCat{Args: target.Args}
+		return upload.SSHCat{Args: target.Args, WorkingDirectory: target.WorkingDirectory}
 	}, log)
 }
 
@@ -53,7 +53,13 @@ func BuildDispatchWithUploader(ctx context.Context, cfg config.Config, src provi
 			if !ok {
 				return dispatch.SSHTarget{}, false
 			}
-			return dispatch.SSHTarget{Host: target.Host, User: target.User, Args: target.Args, Source: target.Source}, true
+			return dispatch.SSHTarget{
+				Host:             target.Host,
+				User:             target.User,
+				Args:             target.Args,
+				Source:           target.Source,
+				WorkingDirectory: target.WorkingDirectory,
+			}, true
 		},
 		UploaderForTarget:     uploaderForTarget,
 		MaterializeLocalImage: materializeLocalImage,

@@ -1,6 +1,7 @@
 package upload
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -24,6 +25,18 @@ func TestSSHCatCommandArgsUsesDetectedSSHArgs(t *testing.T) {
 	want := "-p 2222 alice@example.com umask 077; true"
 	if strings.Join(got, " ") != want {
 		t.Fatalf("args=%q want %q", strings.Join(got, " "), want)
+	}
+}
+
+func TestSSHCatCommandUsesDetectedSSHWorkingDirectory(t *testing.T) {
+	workDir := t.TempDir()
+	uploader := SSHCat{
+		Args:             []string{"-F", "config/ssh.conf", "-i", "ainetwork_a100x8.pem", "nvidia@101.202.37.19"},
+		WorkingDirectory: workDir,
+	}
+	cmd := uploader.command(context.Background(), "true")
+	if cmd.Dir != workDir {
+		t.Fatalf("command directory=%q want %q", cmd.Dir, workDir)
 	}
 }
 

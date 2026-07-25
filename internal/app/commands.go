@@ -968,10 +968,16 @@ func buildITerm2DispatchWithSource(ctx context.Context, cfg config.Config, pa pa
 			if !ok {
 				return dispatch.SSHTarget{}, false
 			}
-			return dispatch.SSHTarget{Host: target.Host, User: target.User, Args: target.Args, Source: target.Source}, true
+			return dispatch.SSHTarget{
+				Host:             target.Host,
+				User:             target.User,
+				Args:             target.Args,
+				Source:           target.Source,
+				WorkingDirectory: target.WorkingDirectory,
+			}, true
 		},
 		UploaderForTarget: func(target dispatch.SSHTarget) paste.RemoteUploader {
-			return upload.SSHCat{Args: target.Args}
+			return upload.SSHCat{Args: target.Args, WorkingDirectory: target.WorkingDirectory}
 		},
 		MaterializeLocalImage: materializeLocalClipboardImage,
 		Log:                   appendIntegrationLog,
@@ -1057,7 +1063,7 @@ func writeDispatchFiles(pa parsedArgs, result iterm2DispatchResult) error {
 
 func iterm2Uploader(ctx context.Context, cfg config.Config, sess iterm2.SessionContext) (upload.SSHCat, string) {
 	if target, ok := iterm2.DetectSSHTarget(ctx, sess); ok {
-		return upload.SSHCat{Args: target.Args}, target.User
+		return upload.SSHCat{Args: target.Args, WorkingDirectory: target.WorkingDirectory}, target.User
 	}
 	return upload.SSHCat{Host: cfg.RemoteHost}, ""
 }

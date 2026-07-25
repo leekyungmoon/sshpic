@@ -53,10 +53,11 @@ type SessionContext struct {
 }
 
 type SSHTarget struct {
-	Host   string
-	User   string
-	Args   []string
-	Source string
+	Host             string
+	User             string
+	Args             []string
+	Source           string
+	WorkingDirectory string
 }
 
 type Dependencies struct {

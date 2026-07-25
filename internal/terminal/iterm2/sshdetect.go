@@ -2,8 +2,10 @@ package iterm2
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -16,10 +18,11 @@ type SessionContext struct {
 }
 
 type SSHTarget struct {
-	Host   string
-	User   string
-	Args   []string
-	Source string
+	Host             string
+	User             string
+	Args             []string
+	Source           string
+	WorkingDirectory string
 }
 
 func DetectSSHTarget(ctx context.Context, sess SessionContext) (SSHTarget, bool) {
@@ -35,6 +38,17 @@ func DetectSSHTarget(ctx context.Context, sess SessionContext) (SSHTarget, bool)
 
 func DetectSessionSSHTarget(ctx context.Context, sess SessionContext) (SSHTarget, bool) {
 	if target, ok := SSHTargetFromCommandLine(sess.CommandLine); ok {
+		if workingDirectory := processWorkingDirectory(ctx, sess.JobPID); workingDirectory != "" {
+			target.WorkingDirectory = workingDirectory
+			target.Source = "commandLine"
+			return target, true
+		}
+		if ttyTarget, ttyOK := SSHTargetFromTTY(ctx, sess.TTY); ttyOK &&
+			sameSSHInvocation(target, ttyTarget) && ttyTarget.WorkingDirectory != "" {
+			target.WorkingDirectory = ttyTarget.WorkingDirectory
+			target.Source = "commandLine"
+			return target, true
+		}
 		target.Source = "commandLine"
 		return target, true
 	}
@@ -63,7 +77,12 @@ func SSHTargetFromPID(ctx context.Context, pid string) (SSHTarget, bool) {
 	if err != nil {
 		return SSHTarget{}, false
 	}
-	return SSHTargetFromProcessList(string(out))
+	target, ok := SSHTargetFromProcessList(string(out))
+	if !ok {
+		return SSHTarget{}, false
+	}
+	target.WorkingDirectory = processWorkingDirectory(ctx, pid)
+	return target, true
 }
 
 func SingleSSHTarget(ctx context.Context) (SSHTarget, bool) {
@@ -121,12 +140,38 @@ func SSHTargetFromTTY(ctx context.Context, tty string) (SSHTarget, bool) {
 	if tty == "" {
 		return SSHTarget{}, false
 	}
-	cmd := exec.CommandContext(ctx, "ps", "-t", tty, "-o", "command=")
+	cmd := exec.CommandContext(ctx, "ps", "-t", tty, "-o", "pid=", "-o", "command=")
 	out, err := cmd.Output()
 	if err != nil {
 		return SSHTarget{}, false
 	}
-	return SSHTargetFromProcessList(string(out))
+	return sshTargetFromPIDProcessList(ctx, string(out))
+}
+
+func sshTargetFromPIDProcessList(ctx context.Context, out string) (SSHTarget, bool) {
+	lines := strings.Split(out, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pid := cleanPID(fields[0])
+		if pid == "" {
+			continue
+		}
+		commandLine := strings.TrimSpace(strings.TrimPrefix(line, fields[0]))
+		target, ok := SSHTargetFromCommandLine(commandLine)
+		if !ok {
+			continue
+		}
+		target.WorkingDirectory = processWorkingDirectory(ctx, pid)
+		return target, true
+	}
+	return SSHTarget{}, false
 }
 
 func SSHTargetFromProcessList(out string) (SSHTarget, bool) {
@@ -225,6 +270,65 @@ func targetForDestination(dest string, uploadArgs []string, remoteUser string) S
 		remoteUser = userFromDestination(dest)
 	}
 	return SSHTarget{Host: dest, User: remoteUser, Args: append(uploadArgs, dest)}
+}
+
+func sameSSHInvocation(left, right SSHTarget) bool {
+	return left.Host != "" &&
+		left.Host == right.Host &&
+		left.User == right.User &&
+		slices.Equal(left.Args, right.Args)
+}
+
+func processWorkingDirectory(ctx context.Context, pid string) string {
+	pid = cleanPID(pid)
+	if pid == "" {
+		return ""
+	}
+	if dir, err := os.Readlink(filepath.Join("/proc", pid, "cwd")); err == nil {
+		if dir = cleanProcessWorkingDirectory(dir); dir != "" {
+			return dir
+		}
+	}
+	for _, candidate := range []string{"/usr/sbin/lsof", "lsof"} {
+		if candidate == "lsof" {
+			path, err := exec.LookPath(candidate)
+			if err != nil {
+				continue
+			}
+			candidate = path
+		} else if info, err := os.Stat(candidate); err != nil || info.IsDir() {
+			continue
+		}
+		out, err := exec.CommandContext(ctx, candidate, "-a", "-p", pid, "-d", "cwd", "-Fn").Output()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if !strings.HasPrefix(line, "n") {
+				continue
+			}
+			if dir := cleanProcessWorkingDirectory(strings.TrimPrefix(line, "n")); dir != "" {
+				return dir
+			}
+		}
+	}
+	return ""
+}
+
+func cleanProcessWorkingDirectory(dir string) string {
+	if dir == "" || !filepath.IsAbs(dir) || strings.ContainsRune(dir, '\x00') {
+		return ""
+	}
+	for _, r := range dir {
+		if r == '\r' || r == '\n' {
+			return ""
+		}
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	return filepath.Clean(dir)
 }
 
 func userFromSSHOption(arg, value string) (string, bool) {
