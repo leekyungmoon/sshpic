@@ -142,9 +142,10 @@ func TestSSHTargetFromPIDCapturesSSHWorkingDirectory(t *testing.T) {
 		t.Fatal("expected SSH target from process")
 	}
 	want := []string{"-i", identity, "nvidia@101.202.37.19"}
-	if target.Host != "nvidia@101.202.37.19" || target.User != "nvidia" || !reflect.DeepEqual(target.Args, want) || target.WorkingDirectory != workDir {
-		t.Fatalf("target=%+v want args=%v working_directory=%q", target, want, workDir)
+	if target.Host != "nvidia@101.202.37.19" || target.User != "nvidia" || !reflect.DeepEqual(target.Args, want) {
+		t.Fatalf("target=%+v want args=%v", target, want)
 	}
+	requireSameDirectory(t, target.WorkingDirectory, workDir)
 }
 
 func TestDetectSessionSSHTargetPreservesSSHProcessCWDForRelativeArguments(t *testing.T) {
@@ -181,9 +182,10 @@ func TestDetectSessionSSHTargetPreservesSSHProcessCWDForRelativeArguments(t *tes
 	if !ok {
 		t.Fatal("expected focused SSH target")
 	}
-	if target.Source != "commandLine" || !reflect.DeepEqual(target.Args, sshArgs) || target.WorkingDirectory != workDir {
-		t.Fatalf("target=%+v want args=%v working_directory=%q", target, sshArgs, workDir)
+	if target.Source != "commandLine" || !reflect.DeepEqual(target.Args, sshArgs) {
+		t.Fatalf("target=%+v want args=%v", target, sshArgs)
 	}
+	requireSameDirectory(t, target.WorkingDirectory, workDir)
 }
 
 func TestDetectSessionSSHTargetDoesNotReplaceFocusedArgsFromSameHostProcess(t *testing.T) {
@@ -213,9 +215,10 @@ func TestDetectSessionSSHTargetDoesNotReplaceFocusedArgsFromSameHostProcess(t *t
 		t.Fatal("expected focused SSH target")
 	}
 	want := []string{"-i", "focused-key.pem", "nvidia@101.202.37.19"}
-	if !reflect.DeepEqual(target.Args, want) || target.WorkingDirectory != workDir {
-		t.Fatalf("target=%+v want args=%v working_directory=%q", target, want, workDir)
+	if !reflect.DeepEqual(target.Args, want) {
+		t.Fatalf("target=%+v want args=%v", target, want)
 	}
+	requireSameDirectory(t, target.WorkingDirectory, workDir)
 }
 
 func TestDetectSessionSSHTargetRejectsTTYWorkingDirectoryFromDifferentSameHostInvocation(t *testing.T) {
@@ -255,5 +258,20 @@ func TestDetectSessionSSHTargetRejectsTTYWorkingDirectoryFromDifferentSameHostIn
 	want := []string{"-i", "focused-key.pem", "nvidia@101.202.37.19"}
 	if !reflect.DeepEqual(target.Args, want) || target.WorkingDirectory != "" {
 		t.Fatalf("target=%+v want args=%v and no unrelated working directory", target, want)
+	}
+}
+
+func requireSameDirectory(t *testing.T, got, want string) {
+	t.Helper()
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat detected working directory %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(want)
+	if err != nil {
+		t.Fatalf("stat expected working directory %q: %v", want, err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("working directory=%q want same directory as %q", got, want)
 	}
 }
